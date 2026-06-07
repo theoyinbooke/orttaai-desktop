@@ -10,11 +10,25 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Orttaai",
         "width": 880,
         "height": 640
+      },
+      {
+        "label": "panel",
+        "url": "index.html",
+        "width": 220,
+        "height": 64,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false
       }
     ],
     "security": {

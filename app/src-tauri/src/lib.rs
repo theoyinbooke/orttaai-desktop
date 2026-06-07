@@ -130,7 +130,8 @@ fn stop_dictation(app: AppHandle, state: State<EngineState>) -> Result<(), Strin
     Ok(())
 }
 
-/// Broadcast a state change to the frontend and reflect it in the tray tooltip.
+/// Broadcast a state change to the frontend, reflect it in the tray tooltip, and
+/// show/hide the floating recording panel.
 fn emit_state(app: &AppHandle, state: &str) {
     let _ = app.emit("engine-state", state);
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
@@ -141,6 +142,13 @@ fn emit_state(app: &AppHandle, state: &str) {
             _ => "Orttaai",
         };
         let _ = tray.set_tooltip(Some(tip));
+    }
+    if let Some(panel) = app.get_webview_window("panel") {
+        let _ = if matches!(state, "recording" | "processing") {
+            panel.show()
+        } else {
+            panel.hide()
+        };
     }
 }
 
@@ -372,6 +380,18 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Park the floating panel near the bottom-center of the primary monitor.
+fn position_panel(app: &tauri::App) {
+    if let Some(panel) = app.get_webview_window("panel") {
+        if let Ok(Some(monitor)) = panel.primary_monitor() {
+            let size = monitor.size();
+            let x = (size.width as i32 - 220) / 2;
+            let y = size.height as i32 - 160;
+            let _ = panel.set_position(tauri::PhysicalPosition::new(x, y));
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -379,6 +399,7 @@ pub fn run() {
         .manage(EngineState::default())
         .setup(|app| {
             build_tray(app)?;
+            position_panel(app);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
