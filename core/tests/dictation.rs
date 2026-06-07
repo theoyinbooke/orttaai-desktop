@@ -109,3 +109,28 @@ fn store_round_trips_records() {
     assert_eq!(recent[0].text, "second one"); // newest first
     assert_eq!(recent[1].word_count, 2);
 }
+
+#[test]
+fn memory_persistence_and_stats() {
+    let store = Store::open_in_memory().unwrap();
+
+    store.add_memory("dictionary", "npm", "NPM").unwrap();
+    store.add_memory("snippet", "addr", "123 Main St").unwrap();
+    assert_eq!(store.list_memory().unwrap().len(), 2);
+
+    let service = store.load_memory_service().unwrap();
+    assert_eq!(service.apply("i use npm daily"), "i use NPM daily");
+
+    store
+        .insert_transcription(&TranscriptionRecord::new(
+            "hello there world",
+            Some("Firefox".into()),
+            1000,
+            1_700_000_000,
+        ))
+        .unwrap();
+    let stats = store.stats().unwrap();
+    assert_eq!(stats.total, 1);
+    assert_eq!(stats.total_words, 3);
+    assert_eq!(stats.top_apps[0].app, "Firefox");
+}

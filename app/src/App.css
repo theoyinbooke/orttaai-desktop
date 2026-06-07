@@ -512,3 +512,139 @@ kbd {
   color: var(--text);
   font-size: 13px;
 }
+
+/* home / analytics */
+.stat-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.stat {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.stat-value {
+  font-size: 24px;
+  font-weight: 600;
+}
+.stat-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+.section-title {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 600;
+  margin: 22px 0 10px;
+}
+.spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 90px;
+}
+.spark-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  height: 100%;
+  gap: 6px;
+}
+.spark-bar {
+  width: 70%;
+  min-height: 3px;
+  background: var(--accent-dim);
+  border-radius: 4px 4px 0 0;
+}
+.spark-label {
+  color: var(--muted);
+  font-size: 10px;
+}
+.top-apps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.top-apps li {
+  display: flex;
+  justify-content: space-between;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+}
+
+/* memory */
+.mem-add {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.mem-add select,
+.mem-add input {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 13px;
+}
+.mem-add input {
+  flex: 1;
+}
+.mem-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mem-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+}
+.mem-kind {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  min-width: 72px;
+}
+.mem-trigger {
+  font-weight: 500;
+}
+.mem-arrow {
+  color: var(--muted);
+}
+.mem-rep {
+  flex: 1;
+  color: var(--text);
+}
+.mem-del {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+.mem-del:hover {
+  color: #ff9b9b;
+}

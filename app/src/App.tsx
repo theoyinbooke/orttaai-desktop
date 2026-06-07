@@ -27,8 +27,28 @@ type ModelInfo = {
   downloaded: boolean;
   path: string;
 };
+type DashboardStats = {
+  total: number;
+  total_words: number;
+  avg_words: number;
+  last7_days: { day: string; count: number }[];
+  top_apps: { app: string; count: number }[];
+};
+type MemoryEntry = {
+  id: number | null;
+  kind: string;
+  trigger: string;
+  replacement: string;
+};
 
-type Tab = "status" | "models" | "history" | "chat" | "settings";
+type Tab =
+  | "home"
+  | "status"
+  | "models"
+  | "memory"
+  | "history"
+  | "chat"
+  | "settings";
 type EngineState = "off" | "idle" | "recording" | "processing";
 
 const STATE_LABEL: Record<EngineState, string> = {
@@ -39,7 +59,7 @@ const STATE_LABEL: Record<EngineState, string> = {
 };
 
 function App() {
-  const [tab, setTab] = useState<Tab>("status");
+  const [tab, setTab] = useState<Tab>("home");
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -122,7 +142,9 @@ function App() {
       </header>
 
       <nav className="tabs">
-        {(["status", "models", "history", "chat", "settings"] as Tab[]).map((t) => (
+        {(
+          ["home", "status", "models", "memory", "history", "chat", "settings"] as Tab[]
+        ).map((t) => (
           <button
             key={t}
             className={t === tab ? "tab active" : "tab"}
@@ -140,6 +162,7 @@ function App() {
       )}
 
       <main className="content">
+        {tab === "home" && <HomeView />}
         {tab === "status" && (
           <StatusView
             settings={settings}
@@ -167,6 +190,7 @@ function App() {
             }}
           />
         )}
+        {tab === "memory" && <MemoryView />}
         {tab === "history" && <HistoryView items={history} />}
         {tab === "chat" && <ChatView />}
         {tab === "settings" && (
@@ -305,6 +329,126 @@ function HistoryView({ items }: { items: HistoryItem[] }) {
               <span>{item.word_count} words</span>
               <span>{new Date(item.created_at * 1000).toLocaleString()}</span>
             </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function HomeView() {
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    invoke<DashboardStats>("dashboard_stats").then(setStats).catch((e) => setErr(String(e)));
+  }, []);
+  if (err)
+    return (
+      <section className="panel">
+        <p className="error inline">{err}</p>
+      </section>
+    );
+  if (!stats) return <section className="panel">Loading…</section>;
+  const maxDay = Math.max(1, ...stats.last7_days.map((d) => d.count));
+  return (
+    <section className="panel">
+      <div className="stat-cards">
+        <Stat label="Dictations" value={stats.total} />
+        <Stat label="Words" value={stats.total_words} />
+        <Stat label="Avg words" value={stats.avg_words.toFixed(1)} />
+      </div>
+      <h3 className="section-title">Last 7 days</h3>
+      <div className="spark">
+        {stats.last7_days.length === 0 && <p className="note">No activity yet.</p>}
+        {stats.last7_days.map((d) => (
+          <div key={d.day} className="spark-col" title={`${d.day}: ${d.count}`}>
+            <div className="spark-bar" style={{ height: `${(d.count / maxDay) * 100}%` }} />
+            <span className="spark-label">{d.day.slice(5)}</span>
+          </div>
+        ))}
+      </div>
+      <h3 className="section-title">Top apps</h3>
+      <ul className="top-apps">
+        {stats.top_apps.length === 0 && <li className="note">—</li>}
+        {stats.top_apps.map((a) => (
+          <li key={a.app}>
+            <span>{a.app}</span>
+            <span>{a.count}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="stat">
+      <span className="stat-value">{value}</span>
+      <span className="stat-label">{label}</span>
+    </div>
+  );
+}
+
+function MemoryView() {
+  const [entries, setEntries] = useState<MemoryEntry[]>([]);
+  const [kind, setKind] = useState("dictionary");
+  const [trigger, setTrigger] = useState("");
+  const [replacement, setReplacement] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+
+  const refresh = () =>
+    invoke<MemoryEntry[]>("list_memory").then(setEntries).catch((e) => setErr(String(e)));
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  async function add() {
+    if (!trigger.trim() || !replacement.trim()) return;
+    await invoke("add_memory", { kind, trigger, replacement }).catch((e) => setErr(String(e)));
+    setTrigger("");
+    setReplacement("");
+    refresh();
+  }
+  async function remove(id: number | null) {
+    if (id == null) return;
+    await invoke("delete_memory", { id }).catch((e) => setErr(String(e)));
+    refresh();
+  }
+
+  return (
+    <section className="panel">
+      <div className="mem-add">
+        <select value={kind} onChange={(e) => setKind(e.currentTarget.value)}>
+          <option value="dictionary">Dictionary</option>
+          <option value="snippet">Snippet</option>
+        </select>
+        <input
+          placeholder={kind === "snippet" ? "trigger" : "from"}
+          value={trigger}
+          onChange={(e) => setTrigger(e.currentTarget.value)}
+        />
+        <input
+          placeholder={kind === "snippet" ? "expansion" : "to"}
+          value={replacement}
+          onChange={(e) => setReplacement(e.currentTarget.value)}
+        />
+        <button className="btn small start" onClick={add}>
+          Add
+        </button>
+      </div>
+      {err && <div className="error inline">{err}</div>}
+      <ul className="mem-list">
+        {entries.length === 0 && <li className="note">No entries yet.</li>}
+        {entries.map((e) => (
+          <li key={e.id ?? e.trigger} className="mem-item">
+            <span className="mem-kind">{e.kind}</span>
+            <span className="mem-trigger">{e.trigger}</span>
+            <span className="mem-arrow">→</span>
+            <span className="mem-rep">{e.replacement}</span>
+            <button className="mem-del" onClick={() => remove(e.id)}>
+              ✕
+            </button>
           </li>
         ))}
       </ul>

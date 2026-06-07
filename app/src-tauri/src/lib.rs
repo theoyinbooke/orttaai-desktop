@@ -8,7 +8,6 @@ use orttaai_core::audio::CpalAudioCapture;
 use orttaai_core::coordinator::DictationCoordinator;
 use orttaai_core::hotkey::{HotkeyCallback, HotkeyManager, SystemHotkeyManager};
 use orttaai_core::injection::SystemTextInjector;
-use orttaai_core::memory::MemoryService;
 use orttaai_core::settings::Settings;
 use orttaai_core::store::Store;
 use orttaai_core::transcription::WhisperTranscriber;
@@ -71,11 +70,14 @@ fn start_dictation(
     };
 
     let transcriber = WhisperTranscriber::from_path(&resolved).map_err(|e| e.to_string())?;
+    let memory = Store::open_default()
+        .and_then(|s| s.load_memory_service())
+        .unwrap_or_default();
     let coordinator = DictationCoordinator::new(
         Box::new(transcriber),
         Box::new(CpalAudioCapture::new()),
         Box::new(SystemTextInjector::new()),
-        MemoryService::new(),
+        memory,
         DecodeOptions::default(),
     );
     let coordinator = Arc::new(Mutex::new(coordinator));
@@ -227,6 +229,38 @@ async fn ollama_chat(prompt: String, model: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+// ---- Analytics + Personal Memory --------------------------------------------
+
+#[tauri::command]
+fn dashboard_stats() -> Result<orttaai_core::store::DashboardStats, String> {
+    Store::open_default()
+        .and_then(|s| s.stats())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_memory() -> Result<Vec<orttaai_core::store::MemoryEntry>, String> {
+    Store::open_default()
+        .and_then(|s| s.list_memory())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn add_memory(kind: String, trigger: String, replacement: String) -> Result<(), String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    store
+        .add_memory(&kind, &trigger, &replacement)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_memory(id: i64) -> Result<(), String> {
+    Store::open_default()
+        .and_then(|s| s.delete_memory(id))
+        .map_err(|e| e.to_string())
+}
+
 // ---- Read-only commands -----------------------------------------------------
 
 #[derive(Serialize)]
@@ -358,7 +392,11 @@ pub fn run() {
             start_dictation,
             stop_dictation,
             ollama_models,
-            ollama_chat
+            ollama_chat,
+            dashboard_stats,
+            list_memory,
+            add_memory,
+            delete_memory
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
