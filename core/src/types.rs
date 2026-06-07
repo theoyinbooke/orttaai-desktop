@@ -96,6 +96,24 @@ impl Default for HotkeyCombo {
     }
 }
 
+impl HotkeyCombo {
+    /// Best-effort parse of a `"Ctrl+Shift+Space"`-style string.
+    pub fn parse(s: &str) -> Self {
+        let mut modifiers = Vec::new();
+        let mut key = "Space".to_string();
+        for part in s.split('+').map(str::trim).filter(|p| !p.is_empty()) {
+            match part.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => modifiers.push(Modifier::Ctrl),
+                "shift" => modifiers.push(Modifier::Shift),
+                "alt" | "option" => modifiers.push(Modifier::Alt),
+                "meta" | "cmd" | "command" | "super" | "win" => modifiers.push(Modifier::Meta),
+                _ => key = part.to_string(),
+            }
+        }
+        Self { key, modifiers }
+    }
+}
+
 /// Identifies an audio input device. Opaque string so each backend can use its
 /// own naming (PipeWire node, WASAPI endpoint, etc.).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

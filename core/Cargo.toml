@@ -23,6 +23,7 @@ cpal = { version = "0.17.3", optional = true }
 rubato = { version = "0.15", optional = true }
 enigo = { version = "0.3.0", optional = true }
 global-hotkey = { version = "0.8.0", optional = true }
+ureq = { version = "3.2.1", optional = true }
 
 [features]
 default = []
@@ -31,8 +32,10 @@ cpal-audio = ["dep:cpal", "dep:rubato"]
 injection = ["dep:enigo"]
 # windows-sys (target-gated) drives the win32 message pump the hotkey needs.
 hotkey = ["dep:global-hotkey", "dep:windows-sys"]
-# All real backends — what the desktop app and `dictate` need.
-full = ["whisper", "cpal-audio", "injection", "hotkey"]
+models = ["dep:ureq"]
+ollama = ["dep:ureq"]
+# Everything the desktop app needs.
+full = ["whisper", "cpal-audio", "injection", "hotkey", "models", "ollama"]
 
 [dev-dependencies]
 hound = "3.5"

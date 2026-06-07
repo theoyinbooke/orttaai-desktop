@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
@@ -18,31 +18,64 @@ type HistoryItem = {
   word_count: number;
   created_at: number;
 };
+type ModelInfo = {
+  id: string;
+  name: string;
+  approx_size_mb: number;
+  multilingual: boolean;
+  url: string;
+  downloaded: boolean;
+  path: string;
+};
 
-type Tab = "status" | "history" | "settings";
+type Tab = "status" | "models" | "history" | "settings";
 type EngineState = "off" | "idle" | "recording" | "processing";
+
+const STATE_LABEL: Record<EngineState, string> = {
+  off: "Off",
+  idle: "Listening",
+  recording: "Recording",
+  processing: "Transcribing",
+};
 
 function App() {
   const [tab, setTab] = useState<Tab>("status");
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [progress, setProgress] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
 
   const [engine, setEngine] = useState<EngineState>("off");
-  const [modelPath, setModelPath] = useState("");
   const [lastTranscript, setLastTranscript] = useState("");
+
+  const refreshSettings = () =>
+    invoke<Settings>("get_settings").then(setSettings).catch((e) => setError(String(e)));
+  const refreshModels = () =>
+    invoke<ModelInfo[]>("list_models").then(setModels).catch((e) => setError(String(e)));
 
   useEffect(() => {
     invoke<AppInfo>("app_info").then(setInfo).catch((e) => setError(String(e)));
-    invoke<Settings>("get_settings")
-      .then(setSettings)
-      .catch((e) => setError(String(e)));
+    refreshSettings();
+    refreshModels();
 
     const unlisten = [
       listen<string>("engine-state", (e) => setEngine(e.payload as EngineState)),
       listen<string>("transcript", (e) => setLastTranscript(e.payload)),
       listen<string>("engine-error", (e) => setError(e.payload)),
+      listen<{ id: string; fraction: number }>("model-progress", (e) =>
+        setProgress((p) => ({ ...p, [e.payload.id]: e.payload.fraction })),
+      ),
+      listen<{ id: string }>("model-done", (e) => {
+        setProgress((p) => {
+          const next = { ...p };
+          delete next[e.payload.id];
+          return next;
+        });
+        refreshModels();
+      }),
+      listen<{ error: string }>("model-error", (e) => setError(e.payload.error)),
     ];
     return () => {
       unlisten.forEach((p) => p.then((off) => off()));
@@ -50,16 +83,20 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (tab !== "history") return;
-    invoke<HistoryItem[]>("recent_history", { limit: 50 })
-      .then(setHistory)
-      .catch((e) => setError(String(e)));
+    if (tab === "history") {
+      invoke<HistoryItem[]>("recent_history", { limit: 50 })
+        .then(setHistory)
+        .catch((e) => setError(String(e)));
+    }
   }, [tab, engine]);
+
+  const activeModel = models.find((m) => m.id === settings?.model_id);
+  const canStart = !!activeModel?.downloaded;
 
   async function start() {
     setError(null);
     try {
-      await invoke("start_dictation", { modelPath });
+      await invoke("start_dictation", { modelPath: "" });
     } catch (e) {
       setError(String(e));
     }
@@ -85,7 +122,7 @@ function App() {
       </header>
 
       <nav className="tabs">
-        {(["status", "history", "settings"] as Tab[]).map((t) => (
+        {(["status", "models", "history", "settings"] as Tab[]).map((t) => (
           <button
             key={t}
             className={t === tab ? "tab active" : "tab"}
@@ -96,46 +133,61 @@ function App() {
         ))}
       </nav>
 
-      {error && <div className="error">{error}</div>}
+      {error && (
+        <div className="error" onClick={() => setError(null)}>
+          {error}
+        </div>
+      )}
 
       <main className="content">
         {tab === "status" && (
           <StatusView
             settings={settings}
             engine={engine}
-            modelPath={modelPath}
-            setModelPath={setModelPath}
+            activeModel={activeModel}
+            canStart={canStart}
             lastTranscript={lastTranscript}
             onStart={start}
             onStop={stop}
+            onPickModel={() => setTab("models")}
+          />
+        )}
+        {tab === "models" && (
+          <ModelsView
+            models={models}
+            progress={progress}
+            activeId={settings?.model_id}
+            onDownload={(id) => invoke("download_model", { id })}
+            onUse={async (id) => {
+              if (!settings) return;
+              await invoke("set_settings", {
+                input: { ...settings, model_id: id },
+              }).catch((e) => setError(String(e)));
+              refreshSettings();
+            }}
           />
         )}
         {tab === "history" && <HistoryView items={history} />}
-        {tab === "settings" && <SettingsView settings={settings} />}
+        {tab === "settings" && (
+          <SettingsView settings={settings} onSaved={refreshSettings} />
+        )}
       </main>
     </div>
   );
 }
 
-const STATE_LABEL: Record<EngineState, string> = {
-  off: "Off",
-  idle: "Listening",
-  recording: "Recording",
-  processing: "Transcribing",
-};
-
 function StatusView(props: {
   settings: Settings | null;
   engine: EngineState;
-  modelPath: string;
-  setModelPath: (v: string) => void;
+  activeModel: ModelInfo | undefined;
+  canStart: boolean;
   lastTranscript: string;
   onStart: () => void;
   onStop: () => void;
+  onPickModel: () => void;
 }) {
-  const { settings, engine, modelPath, setModelPath, lastTranscript } = props;
+  const { settings, engine, activeModel, canStart, lastTranscript } = props;
   const running = engine !== "off";
-  const fileRef = useRef<HTMLInputElement>(null);
 
   return (
     <section className="panel">
@@ -148,25 +200,24 @@ function StatusView(props: {
       </div>
 
       <div className="controls">
-        <input
-          ref={fileRef}
-          className="model-input"
-          placeholder="Path to a whisper .bin / .gguf model…"
-          value={modelPath}
-          disabled={running}
-          onChange={(e) => setModelPath(e.currentTarget.value)}
-        />
+        <div className="active-model">
+          <span className="label">Model</span>
+          <span>
+            {activeModel ? activeModel.name : settings?.model_id ?? "—"}
+            {activeModel && !activeModel.downloaded && " (not downloaded)"}
+          </span>
+        </div>
         {running ? (
           <button className="btn stop" onClick={props.onStop}>
             Stop
           </button>
-        ) : (
-          <button
-            className="btn start"
-            onClick={props.onStart}
-            disabled={!modelPath.trim()}
-          >
+        ) : canStart ? (
+          <button className="btn start" onClick={props.onStart}>
             Start
+          </button>
+        ) : (
+          <button className="btn" onClick={props.onPickModel}>
+            Get a model
           </button>
         )}
       </div>
@@ -182,6 +233,53 @@ function StatusView(props: {
         Linux/Windows only for live dictation (mic + global hotkey need OS
         permissions). The transcript is typed into whatever window is focused.
       </p>
+    </section>
+  );
+}
+
+function ModelsView(props: {
+  models: ModelInfo[];
+  progress: Record<string, number>;
+  activeId: string | undefined;
+  onDownload: (id: string) => void;
+  onUse: (id: string) => void;
+}) {
+  return (
+    <section className="panel">
+      <ul className="models">
+        {props.models.map((m) => {
+          const frac = props.progress[m.id];
+          const downloading = frac !== undefined;
+          return (
+            <li key={m.id} className="model-row">
+              <div className="model-info">
+                <span className="model-name">{m.name}</span>
+                <span className="model-sub">
+                  ~{m.approx_size_mb} MB · {m.multilingual ? "multilingual" : "English"}
+                </span>
+              </div>
+              {downloading ? (
+                <div className="progress">
+                  <div className="bar" style={{ width: `${Math.round(frac * 100)}%` }} />
+                  <span>{Math.round(frac * 100)}%</span>
+                </div>
+              ) : m.downloaded ? (
+                props.activeId === m.id ? (
+                  <span className="badge active-badge">Active</span>
+                ) : (
+                  <button className="btn small" onClick={() => props.onUse(m.id)}>
+                    Use
+                  </button>
+                )
+              ) : (
+                <button className="btn small ghost" onClick={() => props.onDownload(m.id)}>
+                  Download
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }
@@ -213,28 +311,66 @@ function HistoryView({ items }: { items: HistoryItem[] }) {
   );
 }
 
-function SettingsView({ settings }: { settings: Settings | null }) {
-  if (!settings) return <section className="panel">Loading…</section>;
-  const rows: [string, string][] = [
-    ["Model", settings.model_id],
-    ["Push-to-talk", settings.push_to_talk],
-    ["Preserve clipboard", settings.preserve_clipboard ? "On" : "Off"],
-    ["Low-latency mode", settings.low_latency ? "On" : "Off"],
-    ["Ollama endpoint", settings.ollama_endpoint],
-  ];
+function SettingsView(props: { settings: Settings | null; onSaved: () => void }) {
+  const [form, setForm] = useState<Settings | null>(props.settings);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => setForm(props.settings), [props.settings]);
+
+  if (!form) return <section className="panel">Loading…</section>;
+
+  const update = (patch: Partial<Settings>) => {
+    setForm({ ...form, ...patch });
+    setSaved(false);
+  };
+
+  async function save() {
+    await invoke("set_settings", { input: form });
+    setSaved(true);
+    props.onSaved();
+  }
+
   return (
     <section className="panel">
-      <dl className="kv wide">
-        {rows.map(([k, v]) => (
-          <div key={k}>
-            <dt>{k}</dt>
-            <dd>{v}</dd>
-          </div>
-        ))}
-      </dl>
-      <p className="note">
-        Editing settings from the UI lands in a later increment.
-      </p>
+      <div className="form">
+        <label>
+          <span>Push-to-talk</span>
+          <input
+            value={form.push_to_talk}
+            onChange={(e) => update({ push_to_talk: e.currentTarget.value })}
+          />
+        </label>
+        <label>
+          <span>Ollama endpoint</span>
+          <input
+            value={form.ollama_endpoint}
+            onChange={(e) => update({ ollama_endpoint: e.currentTarget.value })}
+          />
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={form.preserve_clipboard}
+            onChange={(e) => update({ preserve_clipboard: e.currentTarget.checked })}
+          />
+          <span>Preserve clipboard</span>
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={form.low_latency}
+            onChange={(e) => update({ low_latency: e.currentTarget.checked })}
+          />
+          <span>Low-latency mode</span>
+        </label>
+        <div className="form-actions">
+          <button className="btn start" onClick={save}>
+            Save
+          </button>
+          {saved && <span className="saved">Saved ✓</span>}
+        </div>
+      </div>
+      <p className="note">Model is chosen in the Models tab.</p>
     </section>
   );
 }

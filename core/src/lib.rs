@@ -14,6 +14,8 @@ pub mod error;
 pub mod hotkey;
 pub mod injection;
 pub mod memory;
+#[cfg(feature = "models")]
+pub mod models;
 pub mod settings;
 pub mod store;
 pub mod transcription;

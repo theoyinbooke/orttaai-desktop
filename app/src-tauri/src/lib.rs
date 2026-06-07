@@ -14,7 +14,6 @@ use orttaai_core::store::Store;
 use orttaai_core::transcription::WhisperTranscriber;
 use orttaai_core::types::{DecodeOptions, HotkeyCombo, Modifier};
 use serde::Serialize;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -56,8 +55,22 @@ fn start_dictation(
     }
     let settings = Settings::load_or_default();
 
-    let transcriber =
-        WhisperTranscriber::from_path(Path::new(&model_path)).map_err(|e| e.to_string())?;
+    // Empty path → use the active model from settings (must be downloaded).
+    let resolved = if model_path.trim().is_empty() {
+        let path =
+            orttaai_core::models::local_path(&settings.model_id).map_err(|e| e.to_string())?;
+        if !path.exists() {
+            return Err(format!(
+                "model '{}' is not downloaded — pick one in the Models tab",
+                settings.model_id
+            ));
+        }
+        path
+    } else {
+        std::path::PathBuf::from(&model_path)
+    };
+
+    let transcriber = WhisperTranscriber::from_path(&resolved).map_err(|e| e.to_string())?;
     let coordinator = DictationCoordinator::new(
         Box::new(transcriber),
         Box::new(CpalAudioCapture::new()),
@@ -127,6 +140,63 @@ fn emit_state(app: &AppHandle, state: &str) {
         };
         let _ = tray.set_tooltip(Some(tip));
     }
+}
+
+// ---- Settings + models ------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct SettingsInput {
+    model_id: String,
+    push_to_talk: String,
+    preserve_clipboard: bool,
+    low_latency: bool,
+    ollama_endpoint: String,
+}
+
+#[tauri::command]
+fn set_settings(input: SettingsInput) -> Result<(), String> {
+    let mut settings = Settings::load_or_default();
+    settings.model_id = input.model_id;
+    settings.push_to_talk = HotkeyCombo::parse(&input.push_to_talk);
+    settings.preserve_clipboard = input.preserve_clipboard;
+    settings.low_latency = input.low_latency;
+    settings.ollama_endpoint = input.ollama_endpoint;
+    settings.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_models() -> Result<Vec<orttaai_core::models::ModelInfo>, String> {
+    orttaai_core::models::list().map_err(|e| e.to_string())
+}
+
+/// Download a model in the background, emitting `model-progress`/`model-done`/
+/// `model-error` events so the UI can show a progress bar without blocking.
+#[tauri::command]
+fn download_model(app: AppHandle, id: String) {
+    std::thread::spawn(move || {
+        let progress_app = app.clone();
+        let progress_id = id.clone();
+        let result = orttaai_core::models::download(&id, move |fraction| {
+            let _ = progress_app.emit(
+                "model-progress",
+                serde_json::json!({ "id": progress_id, "fraction": fraction }),
+            );
+        });
+        match result {
+            Ok(path) => {
+                let _ = app.emit(
+                    "model-done",
+                    serde_json::json!({ "id": id, "path": path.to_string_lossy() }),
+                );
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "model-error",
+                    serde_json::json!({ "id": id, "error": e.to_string() }),
+                );
+            }
+        }
+    });
 }
 
 // ---- Read-only commands -----------------------------------------------------
@@ -252,6 +322,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             get_settings,
+            set_settings,
+            list_models,
+            download_model,
             recent_history,
             engine_status,
             start_dictation,
