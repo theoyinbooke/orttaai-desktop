@@ -1,0 +1,20 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Tauri / node (added in Phase 2)
+/app/node_modules
+/app/dist
+/app/src-tauri/target
+
+# Models & local data (never commit large GGUF weights)
+/models/*.gguf
+/models/*.bin
+*.wav.local
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

@@ -1,0 +1,26 @@
+[package]
+name = "orttaai-core"
+description = "The write-once cross-platform engine for Orttaai (Linux & Windows)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+directories.workspace = true
+rusqlite.workspace = true
+
+# Phase 1 adds the real platform backends behind features so the default build
+# stays fast and OS-agnostic:
+#   whisper    = ["dep:whisper-rs"]
+#   cpal-audio = ["dep:cpal", "dep:rubato"]
+#   injection  = ["dep:enigo", "dep:arboard"]
+#   hotkey     = ["dep:global-hotkey", "dep:ashpd"]
+[features]
+default = []

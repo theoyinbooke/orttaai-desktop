@@ -1,0 +1,18 @@
+[package]
+name = "orttaai-cli"
+description = "Headless Orttaai dictation tool (Phase 0/1 deliverable)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "orttaai"
+path = "src/main.rs"
+
+[dependencies]
+orttaai-core = { path = "../core" }
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
