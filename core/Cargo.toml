@@ -31,6 +31,8 @@ cpal-audio = ["dep:cpal", "dep:rubato"]
 injection = ["dep:enigo"]
 # windows-sys (target-gated) drives the win32 message pump the hotkey needs.
 hotkey = ["dep:global-hotkey", "dep:windows-sys"]
+# All real backends — what the desktop app and `dictate` need.
+full = ["whisper", "cpal-audio", "injection", "hotkey"]
 
 [dev-dependencies]
 hound = "3.5"

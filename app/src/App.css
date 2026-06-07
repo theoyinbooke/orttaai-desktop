@@ -218,3 +218,99 @@ kbd {
   color: var(--muted);
   font-size: 12px;
 }
+
+/* engine state colors */
+.dot.off {
+  background: #5b616e;
+  box-shadow: none;
+}
+.dot.idle {
+  background: var(--ok);
+  box-shadow: 0 0 0 4px rgba(63, 185, 141, 0.15);
+}
+.dot.recording {
+  background: #e0566a;
+  box-shadow: 0 0 0 4px rgba(224, 86, 106, 0.18);
+}
+.dot.processing {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(110, 168, 254, 0.18);
+}
+
+.status-badge.off {
+  background: #2a2f3a;
+  color: var(--muted);
+}
+.status-badge.recording {
+  background: rgba(224, 86, 106, 0.16);
+  color: #ff9bab;
+}
+.status-badge.processing {
+  background: rgba(110, 168, 254, 0.16);
+  color: var(--accent);
+}
+
+.controls {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.model-input {
+  flex: 1;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.model-input:disabled {
+  opacity: 0.6;
+}
+
+.btn {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 20px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  color: #0f1115;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn.start {
+  background: var(--ok);
+}
+
+.btn.stop {
+  background: #e0566a;
+  color: #fff;
+}
+
+.last-transcript {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 4px;
+}
+
+.last-transcript .label {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.last-transcript p {
+  margin: 0;
+}

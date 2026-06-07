@@ -26,7 +26,6 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# The write-once engine. Default features for now (data/settings/store); the
-# full dictation backends are wired into the UI in the next increment.
-orttaai-core = { path = "../../core" }
+# The write-once engine, with all real backends (whisper, cpal, injection, hotkey).
+orttaai-core = { path = "../../core", features = ["full"] }
 

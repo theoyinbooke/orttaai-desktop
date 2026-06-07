@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
 type AppInfo = { name: string; version: string; platform: string };
@@ -19,6 +20,7 @@ type HistoryItem = {
 };
 
 type Tab = "status" | "history" | "settings";
+type EngineState = "off" | "idle" | "recording" | "processing";
 
 function App() {
   const [tab, setTab] = useState<Tab>("status");
@@ -27,11 +29,24 @@ function App() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const [engine, setEngine] = useState<EngineState>("off");
+  const [modelPath, setModelPath] = useState("");
+  const [lastTranscript, setLastTranscript] = useState("");
+
   useEffect(() => {
     invoke<AppInfo>("app_info").then(setInfo).catch((e) => setError(String(e)));
     invoke<Settings>("get_settings")
       .then(setSettings)
       .catch((e) => setError(String(e)));
+
+    const unlisten = [
+      listen<string>("engine-state", (e) => setEngine(e.payload as EngineState)),
+      listen<string>("transcript", (e) => setLastTranscript(e.payload)),
+      listen<string>("engine-error", (e) => setError(e.payload)),
+    ];
+    return () => {
+      unlisten.forEach((p) => p.then((off) => off()));
+    };
   }, []);
 
   useEffect(() => {
@@ -39,13 +54,29 @@ function App() {
     invoke<HistoryItem[]>("recent_history", { limit: 50 })
       .then(setHistory)
       .catch((e) => setError(String(e)));
-  }, [tab]);
+  }, [tab, engine]);
+
+  async function start() {
+    setError(null);
+    try {
+      await invoke("start_dictation", { modelPath });
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  async function stop() {
+    try {
+      await invoke("stop_dictation");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
 
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="dot" />
+          <span className={`dot ${engine}`} />
           <span className="brand-name">{info?.name ?? "Orttaai"}</span>
         </div>
         <span className="meta">
@@ -68,7 +99,17 @@ function App() {
       {error && <div className="error">{error}</div>}
 
       <main className="content">
-        {tab === "status" && <StatusView settings={settings} />}
+        {tab === "status" && (
+          <StatusView
+            settings={settings}
+            engine={engine}
+            modelPath={modelPath}
+            setModelPath={setModelPath}
+            lastTranscript={lastTranscript}
+            onStart={start}
+            onStop={stop}
+          />
+        )}
         {tab === "history" && <HistoryView items={history} />}
         {tab === "settings" && <SettingsView settings={settings} />}
       </main>
@@ -76,29 +117,70 @@ function App() {
   );
 }
 
-function StatusView({ settings }: { settings: Settings | null }) {
+const STATE_LABEL: Record<EngineState, string> = {
+  off: "Off",
+  idle: "Listening",
+  recording: "Recording",
+  processing: "Transcribing",
+};
+
+function StatusView(props: {
+  settings: Settings | null;
+  engine: EngineState;
+  modelPath: string;
+  setModelPath: (v: string) => void;
+  lastTranscript: string;
+  onStart: () => void;
+  onStop: () => void;
+}) {
+  const { settings, engine, modelPath, setModelPath, lastTranscript } = props;
+  const running = engine !== "off";
+  const fileRef = useRef<HTMLInputElement>(null);
+
   return (
     <section className="panel">
       <div className="status-hero">
-        <div className="status-badge idle">Idle</div>
+        <div className={`status-badge ${engine}`}>{STATE_LABEL[engine]}</div>
         <p className="status-hint">
           Hold <kbd>{settings?.push_to_talk ?? "Ctrl+Shift+Space"}</kbd> and
           speak. Release to transcribe and inject.
         </p>
       </div>
-      <dl className="kv">
-        <div>
-          <dt>Model</dt>
-          <dd>{settings?.model_id ?? "—"}</dd>
+
+      <div className="controls">
+        <input
+          ref={fileRef}
+          className="model-input"
+          placeholder="Path to a whisper .bin / .gguf model…"
+          value={modelPath}
+          disabled={running}
+          onChange={(e) => setModelPath(e.currentTarget.value)}
+        />
+        {running ? (
+          <button className="btn stop" onClick={props.onStop}>
+            Stop
+          </button>
+        ) : (
+          <button
+            className="btn start"
+            onClick={props.onStart}
+            disabled={!modelPath.trim()}
+          >
+            Start
+          </button>
+        )}
+      </div>
+
+      {lastTranscript && (
+        <div className="last-transcript">
+          <span className="label">Last</span>
+          <p>{lastTranscript}</p>
         </div>
-        <div>
-          <dt>Push-to-talk</dt>
-          <dd>{settings?.push_to_talk ?? "—"}</dd>
-        </div>
-      </dl>
+      )}
+
       <p className="note">
-        The dictation engine runs from the core; wiring the live controls into
-        this window is the next step.
+        Linux/Windows only for live dictation (mic + global hotkey need OS
+        permissions). The transcript is typed into whatever window is focused.
       </p>
     </section>
   );
