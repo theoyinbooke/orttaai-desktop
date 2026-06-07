@@ -19,6 +19,7 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| "help".to_string());
     match cmd.as_str() {
         "demo" => demo(),
+        "transcribe" => transcribe_cmd(),
         "devices" => devices(),
         "info" => {
             info();
@@ -98,14 +99,89 @@ fn info() {
     println!("\n(real backends are stubbed until Phase 1 — see docs/architecture.md)");
 }
 
+/// Transcribe a WAV file with the real whisper.cpp backend.
+#[cfg(feature = "whisper")]
+fn transcribe_cmd() -> Result<()> {
+    use anyhow::Context;
+    use orttaai_core::transcription::{Transcriber, WhisperTranscriber};
+    use orttaai_core::types::DecodeOptions;
+    use std::path::Path;
+
+    const USAGE: &str = "usage: orttaai transcribe <model.bin> <audio.wav>";
+    let mut args = std::env::args().skip(2);
+    let model = args.next().context(USAGE)?;
+    let wav = args.next().context(USAGE)?;
+
+    let samples = read_wav_16k_mono(&wav)?;
+    eprintln!(
+        "loaded {} samples ({:.1}s) from {wav}; loading model {model}…",
+        samples.len(),
+        samples.len() as f32 / orttaai_core::types::TARGET_SAMPLE_RATE as f32
+    );
+
+    let transcriber = WhisperTranscriber::from_path(Path::new(&model))?;
+    let text = transcriber.transcribe(&samples, &DecodeOptions::default())?;
+    println!("{text}");
+    Ok(())
+}
+
+#[cfg(not(feature = "whisper"))]
+fn transcribe_cmd() -> Result<()> {
+    eprintln!(
+        "`transcribe` needs the whisper backend. Rebuild with:\n  \
+         cargo run -p orttaai-cli --features whisper -- transcribe <model.bin> <audio.wav>"
+    );
+    std::process::exit(2);
+}
+
+/// Read a WAV into 16 kHz mono `f32`. (Resampling for non-16 kHz inputs is the
+/// Phase 1 audio task; for now we warn.)
+#[cfg(feature = "whisper")]
+fn read_wav_16k_mono(path: &str) -> Result<Vec<f32>> {
+    let mut reader = hound::WavReader::open(path)?;
+    let spec = reader.spec();
+
+    let interleaved: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Int => {
+            let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .map(|s| s.map(|v| v as f32 / max))
+                .collect::<std::result::Result<_, _>>()?
+        }
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .collect::<std::result::Result<_, _>>()?,
+    };
+
+    let mono = if spec.channels > 1 {
+        interleaved
+            .chunks(spec.channels as usize)
+            .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
+            .collect()
+    } else {
+        interleaved
+    };
+
+    if spec.sample_rate != orttaai_core::types::TARGET_SAMPLE_RATE {
+        eprintln!(
+            "warning: WAV is {} Hz; the engine expects {} Hz — accuracy may suffer until resampling lands (Phase 1)",
+            spec.sample_rate,
+            orttaai_core::types::TARGET_SAMPLE_RATE
+        );
+    }
+    Ok(mono)
+}
+
 fn print_help() {
     println!(
         "orttaai — cross-platform voice keyboard (Linux & Windows)\n\n\
          USAGE:\n  orttaai <COMMAND>\n\n\
          COMMANDS:\n\
-         \x20 demo      Run the dictation loop with mock backends\n\
-         \x20 devices   List audio input devices\n\
-         \x20 info      Show config + selected platform backends\n\
-         \x20 help      Show this help"
+         \x20 demo                       Run the dictation loop with mock backends\n\
+         \x20 transcribe <model> <wav>   Transcribe a WAV (needs --features whisper)\n\
+         \x20 devices                    List audio input devices\n\
+         \x20 info                       Show config + selected platform backends\n\
+         \x20 help                       Show this help"
     );
 }

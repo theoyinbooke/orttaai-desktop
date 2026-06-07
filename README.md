@@ -18,7 +18,7 @@ See [`docs/architecture.md`](docs/architecture.md) and the full build plan for d
 
 ## Status
 
-**Phase 0 — foundation scaffold.** The core engine, traits, coordinator, memory, settings, and store compile and test green; real platform backends (whisper.cpp, cpal audio, wtype/SendInput injection, global hotkeys) are wired behind cargo features and `#[cfg(target_os)]` and are filled in per the roadmap.
+**Phase 1 — backends landing.** The OS-agnostic core (traits, coordinator, memory, settings, store) is green, and the **real whisper.cpp transcription backend works** (verified on macOS). Remaining backends — `cpal` audio, `wtype`/`SendInput` injection, global hotkeys — are wired behind cargo features and `#[cfg(target_os)]` and are being filled in per the roadmap.
 
 ## Build
 
@@ -28,7 +28,25 @@ cargo test            # unit tests
 cargo run -p orttaai-cli -- demo   # run the dictation loop with mock backends
 ```
 
-Real backends (Linux/Windows) are enabled with cargo features, e.g. `--features whisper,cpal-audio`.
+### Real transcription (whisper.cpp)
+
+```bash
+# tiny English model (~75 MB); models/ is git-ignored
+mkdir -p models
+curl -L -o models/ggml-tiny.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
+
+# transcribe a 16 kHz mono WAV
+cargo run -p orttaai-cli --features whisper -- \
+  transcribe models/ggml-tiny.en.bin path/to/audio.wav
+```
+
+> Building `--features whisper` compiles whisper.cpp via cmake (needs a C/C++ toolchain).
+> GPU acceleration is a build flag, not a code change: enable whisper-rs's `cuda` /
+> `vulkan` / `metal` / `hipblas` features per target.
+>
+> Known cosmetic follow-up: whisper.cpp logs to stderr; the transcript itself prints
+> cleanly to stdout. We'll route those logs through `tracing` when the app shell lands.
 
 ## Platform support targets
 

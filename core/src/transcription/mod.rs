@@ -45,6 +45,7 @@ impl Transcriber for MockTranscriber {
     }
 }
 
-// Phase 1:
-// #[cfg(feature = "whisper")]
-// pub mod whisper; // WhisperBackend wrapping whisper-rs + GGUF models.
+#[cfg(feature = "whisper")]
+mod whisper;
+#[cfg(feature = "whisper")]
+pub use whisper::WhisperTranscriber;

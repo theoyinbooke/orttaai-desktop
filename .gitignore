@@ -8,9 +8,8 @@ Cargo.lock.bak
 /app/dist
 /app/src-tauri/target
 
-# Models & local data (never commit large GGUF weights)
-/models/*.gguf
-/models/*.bin
+# Models & local fixtures (downloaded at runtime; never committed)
+/models/
 *.wav.local
 
 # OS / editor

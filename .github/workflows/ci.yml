@@ -29,5 +29,20 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-  # NOTE: a `build-linux-backends` job (libasound2-dev, libxdo-dev, whisper.cpp)
-  # is added in Phase 1 once the real cpal/whisper/injection backends land.
+  # Build the real whisper.cpp backend on every target to catch API/build breaks.
+  # (whisper.cpp is compiled via cmake; GitHub runners ship cmake + a C/C++ toolchain.)
+  build-whisper:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build CLI with whisper backend
+        run: cargo build -p orttaai-cli --features whisper
+
+  # NOTE: cpal/injection/hotkey backends add their own jobs (with libasound2-dev,
+  # libxdo-dev, etc.) as they land later in Phase 1.

@@ -16,3 +16,9 @@ orttaai-core = { path = "../core" }
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+hound = { version = "3.5", optional = true }
+
+[features]
+default = []
+# Enables the real whisper.cpp backend and the `transcribe` command.
+whisper = ["orttaai-core/whisper", "dep:hound"]
