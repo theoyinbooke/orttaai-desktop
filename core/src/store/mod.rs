@@ -53,6 +53,15 @@ impl Store {
         Ok(store)
     }
 
+    /// Open (or create) the history database at the platform data directory
+    /// (`~/.local/share/orttaai` on Linux, `%APPDATA%\orttaai` on Windows).
+    pub fn open_default() -> Result<Self> {
+        let dir = directories::ProjectDirs::from("org", "orttaai", "Orttaai")
+            .map(|dirs| dirs.data_dir().to_path_buf())
+            .ok_or_else(|| std::io::Error::other("no data directory available"))?;
+        Self::open(&dir.join("history.db"))
+    }
+
     /// Open (or create) a database file, creating parent directories as needed.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {

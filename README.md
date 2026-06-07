@@ -20,6 +20,8 @@ See [`docs/architecture.md`](docs/architecture.md) and the full build plan for d
 
 **Phase 1 — all real backends landed.** The OS-agnostic core (traits, coordinator, memory, settings, store) is green, and **all four platform backends are implemented**: whisper.cpp transcription, cpal microphone capture (rubato resampling to 16 kHz), text injection (`enigo` + `wtype`), and the global push-to-talk hotkey (`global-hotkey`, with a win32 message pump on Windows). The **full `dictate` loop is wired end-to-end** — hold hotkey → speak → release → transcribe → inject. Everything compiles and lints clean across every target; live capture/injection/hotkey are verified on the target machine (they need OS permissions a CI/sandbox can't grant — see the platform notes).
 
+**Phase 2 — the Tauri desktop shell has started.** `app/` is a Tauri 2 + React app: a **system tray** plus **Status / History / Settings** screens that consume the core over Tauri IPC (commands `app_info`, `get_settings`, `recent_history`). Frontend and Rust shell build clean; the data screens are live and the engine controls (start/stop, live status) are the next increment.
+
 ## Build
 
 ```bash
@@ -27,6 +29,18 @@ cargo build           # OS-agnostic core + CLI (mock backends)
 cargo test            # unit tests
 cargo run -p orttaai-cli -- demo   # run the dictation loop with mock backends
 ```
+
+### Desktop app (Tauri)
+
+```bash
+cd app
+npm install
+npm run tauri dev     # launch the desktop window (tray + Status/History/Settings)
+```
+
+> Linux build deps for Tauri: `libwebkit2gtk-4.1-dev libgtk-3-dev
+> libayatana-appindicator3-dev librsvg2-dev libxdo-dev`. `app/src-tauri` is its own
+> Cargo workspace, so the heavy webview build stays out of the core/cli checks.
 
 ### Real transcription (whisper.cpp)
 
