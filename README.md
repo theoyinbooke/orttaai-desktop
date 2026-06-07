@@ -18,7 +18,7 @@ See [`docs/architecture.md`](docs/architecture.md) and the full build plan for d
 
 ## Status
 
-**Phase 1 — backends landing.** The OS-agnostic core (traits, coordinator, memory, settings, store) is green, and the **real whisper.cpp transcription backend works** (verified on macOS). Remaining backends — `cpal` audio, `wtype`/`SendInput` injection, global hotkeys — are wired behind cargo features and `#[cfg(target_os)]` and are being filled in per the roadmap.
+**Phase 1 — backends landing.** The OS-agnostic core (traits, coordinator, memory, settings, store) is green. **Real backends working: whisper.cpp transcription** (verified on a WAV) and **cpal microphone capture** with rubato resampling to 16 kHz (resampling unit-tested; live capture verified on the target machine — see the note below). Remaining backends — `wtype`/`SendInput` injection and global hotkeys — are wired behind cargo features and `#[cfg(target_os)]` and are being filled in per the roadmap.
 
 ## Build
 
@@ -47,6 +47,25 @@ cargo run -p orttaai-cli --features whisper -- \
 >
 > Known cosmetic follow-up: whisper.cpp logs to stderr; the transcript itself prints
 > cleanly to stdout. We'll route those logs through `tracing` when the app shell lands.
+
+### Microphone capture (cpal)
+
+```bash
+# list input devices
+cargo run -p orttaai-cli --features audio -- devices
+
+# record 5s from the mic and transcribe it (full mic → whisper pipeline)
+cargo run -p orttaai-cli --features "audio whisper" -- \
+  record 5 models/ggml-tiny.en.bin
+```
+
+> Building `--features audio` needs ALSA headers on Linux (`libasound2-dev`); macOS
+> and Windows need nothing extra.
+>
+> **macOS note:** capturing (and even *enumerating*) the microphone is gated behind
+> the system privacy prompt. Grant your terminal microphone access in
+> *System Settings → Privacy & Security → Microphone* before running `record`/`devices`,
+> or the call will block waiting for permission.
 
 ## Platform support targets
 

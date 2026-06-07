@@ -19,11 +19,14 @@ rusqlite.workspace = true
 # Real platform backends are optional so the default build stays fast and
 # OS-agnostic. whisper.cpp (via whisper-rs) is the first wired, in Phase 1.
 whisper-rs = { version = "0.16", optional = true }
+cpal = { version = "0.17.3", optional = true }
+rubato = { version = "0.15", optional = true }
 
 [features]
 default = []
 whisper = ["dep:whisper-rs"]
-# Coming next behind their own features: cpal-audio, injection, hotkey.
+cpal-audio = ["dep:cpal", "dep:rubato"]
+# Coming next behind their own features: injection, hotkey.
 
 [dev-dependencies]
 hound = "3.5"

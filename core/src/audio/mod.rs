@@ -79,6 +79,7 @@ impl AudioCapture for MockAudioCapture {
     }
 }
 
-// Phase 1:
-// #[cfg(feature = "cpal-audio")]
-// pub mod cpal_backend; // CpalAudioCapture: WASAPI/ALSA-PipeWire + rubato resample.
+#[cfg(feature = "cpal-audio")]
+mod cpal_backend;
+#[cfg(feature = "cpal-audio")]
+pub use cpal_backend::CpalAudioCapture;
