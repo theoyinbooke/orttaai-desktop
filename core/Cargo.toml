@@ -21,12 +21,14 @@ rusqlite.workspace = true
 whisper-rs = { version = "0.16", optional = true }
 cpal = { version = "0.17.3", optional = true }
 rubato = { version = "0.15", optional = true }
+enigo = { version = "0.3.0", optional = true }
 
 [features]
 default = []
 whisper = ["dep:whisper-rs"]
 cpal-audio = ["dep:cpal", "dep:rubato"]
-# Coming next behind their own features: injection, hotkey.
+injection = ["dep:enigo"]
+# Coming next behind its own feature: hotkey.
 
 [dev-dependencies]
 hound = "3.5"

@@ -18,7 +18,7 @@ See [`docs/architecture.md`](docs/architecture.md) and the full build plan for d
 
 ## Status
 
-**Phase 1 — backends landing.** The OS-agnostic core (traits, coordinator, memory, settings, store) is green. **Real backends working: whisper.cpp transcription** (verified on a WAV) and **cpal microphone capture** with rubato resampling to 16 kHz (resampling unit-tested; live capture verified on the target machine — see the note below). Remaining backends — `wtype`/`SendInput` injection and global hotkeys — are wired behind cargo features and `#[cfg(target_os)]` and are being filled in per the roadmap.
+**Phase 1 — backends landing.** The OS-agnostic core (traits, coordinator, memory, settings, store) is green. **Real backends working: whisper.cpp transcription** (verified on a WAV), **cpal microphone capture** with rubato resampling to 16 kHz (resampling unit-tested), and **text injection** (`enigo` for Windows/macOS/X11, `wtype` for Wayland). The only remaining backend is the **global hotkey**; once it lands the full `DictationCoordinator` loop runs on real hardware. Live capture/injection are verified on the target machine — see the platform notes below.
 
 ## Build
 
@@ -66,6 +66,21 @@ cargo run -p orttaai-cli --features "audio whisper" -- \
 > the system privacy prompt. Grant your terminal microphone access in
 > *System Settings → Privacy & Security → Microphone* before running `record`/`devices`,
 > or the call will block waiting for permission.
+
+### Text injection (enigo / wtype)
+
+```bash
+# Linux build dep: libxdo-dev (enigo's X11 backend); Wayland uses `wtype` at runtime.
+cargo run -p orttaai-cli --features injection -- inject "hello from orttaai"
+```
+
+> `inject` waits 2 s so you can focus a target window, then types the text.
+> Backends: Windows `SendInput`, macOS `CGEvent`, Linux X11 via `enigo`, Linux
+> Wayland via `wtype` (install it). On macOS, grant **Accessibility** permission to
+> your terminal (*System Settings → Privacy & Security → Accessibility*).
+>
+> Secure/password-field detection is not reliable on Linux, so it is reported as
+> `Unknown` and injection is **not** blocked there — see [`docs/gaps.md`](docs/gaps.md).
 
 ## Platform support targets
 

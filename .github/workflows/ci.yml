@@ -41,13 +41,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install Linux audio deps
+      - name: Install Linux backend deps
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxdo-dev
       - name: Build + test backends
         run: |
-          cargo build -p orttaai-cli --features "audio whisper"
+          cargo build -p orttaai-cli --features "audio whisper injection"
           cargo test -p orttaai-core --features cpal-audio
 
-  # NOTE: injection/hotkey backends add their own jobs (libxdo-dev, etc.) as they
-  # land later in Phase 1.
+  # NOTE: the hotkey backend adds its own coverage as it lands later in Phase 1.

@@ -21,6 +21,7 @@ fn main() -> Result<()> {
         "demo" => demo(),
         "transcribe" => transcribe_cmd(),
         "record" => record_cmd(),
+        "inject" => inject_cmd(),
         "devices" => devices(),
         "info" => {
             info();
@@ -104,13 +105,13 @@ fn info() {
     let injector = SystemTextInjector::new();
     let hotkey = SystemHotkeyManager::new();
 
-    println!("Orttaai for Linux & Windows — Phase 0 scaffold\n");
+    println!("Orttaai for Linux & Windows\n");
     println!("  config path:  {:?}", Settings::config_path());
     println!("  model:        {}", settings.model_id);
     println!("  push-to-talk: {:?}", settings.push_to_talk);
     println!("  injector:     {}", injector.backend_name());
     println!("  hotkey:       {}", hotkey.backend_name());
-    println!("\n(real backends are stubbed until Phase 1 — see docs/architecture.md)");
+    println!("\n(backends not built into this binary show as stubs — see docs/architecture.md)");
 }
 
 /// Transcribe a WAV file with the real whisper.cpp backend.
@@ -259,6 +260,40 @@ fn transcribe_samples(_model: &str, _samples: &[f32]) -> Result<()> {
     Ok(())
 }
 
+/// Type a string into the focused window via the real injection backend.
+#[cfg(feature = "injection")]
+fn inject_cmd() -> Result<()> {
+    use anyhow::Context;
+    use orttaai_core::injection::{SystemTextInjector, TextInjector};
+    use orttaai_core::types::InjectionResult;
+
+    let text = std::env::args()
+        .nth(2)
+        .context("usage: orttaai inject <text>")?;
+    let injector = SystemTextInjector::new();
+
+    eprintln!(
+        "injecting via {} in 2s — click into your target window now…",
+        injector.backend_name()
+    );
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    match injector.inject(&text)? {
+        InjectionResult::Success => eprintln!("✓ injected"),
+        other => eprintln!("result: {other:?}"),
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "injection"))]
+fn inject_cmd() -> Result<()> {
+    eprintln!(
+        "`inject` needs the injection backend. Rebuild with:\n  \
+         cargo run -p orttaai-cli --features injection -- inject \"<text>\""
+    );
+    std::process::exit(2);
+}
+
 fn print_help() {
     println!(
         "orttaai — cross-platform voice keyboard (Linux & Windows)\n\n\
@@ -267,6 +302,7 @@ fn print_help() {
          \x20 demo                       Run the dictation loop with mock backends\n\
          \x20 record <secs> [model]      Capture from the mic, then transcribe (needs --features \"audio whisper\")\n\
          \x20 transcribe <model> <wav>   Transcribe a WAV (needs --features whisper)\n\
+         \x20 inject <text>              Type text into the focused window (needs --features injection)\n\
          \x20 devices                    List audio input devices\n\
          \x20 info                       Show config + selected platform backends\n\
          \x20 help                       Show this help"

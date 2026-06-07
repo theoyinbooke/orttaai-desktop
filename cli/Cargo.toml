@@ -24,3 +24,5 @@ default = []
 whisper = ["orttaai-core/whisper", "dep:hound"]
 # Enables the real cpal microphone backend and the `record` command.
 audio = ["orttaai-core/cpal-audio"]
+# Enables the real text-injection backend and the `inject` command.
+injection = ["orttaai-core/injection"]
