@@ -25,6 +25,9 @@ pub enum CoreError {
     #[error("hotkey registration failed: {0}")]
     Hotkey(String),
 
+    #[error("llm error: {0}")]
+    Llm(String),
+
     #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
 

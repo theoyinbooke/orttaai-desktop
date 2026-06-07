@@ -13,6 +13,8 @@ pub mod coordinator;
 pub mod error;
 pub mod hotkey;
 pub mod injection;
+#[cfg(feature = "ollama")]
+pub mod llm;
 pub mod memory;
 #[cfg(feature = "models")]
 pub mod models;

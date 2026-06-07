@@ -28,7 +28,7 @@ type ModelInfo = {
   path: string;
 };
 
-type Tab = "status" | "models" | "history" | "settings";
+type Tab = "status" | "models" | "history" | "chat" | "settings";
 type EngineState = "off" | "idle" | "recording" | "processing";
 
 const STATE_LABEL: Record<EngineState, string> = {
@@ -122,7 +122,7 @@ function App() {
       </header>
 
       <nav className="tabs">
-        {(["status", "models", "history", "settings"] as Tab[]).map((t) => (
+        {(["status", "models", "history", "chat", "settings"] as Tab[]).map((t) => (
           <button
             key={t}
             className={t === tab ? "tab active" : "tab"}
@@ -168,6 +168,7 @@ function App() {
           />
         )}
         {tab === "history" && <HistoryView items={history} />}
+        {tab === "chat" && <ChatView />}
         {tab === "settings" && (
           <SettingsView settings={settings} onSaved={refreshSettings} />
         )}
@@ -307,6 +308,82 @@ function HistoryView({ items }: { items: HistoryItem[] }) {
           </li>
         ))}
       </ul>
+    </section>
+  );
+}
+
+function ChatView() {
+  const [messages, setMessages] = useState<{ role: "user" | "ai"; text: string }[]>([]);
+  const [input, setInput] = useState("");
+  const [model, setModel] = useState("");
+  const [models, setModels] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<string[]>("ollama_models")
+      .then((m) => {
+        setModels(m);
+        if (m[0]) setModel(m[0]);
+      })
+      .catch((e) => setErr(String(e)));
+  }, []);
+
+  async function send() {
+    const prompt = input.trim();
+    if (!prompt || busy) return;
+    setInput("");
+    setMessages((m) => [...m, { role: "user", text: prompt }]);
+    setBusy(true);
+    setErr(null);
+    try {
+      const reply = await invoke<string>("ollama_chat", { prompt, model });
+      setMessages((m) => [...m, { role: "ai", text: reply }]);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="panel chat">
+      <div className="chat-head">
+        <select value={model} onChange={(e) => setModel(e.currentTarget.value)}>
+          {models.length === 0 && <option value="">no models</option>}
+          {models.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+        <span className="note inline">Local Ollama — start it and pull a model.</span>
+      </div>
+      <div className="chat-log">
+        {messages.length === 0 && !busy && (
+          <p className="note">Ask anything. Responses come from your local Ollama.</p>
+        )}
+        {messages.map((m, i) => (
+          <div key={i} className={`msg ${m.role}`}>
+            {m.text}
+          </div>
+        ))}
+        {busy && <div className="msg ai thinking">…</div>}
+      </div>
+      {err && <div className="error inline">{err}</div>}
+      <div className="chat-input">
+        <input
+          value={input}
+          placeholder="Message…"
+          onChange={(e) => setInput(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") send();
+          }}
+        />
+        <button className="btn start" onClick={send} disabled={busy}>
+          Send
+        </button>
+      </div>
     </section>
   );
 }
