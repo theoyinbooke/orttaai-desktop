@@ -44,9 +44,8 @@ jobs:
       - name: Install Linux backend deps
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxdo-dev
-      - name: Build + test backends
+      - name: Build + test all backends
         run: |
-          cargo build -p orttaai-cli --features "audio whisper injection"
+          cargo build -p orttaai-cli --features full
           cargo test -p orttaai-core --features cpal-audio
-
-  # NOTE: the hotkey backend adds its own coverage as it lands later in Phase 1.
+          cargo test -p orttaai-core --features hotkey

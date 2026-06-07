@@ -18,7 +18,7 @@ See [`docs/architecture.md`](docs/architecture.md) and the full build plan for d
 
 ## Status
 
-**Phase 1 — backends landing.** The OS-agnostic core (traits, coordinator, memory, settings, store) is green. **Real backends working: whisper.cpp transcription** (verified on a WAV), **cpal microphone capture** with rubato resampling to 16 kHz (resampling unit-tested), and **text injection** (`enigo` for Windows/macOS/X11, `wtype` for Wayland). The only remaining backend is the **global hotkey**; once it lands the full `DictationCoordinator` loop runs on real hardware. Live capture/injection are verified on the target machine — see the platform notes below.
+**Phase 1 — all real backends landed.** The OS-agnostic core (traits, coordinator, memory, settings, store) is green, and **all four platform backends are implemented**: whisper.cpp transcription, cpal microphone capture (rubato resampling to 16 kHz), text injection (`enigo` + `wtype`), and the global push-to-talk hotkey (`global-hotkey`, with a win32 message pump on Windows). The **full `dictate` loop is wired end-to-end** — hold hotkey → speak → release → transcribe → inject. Everything compiles and lints clean across every target; live capture/injection/hotkey are verified on the target machine (they need OS permissions a CI/sandbox can't grant — see the platform notes).
 
 ## Build
 
@@ -81,6 +81,24 @@ cargo run -p orttaai-cli --features injection -- inject "hello from orttaai"
 >
 > Secure/password-field detection is not reliable on Linux, so it is reported as
 > `Unknown` and injection is **not** blocked there — see [`docs/gaps.md`](docs/gaps.md).
+
+### Full dictation loop (the Phase-0 spike)
+
+The real end-to-end loop, ready to run on Linux & Windows:
+
+```bash
+# needs ALSA + libxdo on Linux; a model on disk; mic + accessibility permissions
+cargo run -p orttaai-cli --features full -- dictate models/ggml-tiny.en.bin
+```
+
+Hold the push-to-talk chord (default **Ctrl+Shift+Space**), speak, and release — the
+transcript is typed into the focused window. This is the Phase-0 spike gate from the
+build plan: *hold hotkey → speak → text appears*.
+
+> **Wayland:** native global shortcuts go through the XDG portal and aren't wired yet;
+> the hotkey path uses X11 (works under XWayland). Injection still uses `wtype` on
+> Wayland. **macOS** (dev host only): the hotkey needs a main-thread run loop, so
+> `dictate` is intended for the Linux/Windows targets.
 
 ## Platform support targets
 

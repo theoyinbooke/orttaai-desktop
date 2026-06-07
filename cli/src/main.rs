@@ -22,6 +22,7 @@ fn main() -> Result<()> {
         "transcribe" => transcribe_cmd(),
         "record" => record_cmd(),
         "inject" => inject_cmd(),
+        "dictate" => dictate_cmd(),
         "devices" => devices(),
         "info" => {
             info();
@@ -294,11 +295,98 @@ fn inject_cmd() -> Result<()> {
     std::process::exit(2);
 }
 
+/// The real end-to-end loop: global hotkey → mic capture → whisper → inject.
+#[cfg(all(
+    feature = "hotkey",
+    feature = "audio",
+    feature = "whisper",
+    feature = "injection"
+))]
+fn dictate_cmd() -> Result<()> {
+    use anyhow::Context;
+    use orttaai_core::audio::CpalAudioCapture;
+    use orttaai_core::coordinator::DictationCoordinator;
+    use orttaai_core::hotkey::{HotkeyCallback, HotkeyManager, SystemHotkeyManager};
+    use orttaai_core::injection::SystemTextInjector;
+    use orttaai_core::memory::MemoryService;
+    use orttaai_core::settings::Settings;
+    use orttaai_core::transcription::WhisperTranscriber;
+    use orttaai_core::types::DecodeOptions;
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+
+    let model = std::env::args()
+        .nth(2)
+        .context("usage: orttaai dictate <model.bin>")?;
+    let settings = Settings::load_or_default();
+
+    // Build the coordinator with REAL backends.
+    let coordinator = DictationCoordinator::new(
+        Box::new(WhisperTranscriber::from_path(Path::new(&model))?),
+        Box::new(CpalAudioCapture::new()),
+        Box::new(SystemTextInjector::new()),
+        MemoryService::new(),
+        DecodeOptions::default(),
+    );
+    let coordinator = Arc::new(Mutex::new(coordinator));
+
+    // Hotkey down/up drive the coordinator. on_release transcribes + injects.
+    let on_down: HotkeyCallback = {
+        let coordinator = coordinator.clone();
+        Box::new(move || {
+            if let Err(e) = coordinator.lock().unwrap().on_press() {
+                eprintln!("  start error: {e}");
+            } else {
+                eprintln!("● recording…");
+            }
+        })
+    };
+    let on_up: HotkeyCallback = {
+        let coordinator = coordinator.clone();
+        Box::new(move || match coordinator.lock().unwrap().on_release() {
+            Ok(outcome) => {
+                if let Some(text) = outcome.transcript {
+                    println!("→ {text}");
+                }
+                eprintln!("  {:?}", outcome.result);
+            }
+            Err(e) => eprintln!("  error: {e}"),
+        })
+    };
+
+    let mut hotkey = SystemHotkeyManager::new();
+    hotkey.register(settings.push_to_talk.clone(), on_down, on_up)?;
+
+    eprintln!(
+        "Ready ({}). Hold {:?} and speak; release to transcribe + inject. Ctrl-C to quit.",
+        hotkey.backend_name(),
+        settings.push_to_talk
+    );
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
+}
+
+#[cfg(not(all(
+    feature = "hotkey",
+    feature = "audio",
+    feature = "whisper",
+    feature = "injection"
+)))]
+fn dictate_cmd() -> Result<()> {
+    eprintln!(
+        "`dictate` needs all real backends. Rebuild with:\n  \
+         cargo run -p orttaai-cli --features full -- dictate <model.bin>"
+    );
+    std::process::exit(2);
+}
+
 fn print_help() {
     println!(
         "orttaai — cross-platform voice keyboard (Linux & Windows)\n\n\
          USAGE:\n  orttaai <COMMAND>\n\n\
          COMMANDS:\n\
+         \x20 dictate <model>            Full loop: hotkey → mic → whisper → inject (needs --features full)\n\
          \x20 demo                       Run the dictation loop with mock backends\n\
          \x20 record <secs> [model]      Capture from the mic, then transcribe (needs --features \"audio whisper\")\n\
          \x20 transcribe <model> <wav>   Transcribe a WAV (needs --features whisper)\n\

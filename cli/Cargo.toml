@@ -26,3 +26,7 @@ whisper = ["orttaai-core/whisper", "dep:hound"]
 audio = ["orttaai-core/cpal-audio"]
 # Enables the real text-injection backend and the `inject` command.
 injection = ["orttaai-core/injection"]
+# Enables the real global-hotkey backend.
+hotkey = ["orttaai-core/hotkey"]
+# Everything needed for the full `dictate` loop (hotkey → mic → whisper → inject).
+full = ["hotkey", "audio", "whisper", "injection"]
