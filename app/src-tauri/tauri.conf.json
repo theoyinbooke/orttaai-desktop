@@ -38,12 +38,45 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
+    "category": "Productivity",
+    "shortDescription": "Cross-platform voice keyboard",
+    "longDescription": "Press a hotkey, speak, and your words appear at the cursor in any app. 100% on-device transcription via whisper.cpp.",
+    "homepage": "https://github.com/theoyinbooke/orttaai-desktop",
+    "publisher": "Orttaai",
+    "license": "MIT",
+    "licenseFile": "../../LICENSE",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libasound2",
+          "libxdo3",
+          "libssl3"
+        ]
+      },
+      "rpm": {
+        "depends": ["webkit2gtk4.1", "gtk3", "alsa-lib", "xdotool", "openssl"]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg4NDdBODEwQkQzNDI3RUQKUldUdEp6UzlFS2hIaUJGTU56Rit2K2gzbXVqVWZpMVlCZWNsZ0llZU52c3JPc21La29lT0JsYmMK",
+      "endpoints": [
+        "https://github.com/theoyinbooke/orttaai-desktop/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

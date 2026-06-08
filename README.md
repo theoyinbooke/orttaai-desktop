@@ -126,6 +126,39 @@ build plan: *hold hotkey → speak → text appears*.
 
 Secure/password-field detection is unreliable on Linux, Wayland global hotkeys are brittle, and there is no Apple-Neural-Engine-class acceleration. See [`docs/gaps.md`](docs/gaps.md).
 
+## Releases, installers & auto-updates
+
+`.github/workflows/release.yml` builds signed installers for every platform via
+[`tauri-action`](https://github.com/tauri-apps/tauri-action):
+
+- **Linux:** `.AppImage`, `.deb`, `.rpm`
+- **Windows:** `.exe` (NSIS) and `.msi`
+
+**Cut a release:**
+
+```bash
+# 1. bump "version" in app/src-tauri/tauri.conf.json
+# 2. tag and push
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+CI builds each platform, signs the updater artifacts, and opens a **draft** GitHub
+Release with the installers + a `latest.json` manifest. Publish it to go live.
+
+**One-time secret setup** (the updater signing key was generated with
+`tauri signer generate`; the public key is committed in `tauri.conf.json`):
+
+| Secret | Value |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | contents of the private key file (kept out of the repo) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the key password (empty if none) |
+
+**Auto-updates:** the app's *Settings → Check for updates* uses
+`@tauri-apps/plugin-updater`, fetching
+`releases/latest/download/latest.json` and installing the signed bundle for the
+current platform, then relaunching. The repository's Releases must be **public**
+for the default endpoint to be reachable.
+
 ## License
 
 [MIT](LICENSE)

@@ -445,6 +445,14 @@ kbd {
   color: var(--ok);
   font-size: 13px;
 }
+.updates {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
 
 .note.inline {
   margin: 0;

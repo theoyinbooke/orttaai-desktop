@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import "./App.css";
 
 type AppInfo = { name: string; version: string; platform: string };
@@ -535,8 +537,26 @@ function ChatView() {
 function SettingsView(props: { settings: Settings | null; onSaved: () => void }) {
   const [form, setForm] = useState<Settings | null>(props.settings);
   const [saved, setSaved] = useState(false);
+  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
 
   useEffect(() => setForm(props.settings), [props.settings]);
+
+  async function checkUpdates() {
+    setUpdateMsg("Checking…");
+    try {
+      const update = await check();
+      if (!update) {
+        setUpdateMsg("You're up to date.");
+        return;
+      }
+      setUpdateMsg(`Downloading ${update.version}…`);
+      await update.downloadAndInstall();
+      setUpdateMsg("Installed — restarting…");
+      await relaunch();
+    } catch (e) {
+      setUpdateMsg(`Update check failed: ${String(e)}`);
+    }
+  }
 
   if (!form) return <section className="panel">Loading…</section>;
 
@@ -590,6 +610,12 @@ function SettingsView(props: { settings: Settings | null; onSaved: () => void })
           </button>
           {saved && <span className="saved">Saved ✓</span>}
         </div>
+      </div>
+      <div className="updates">
+        <button className="btn small ghost" onClick={checkUpdates}>
+          Check for updates
+        </button>
+        {updateMsg && <span className="note inline">{updateMsg}</span>}
       </div>
       <p className="note">Model is chosen in the Models tab.</p>
     </section>
