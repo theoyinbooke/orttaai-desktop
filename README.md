@@ -22,6 +22,41 @@ See [`docs/architecture.md`](docs/architecture.md) and the full build plan for d
 
 **Phase 2 — the Tauri desktop app is feature-complete.** `app/` is a Tauri 2 + React app over the core: a **system tray**, a **floating recording panel** (separate borderless window), and tabs for **Home** (7-day activity, top apps), **Status** (live Start/Stop + state badge), **Models** (download GGUF models with a progress bar, pick the active one), **Memory** (dictionary/snippet CRUD, applied during dictation), **History**, **Chat AI** (local Ollama), and editable **Settings**. The engine runs the real dictation loop and emits live `engine-state`/`transcript` events. Everything builds + lints clean; live dictation runs on Linux/Windows.
 
+## Install
+
+Grab the latest installer from the
+[**Releases page**](https://github.com/theoyinbooke/orttaai-desktop/releases/latest),
+or download **v0.1.0** directly:
+
+| Platform | Download |
+|---|---|
+| **Linux** — AppImage (portable) | [`Orttaai_0.1.0_amd64.AppImage`](https://github.com/theoyinbooke/orttaai-desktop/releases/download/v0.1.0/Orttaai_0.1.0_amd64.AppImage) |
+| **Linux** — Debian / Ubuntu | [`Orttaai_0.1.0_amd64.deb`](https://github.com/theoyinbooke/orttaai-desktop/releases/download/v0.1.0/Orttaai_0.1.0_amd64.deb) |
+| **Linux** — Fedora / RHEL | [`Orttaai-0.1.0-1.x86_64.rpm`](https://github.com/theoyinbooke/orttaai-desktop/releases/download/v0.1.0/Orttaai-0.1.0-1.x86_64.rpm) |
+| **Windows** — installer (.exe) | [`Orttaai_0.1.0_x64-setup.exe`](https://github.com/theoyinbooke/orttaai-desktop/releases/download/v0.1.0/Orttaai_0.1.0_x64-setup.exe) |
+| **Windows** — MSI | [`Orttaai_0.1.0_x64_en-US.msi`](https://github.com/theoyinbooke/orttaai-desktop/releases/download/v0.1.0/Orttaai_0.1.0_x64_en-US.msi) |
+
+```bash
+# Linux — AppImage (no install needed)
+chmod +x Orttaai_0.1.0_amd64.AppImage && ./Orttaai_0.1.0_amd64.AppImage
+
+# Linux — Debian/Ubuntu
+sudo apt install ./Orttaai_0.1.0_amd64.deb
+
+# Linux — Fedora/RHEL
+sudo dnf install ./Orttaai-0.1.0-1.x86_64.rpm
+```
+
+On **Windows**, run the `.exe` (or `.msi`) and follow the installer.
+
+Then: open the **Models** tab → download a Whisper model → **Status → Start**, and
+hold the push-to-talk chord (default **Ctrl+Shift+Space**) to dictate into any app.
+The app self-updates via *Settings → Check for updates*.
+
+> **Linux runtime notes:** dictation captures the mic (PipeWire/ALSA) and types via
+> `wtype` (Wayland) or `xdotool` (X11) — install `wtype` on Wayland. Global hotkeys
+> use X11/XWayland. See [`docs/gaps.md`](docs/gaps.md).
+
 ## Build
 
 ```bash
