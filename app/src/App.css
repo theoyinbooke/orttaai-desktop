@@ -1613,20 +1613,14 @@ button {
   align-items: center;
   justify-content: space-between;
 }
-.recent-full .recent-list {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 32px;
+/* Recent spans the full width as a single column; the row's flex child
+   (.recent-text, min-width:0) truncates with an ellipsis so long transcripts
+   never overflow the card. */
+.recent-card {
+  overflow: hidden;
 }
-@media (min-width: 741px) {
-  .recent-full .recent-row:nth-last-child(-n + 2) {
-    border-bottom: none;
-  }
-}
-@media (max-width: 740px) {
-  .recent-full .recent-list {
-    grid-template-columns: 1fr;
-  }
+.recent-row {
+  min-width: 0;
 }
 .recent-list {
   list-style: none;
