@@ -46,7 +46,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: app
-        run: npm install
+        run: npm ci
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -59,6 +59,6 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'Orttaai ${{ github.ref_name }}'
           releaseBody: 'Download the installer for your platform below.'
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
