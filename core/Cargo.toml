@@ -46,6 +46,13 @@ hound = "3.5"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"], optional = true }
+# UI Automation (COM) for password/secure-field detection on Windows. Only
+# compiled on Windows; the Linux dev host never builds this.
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Accessibility",
+] }
 
 # The RemoteDesktop portal (input injection on Wayland) is Linux-only.
 [target."cfg(target_os = \"linux\")".dependencies]

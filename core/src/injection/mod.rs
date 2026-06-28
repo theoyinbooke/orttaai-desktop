@@ -38,6 +38,7 @@ impl InjectionLog {
 pub struct MockTextInjector {
     log: InjectionLog,
     secure: SecureFieldStatus,
+    fail: bool,
 }
 
 impl MockTextInjector {
@@ -45,14 +46,33 @@ impl MockTextInjector {
         Self {
             log: InjectionLog::default(),
             secure: SecureFieldStatus::NotSecure,
+            fail: false,
         }
     }
 
     /// Simulate a focused secure field (so the coordinator blocks injection).
     pub fn secure() -> Self {
         Self {
-            log: InjectionLog::default(),
             secure: SecureFieldStatus::Secure,
+            ..Self::new()
+        }
+    }
+
+    /// Simulate an unverifiable field (the honest Linux/Wayland answer) so the
+    /// `strict_secure` policy can be exercised.
+    pub fn unknown() -> Self {
+        Self {
+            secure: SecureFieldStatus::Unknown,
+            ..Self::new()
+        }
+    }
+
+    /// Simulate injection that fails (e.g. wtype/portal can't type into the
+    /// focused app) so the transcript-preserving fallback can be exercised.
+    pub fn failing() -> Self {
+        Self {
+            fail: true,
+            ..Self::new()
         }
     }
 
@@ -70,6 +90,9 @@ impl Default for MockTextInjector {
 
 impl TextInjector for MockTextInjector {
     fn inject(&self, text: &str) -> Result<InjectionResult> {
+        if self.fail {
+            return Err(CoreError::Injection("mock injection failure".to_string()));
+        }
         self.log.0.lock().unwrap().push(text.to_string());
         Ok(InjectionResult::Success)
     }
@@ -90,9 +113,11 @@ impl TextInjector for MockTextInjector {
 /// `enigo` is unreliable. Without the feature it returns
 /// [`CoreError::NotImplemented`] so behavior stays honest.
 ///
-/// Secure/password-field detection has no reliable Linux equivalent, so
+/// Secure/password-field detection uses UI Automation on Windows; Linux has no
+/// reliable per-field equivalent, so
 /// [`is_secure_field_focused`](TextInjector::is_secure_field_focused) returns
-/// [`SecureFieldStatus::Unknown`] (see `docs/gaps.md`).
+/// [`SecureFieldStatus::Unknown`] there (pair it with the `strict_secure`
+/// setting — see `docs/gaps.md`).
 pub struct SystemTextInjector {
     #[cfg(all(feature = "injection", target_os = "linux"))]
     wayland: bool,
@@ -150,8 +175,7 @@ impl TextInjector for SystemTextInjector {
     }
 
     fn is_secure_field_focused(&self) -> SecureFieldStatus {
-        // No reliable cross-platform detection — honest by default.
-        SecureFieldStatus::Unknown
+        detect_secure_field()
     }
 
     #[allow(clippy::needless_return)]
@@ -244,3 +268,57 @@ fn is_wayland_session() -> bool {
 
 #[cfg(all(feature = "portal", target_os = "linux"))]
 mod portal;
+
+// ---- Secure-field detection -------------------------------------------------
+
+/// Best-effort check of whether keyboard focus is in a password/secure field.
+///
+/// - **Windows**: UI Automation's `IsPassword` on the focused element — reliable.
+/// - **Linux/Wayland & others**: no reliable per-field API exists, so this is
+///   `Unknown` (honest). The coordinator's `strict_secure` policy decides whether
+///   `Unknown` should block injection.
+///
+/// Always fails toward `Unknown` (never panics) so a detection hiccup can't brick
+/// dictation.
+#[cfg(all(feature = "injection", target_os = "windows"))]
+fn detect_secure_field() -> SecureFieldStatus {
+    secure_windows::focused_field_status()
+}
+
+#[cfg(not(all(feature = "injection", target_os = "windows")))]
+fn detect_secure_field() -> SecureFieldStatus {
+    SecureFieldStatus::Unknown
+}
+
+/// Windows secure-field detection via UI Automation.
+///
+/// NOTE: this is `#[cfg(windows)]`-only and cannot be compiled on the Linux dev
+/// host — it is verified only by the Windows CI build. Every step fails safe to
+/// `Unknown`.
+#[cfg(all(feature = "injection", target_os = "windows"))]
+mod secure_windows {
+    use crate::types::SecureFieldStatus;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    };
+    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
+
+    pub fn focused_field_status() -> SecureFieldStatus {
+        match unsafe { query_focused_is_password() } {
+            Ok(true) => SecureFieldStatus::Secure,
+            Ok(false) => SecureFieldStatus::NotSecure,
+            Err(_) => SecureFieldStatus::Unknown,
+        }
+    }
+
+    unsafe fn query_focused_is_password() -> windows::core::Result<bool> {
+        // Idempotent on this (long-lived worker) thread; a repeat call returns
+        // S_FALSE and a different-apartment call returns RPC_E_CHANGED_MODE —
+        // both harmless, so the HRESULT is ignored.
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let automation: IUIAutomation =
+            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+        let focused = automation.GetFocusedElement()?;
+        Ok(focused.CurrentIsPassword()?.as_bool())
+    }
+}

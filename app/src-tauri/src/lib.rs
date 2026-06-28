@@ -25,12 +25,21 @@ const TRAY_ID: &str = "main";
 
 // ---- Engine state (Tauri-managed) ------------------------------------------
 
+/// A dictation action queued to the worker thread. Sent from the hotkey event
+/// loop and the tray/IPC toggle so the multi-second whisper decode never runs on
+/// (and blocks) those threads.
+enum DictationCmd {
+    Press,
+    Release,
+    Toggle,
+}
+
 #[derive(Default)]
 struct EngineState {
     hotkey: Mutex<Option<Box<dyn HotkeyManager>>>,
-    /// The live coordinator, shared with the hotkey thread and the manual
-    /// (Wayland/tray) record toggle. `None` when the engine is stopped.
-    coordinator: Mutex<Option<Arc<Mutex<DictationCoordinator>>>>,
+    /// Queue to the single dictation worker thread (which owns the coordinator
+    /// and runs the slow decode). `None` when the engine is stopped.
+    commands: Mutex<Option<std::sync::mpsc::Sender<DictationCmd>>>,
     running: AtomicBool,
 }
 
@@ -76,25 +85,63 @@ fn start_dictation(
     let memory = Store::open_default()
         .and_then(|s| s.load_memory_service())
         .unwrap_or_default();
-    let coordinator = DictationCoordinator::new(
+    let mut coordinator = DictationCoordinator::new(
         Box::new(transcriber),
         Box::new(CpalAudioCapture::new()),
         Box::new(SystemTextInjector::new()),
         memory,
         DecodeOptions::default(),
     );
+    // Refuse to type into fields we can't confirm are non-secure (password
+    // boxes) when the user opts in. On Linux/Wayland field status is always
+    // Unknown, so this is the only secure-field guard available there.
+    coordinator.set_strict_secure(settings.strict_secure);
     let coordinator = Arc::new(Mutex::new(coordinator));
-    *state.coordinator.lock().unwrap() = Some(coordinator.clone());
+
+    // One worker thread owns the decode so it never blocks the hotkey event loop
+    // (which must stay free to deliver the next press / handle stop) or an IPC
+    // handler. The hotkey and tray/IPC callbacks just enqueue commands, which the
+    // worker runs in order.
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<DictationCmd>();
+    {
+        let app = app.clone();
+        let coordinator = coordinator.clone();
+        std::thread::Builder::new()
+            .name("orttaai-dictation".into())
+            .spawn(move || {
+                while let Ok(cmd) = cmd_rx.recv() {
+                    match cmd {
+                        DictationCmd::Press => do_press(&app, &coordinator),
+                        DictationCmd::Release => do_release(&app, &coordinator),
+                        DictationCmd::Toggle => {
+                            let recording = matches!(
+                                coordinator.lock().unwrap().state(),
+                                RecordingState::Recording
+                            );
+                            if recording {
+                                do_release(&app, &coordinator);
+                            } else {
+                                do_press(&app, &coordinator);
+                            }
+                        }
+                    }
+                }
+            })
+            .map_err(|e| format!("spawn dictation worker: {e}"))?;
+    }
+    *state.commands.lock().unwrap() = Some(cmd_tx.clone());
 
     let on_down: HotkeyCallback = {
-        let app = app.clone();
-        let coordinator = coordinator.clone();
-        Box::new(move || do_press(&app, &coordinator))
+        let tx = cmd_tx.clone();
+        Box::new(move || {
+            let _ = tx.send(DictationCmd::Press);
+        })
     };
     let on_up: HotkeyCallback = {
-        let app = app.clone();
-        let coordinator = coordinator.clone();
-        Box::new(move || do_release(&app, &coordinator))
+        let tx = cmd_tx;
+        Box::new(move || {
+            let _ = tx.send(DictationCmd::Release);
+        })
     };
 
     // Try to grab the global hotkey. On Wayland (and some WMs) this can't
@@ -163,8 +210,9 @@ fn spawn_level_meter(app: AppHandle, coordinator: Arc<Mutex<DictationCoordinator
     });
 }
 
-/// Stop recording, transcribe, inject, and persist the transcript. This blocks
-/// for the duration of the decode, so IPC callers should run it off-thread.
+/// Stop recording, transcribe, inject, and persist the transcript. Blocks for
+/// the duration of the decode, so it always runs on the dictation worker thread
+/// (never the hotkey event loop or an IPC handler).
 fn do_release(app: &AppHandle, coordinator: &Arc<Mutex<DictationCoordinator>>) {
     emit_state(app, "processing");
     let outcome = coordinator.lock().unwrap().on_release();
@@ -268,30 +316,25 @@ fn stop_dictation(app: AppHandle, state: State<EngineState>) -> Result<(), Strin
     if let Some(mut hotkey) = state.hotkey.lock().unwrap().take() {
         hotkey.unregister().map_err(|e| e.to_string())?;
     }
-    *state.coordinator.lock().unwrap() = None;
+    // Dropping the sender closes the channel so the worker thread exits after it
+    // finishes any in-flight decode.
+    *state.commands.lock().unwrap() = None;
     state.running.store(false, Ordering::SeqCst);
     emit_state(&app, "off");
     Ok(())
 }
 
-/// Toggle recording on the shared coordinator. Shared by the IPC command and the
-/// tray menu so both work when the global hotkey doesn't (Wayland).
+/// Toggle recording via the dictation worker. Shared by the IPC command and the
+/// tray menu so both work when the global hotkey doesn't (Wayland). Enqueuing
+/// keeps the caller responsive — the worker runs the (blocking) decode.
 fn toggle_recording_impl(app: &AppHandle, state: &EngineState) {
-    let coordinator = state.coordinator.lock().unwrap().clone();
-    let Some(coordinator) = coordinator else {
-        let _ = app.emit("engine-error", "Engine is not running — press Start first.");
-        return;
-    };
-    let recording = matches!(
-        coordinator.lock().unwrap().state(),
-        RecordingState::Recording
-    );
-    if recording {
-        // Decode blocks; keep the IPC runtime responsive by going off-thread.
-        let app = app.clone();
-        std::thread::spawn(move || do_release(&app, &coordinator));
-    } else {
-        do_press(app, &coordinator);
+    match state.commands.lock().unwrap().as_ref() {
+        Some(tx) => {
+            let _ = tx.send(DictationCmd::Toggle);
+        }
+        None => {
+            let _ = app.emit("engine-error", "Engine is not running — press Start first.");
+        }
     }
 }
 
@@ -332,6 +375,7 @@ struct SettingsInput {
     preserve_clipboard: bool,
     low_latency: bool,
     ollama_endpoint: String,
+    strict_secure: bool,
 }
 
 #[tauri::command]
@@ -342,6 +386,7 @@ fn set_settings(input: SettingsInput) -> Result<(), String> {
     settings.preserve_clipboard = input.preserve_clipboard;
     settings.low_latency = input.low_latency;
     settings.ollama_endpoint = input.ollama_endpoint;
+    settings.strict_secure = input.strict_secure;
     settings.save().map_err(|e| e.to_string())
 }
 
@@ -465,6 +510,7 @@ struct SettingsDto {
     preserve_clipboard: bool,
     low_latency: bool,
     ollama_endpoint: String,
+    strict_secure: bool,
 }
 
 #[tauri::command]
@@ -476,6 +522,7 @@ fn get_settings() -> SettingsDto {
         preserve_clipboard: settings.preserve_clipboard,
         low_latency: settings.low_latency,
         ollama_endpoint: settings.ollama_endpoint,
+        strict_secure: settings.strict_secure,
     }
 }
 

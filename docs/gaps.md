@@ -2,9 +2,10 @@
 
 These are realities of the underlying operating systems, isolated behind the `TextInjector` / `HotkeyManager` traits. They are communicated in-product, not "fixed."
 
-## 1. Secure / password-field detection — unsolvable on Linux
-macOS detects secure fields via the Accessibility API (`kAXSecureTextFieldSubrole`). Linux has no reliable system-level equivalent (AT-SPI2 `ROLE_PASSWORD` is unreliable and unavailable to sandboxed apps). The `TextInjector::is_secure_field_focused()` trait returns `SecureFieldStatus::Unknown` on Wayland.
-**Product handling:** explicit warning + an opt-out ("don't inject into fields I can't verify").
+## 1. Secure / password-field detection — solved on Windows, not on Linux
+**Windows:** detected via UI Automation (`IUIAutomationElement::CurrentIsPassword` on the focused element), so `is_secure_field_focused()` returns `Secure`/`NotSecure` and the coordinator blocks password fields automatically.
+**Linux:** no reliable system-level equivalent (AT-SPI2 `ROLE_PASSWORD` is unreliable and unavailable to sandboxed apps; nothing at all on Wayland), so the trait returns `SecureFieldStatus::Unknown`.
+**Product handling:** the `strict_secure` setting ("Never type into password fields") makes the coordinator refuse to type whenever the field can't be confirmed safe. It's off by default (on Linux every field is `Unknown`, so enabling it blocks all typing until you paste manually); on Windows it only affects the rare `Unknown` case since detection normally returns a definite answer.
 
 ## 2. Wayland global hotkey — brittle
 The XDG GlobalShortcuts portal is patchy; some compositors (Sway, custom Hyprland) may not implement it. Windows (`RegisterHotKey`) and X11 (`XGrabKey`) are solid.

@@ -20,6 +20,13 @@ pub struct Settings {
     /// input-injection session on later launches without re-prompting.
     #[serde(default)]
     pub wayland_restore_token: Option<String>,
+    /// Refuse to type when the focused field can't be confirmed non-secure
+    /// (i.e. when [`SecureFieldStatus::Unknown`](crate::types::SecureFieldStatus)).
+    /// Off by default so dictation works everywhere; turning it on trades typing
+    /// into unverifiable fields for never leaking into a password box — most
+    /// useful on Linux/Wayland, where per-field detection isn't available.
+    #[serde(default)]
+    pub strict_secure: bool,
 }
 
 impl Default for Settings {
@@ -32,6 +39,7 @@ impl Default for Settings {
             low_latency: false,
             ollama_endpoint: "http://localhost:11434".to_string(),
             wayland_restore_token: None,
+            strict_secure: false,
         }
     }
 }

@@ -62,6 +62,52 @@ fn secure_field_blocks_injection() {
 }
 
 #[test]
+fn strict_secure_blocks_when_field_status_unknown() {
+    // On Linux/Wayland the field status is always Unknown; with strict_secure on,
+    // the coordinator must refuse to type rather than risk leaking into a password.
+    let injector = MockTextInjector::unknown();
+    let log = injector.log();
+
+    let mut coord = coordinator_with("my secret", injector, MemoryService::new());
+    coord.set_strict_secure(true);
+    coord.on_press().unwrap();
+    let outcome = coord.on_release().unwrap();
+
+    assert_eq!(outcome.result, InjectionResult::BlockedSecureField);
+    assert!(outcome.transcript.is_none());
+    assert!(log.all().is_empty(), "must not type when unsure and strict");
+}
+
+#[test]
+fn unknown_field_status_types_when_not_strict() {
+    // Default policy: Unknown is allowed, so the app still works where detection
+    // is impossible.
+    let injector = MockTextInjector::unknown();
+    let log = injector.log();
+
+    let mut coord = coordinator_with("hello there", injector, MemoryService::new());
+    coord.on_press().unwrap();
+    let outcome = coord.on_release().unwrap();
+
+    assert_eq!(outcome.result, InjectionResult::Success);
+    assert_eq!(log.last().as_deref(), Some("hello there"));
+}
+
+#[test]
+fn injection_failure_preserves_transcript() {
+    // When typing fails (e.g. wtype can't reach the focused app on Wayland), the
+    // transcript must survive so the caller can save it + offer the clipboard.
+    let mut coord = coordinator_with("keep me", MockTextInjector::failing(), MemoryService::new());
+    coord.on_press().unwrap();
+    let outcome = coord.on_release().unwrap();
+
+    assert_eq!(outcome.result, InjectionResult::Failed);
+    assert_eq!(outcome.transcript.as_deref(), Some("keep me"));
+    assert!(outcome.inject_error.is_some());
+    assert_eq!(coord.state(), RecordingState::Idle, "must recover, not brick");
+}
+
+#[test]
 fn release_without_press_is_a_noop() {
     let mut coord = coordinator_with("ignored", MockTextInjector::new(), MemoryService::new());
     let outcome = coord.on_release().unwrap();

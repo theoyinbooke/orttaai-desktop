@@ -12,6 +12,7 @@ type Settings = {
   preserve_clipboard: boolean;
   low_latency: boolean;
   ollama_endpoint: string;
+  strict_secure: boolean;
 };
 type HistoryItem = {
   id: number;
@@ -654,6 +655,22 @@ function SettingsView(props: { settings: Settings | null; onSaved: () => void })
             onChange={(e) => update({ low_latency: e.currentTarget.checked })}
           />
           <span>Low-latency mode</span>
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={form.strict_secure}
+            onChange={(e) => update({ strict_secure: e.currentTarget.checked })}
+          />
+          <span>
+            Never type into password fields
+            <small className="hint">
+              Refuses to insert text unless the focused field is confirmed safe.
+              On Linux the field type can’t be detected, so this blocks typing
+              until you paste manually — leave off unless you dictate near
+              password boxes.
+            </small>
+          </span>
         </label>
         <div className="form-actions">
           <button className="btn start" onClick={save}>
