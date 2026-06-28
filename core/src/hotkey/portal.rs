@@ -123,8 +123,8 @@ impl HotkeyManager for PortalHotkeyManager {
                             }
                         }
                         Err(e) => {
-                            let _ =
-                                ready_tx.send(Err(CoreError::Hotkey(format!("bind shortcut: {e}"))));
+                            let _ = ready_tx
+                                .send(Err(CoreError::Hotkey(format!("bind shortcut: {e}"))));
                             return;
                         }
                     }

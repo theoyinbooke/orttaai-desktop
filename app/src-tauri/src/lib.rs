@@ -232,7 +232,12 @@ fn do_release(app: &AppHandle, coordinator: &Arc<Mutex<DictationCoordinator>>) {
                 o.inject_error
             );
             if let Some(text) = o.transcript {
-                let source = app.state::<EngineState>().source_app.lock().unwrap().clone();
+                let source = app
+                    .state::<EngineState>()
+                    .source_app
+                    .lock()
+                    .unwrap()
+                    .clone();
                 persist_transcript(&text, o.duration_ms, source);
                 let _ = app.emit("transcript", text.clone());
                 let _ = app.emit("history-changed", ());

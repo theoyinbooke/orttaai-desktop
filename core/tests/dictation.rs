@@ -104,7 +104,11 @@ fn injection_failure_preserves_transcript() {
     assert_eq!(outcome.result, InjectionResult::Failed);
     assert_eq!(outcome.transcript.as_deref(), Some("keep me"));
     assert!(outcome.inject_error.is_some());
-    assert_eq!(coord.state(), RecordingState::Idle, "must recover, not brick");
+    assert_eq!(
+        coord.state(),
+        RecordingState::Idle,
+        "must recover, not brick"
+    );
 }
 
 #[test]

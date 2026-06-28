@@ -57,7 +57,11 @@ fn focused_app_x11() -> Option<String> {
         .ok()?
         .reply()
         .ok()?;
-    let parts: Vec<&[u8]> = class.value.split(|b| *b == 0).filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&[u8]> = class
+        .value
+        .split(|b| *b == 0)
+        .filter(|s| !s.is_empty())
+        .collect();
     let name = parts.get(1).or_else(|| parts.first())?;
     let s = String::from_utf8_lossy(name).trim().to_string();
     if s.is_empty() {

@@ -249,7 +249,10 @@ mod tests {
 
     #[test]
     fn keeps_genuine_parentheticals() {
-        assert_eq!(strip_nonspeech_markers("call me (maybe)"), "call me (maybe)");
+        assert_eq!(
+            strip_nonspeech_markers("call me (maybe)"),
+            "call me (maybe)"
+        );
         assert_eq!(
             strip_nonspeech_markers("the deadline (urgent) is today"),
             "the deadline (urgent) is today"

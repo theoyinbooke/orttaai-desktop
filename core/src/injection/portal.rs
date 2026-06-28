@@ -195,10 +195,10 @@ async fn type_keysyms<'a>(
 /// Map a character to an X11 keysym for the portal.
 fn char_to_keysym(ch: char) -> i32 {
     match ch {
-        '\n' | '\r' => 0xFF0D, // Return
-        '\t' => 0xFF09,        // Tab
+        '\n' | '\r' => 0xFF0D,                               // Return
+        '\t' => 0xFF09,                                      // Tab
         c if ('\u{20}'..='\u{7e}').contains(&c) => c as i32, // ASCII == Latin-1 keysym
-        c => 0x0100_0000 + c as i32, // Unicode keysym range
+        c => 0x0100_0000 + c as i32,                         // Unicode keysym range
     }
 }
 
