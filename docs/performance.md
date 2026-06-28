@@ -23,19 +23,24 @@ Tuned for push-to-talk dictation (short, independent utterances):
 whisper-rs statically links one backend per binary (no runtime backend switching),
 so GPU is a build choice:
 
-| Build | Command | Runtime |
+| Build | Command (in `app/`) | Runtime |
 |-------|---------|---------|
 | CPU (default) | `cargo build` | runs everywhere |
-| **Vulkan** (recommended) | `cargo build --features vulkan` | NVIDIA + Intel + AMD from one binary; falls back to CPU if no device |
-| CUDA (NVIDIA only) | `cargo build --features cuda` | needs the NVIDIA driver at runtime; peak throughput |
+| **CUDA** (NVIDIA) | `npx tauri build --features cuda` | needs the NVIDIA driver; peak throughput, ~5–15× on medium/large |
+| Vulkan (cross-vendor) | _blocked — see below_ | NVIDIA + Intel + AMD, one binary |
 
-Build prerequisites: all need CMake + a C/C++ toolchain + libclang. **Vulkan** needs
-`libvulkan-dev` + shader tools (`glslc`/`shaderc`) on Linux, and the LunarG Vulkan
-SDK (`VULKAN_SDK` set) on Windows. **CUDA** needs the CUDA Toolkit 12.x (`nvcc`).
+Build prerequisites: all need CMake + a C/C++ toolchain + libclang. **CUDA** needs the
+CUDA Toolkit 12.x (`nvcc`) at build and the NVIDIA driver at runtime.
 
-Recommended distribution: ship **Vulkan** as the default for Linux + Windows, and
-offer a separate **CUDA "NVIDIA"** download for users who want max throughput on
-medium/large/turbo models.
+> **Vulkan is currently blocked upstream.** whisper-rs 0.16.0 (the latest release) ships a
+> `src/vulkan.rs` that imports ggml device-enumeration symbols (`ggml_backend_vk_get_device_*`)
+> which the bundled whisper.cpp removed when ggml moved to the generic `ggml_backend_dev_*`
+> API — so `--features vulkan` fails to compile. Re-enable it once whisper-rs ships a fix (or
+> bumps its bundled whisper.cpp). Until then, **CUDA is the GPU path** (which fits the NVIDIA
+> target hardware). The `vulkan` cargo feature is left defined for when that lands.
 
-> Note: GPU builds can't be validated in a headless/virtualized environment without
-> a working GPU driver — verify on real hardware with `whisper-cli` / bench.
+Distribution: ship the **CPU** build as the cross-platform default (it's tuned + quantized and
+runs everywhere), and offer a separate **CUDA "NVIDIA"** download for max throughput.
+
+> Note: GPU builds can't be validated in a headless/virtualized environment without a working
+> GPU driver — verify on real hardware with `whisper-cli` / bench.

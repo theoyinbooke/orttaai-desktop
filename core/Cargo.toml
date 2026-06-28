@@ -39,12 +39,13 @@ ollama = ["dep:ureq"]
 # adds it via a linux-only target dependency.
 portal = ["dep:ashpd", "dep:tokio", "dep:futures-util", "injection"]
 # GPU acceleration for whisper.cpp. Opt-in build flags (NOT in `full`) because
-# each backend is statically linked — one binary, one backend. `vulkan` is the
-# cross-platform default (NVIDIA + Intel + AMD from one build, CPU fallback if no
-# device); `cuda` is a separate NVIDIA-only variant (needs the NVIDIA driver at
-# runtime) for peak throughput. See docs/performance.md.
-vulkan = ["whisper", "whisper-rs/vulkan"]
+# each backend is statically linked — one binary, one backend.
+# `cuda` = NVIDIA (needs the CUDA toolkit at build + driver at runtime); peak throughput.
+# `vulkan` = cross-vendor, but CURRENTLY BROKEN upstream: whisper-rs 0.16.0's src/vulkan.rs
+#   references ggml symbols the bundled whisper.cpp removed, so it won't compile. Kept
+#   defined for when whisper-rs ships a fix. Use `cuda` for now. See docs/performance.md.
 cuda = ["whisper", "whisper-rs/cuda"]
+vulkan = ["whisper", "whisper-rs/vulkan"]
 # Everything the desktop app needs (portal is added per-target on Linux).
 full = ["whisper", "cpal-audio", "injection", "hotkey", "models", "ollama"]
 

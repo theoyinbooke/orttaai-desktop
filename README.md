@@ -24,38 +24,43 @@ See [`docs/architecture.md`](docs/architecture.md) and the full build plan for d
 
 ## Install
 
-Grab the latest installer from the
-[**Releases page**](https://github.com/theoyinbooke/orttaai-desktop/releases/latest),
-or download **v0.1.0** directly:
+Download the installer for your platform from the
+[**latest release**](https://github.com/theoyinbooke/orttaai-desktop/releases/latest):
 
-| Platform | Download |
+| Platform | File |
 |---|---|
-| **Linux** — AppImage (portable) | [`Orttaai_0.1.0_amd64.AppImage`](https://github.com/theoyinbooke/orttaai-desktop/releases/download/v0.1.0/Orttaai_0.1.0_amd64.AppImage) |
-| **Linux** — Debian / Ubuntu | [`Orttaai_0.1.0_amd64.deb`](https://github.com/theoyinbooke/orttaai-desktop/releases/download/v0.1.0/Orttaai_0.1.0_amd64.deb) |
-| **Linux** — Fedora / RHEL | [`Orttaai-0.1.0-1.x86_64.rpm`](https://github.com/theoyinbooke/orttaai-desktop/releases/download/v0.1.0/Orttaai-0.1.0-1.x86_64.rpm) |
-| **Windows** — installer (.exe) | [`Orttaai_0.1.0_x64-setup.exe`](https://github.com/theoyinbooke/orttaai-desktop/releases/download/v0.1.0/Orttaai_0.1.0_x64-setup.exe) |
-| **Windows** — MSI | [`Orttaai_0.1.0_x64_en-US.msi`](https://github.com/theoyinbooke/orttaai-desktop/releases/download/v0.1.0/Orttaai_0.1.0_x64_en-US.msi) |
+| **Linux** — AppImage (portable) | `Orttaai_<version>_amd64.AppImage` |
+| **Linux** — Debian / Ubuntu | `Orttaai_<version>_amd64.deb` |
+| **Linux** — Fedora / RHEL | `Orttaai-<version>-1.x86_64.rpm` |
+| **Windows** — installer (.exe) | `Orttaai_<version>_x64-setup.exe` |
+| **Windows** — MSI | `Orttaai_<version>_x64_en-US.msi` |
 
 ```bash
 # Linux — AppImage (no install needed)
-chmod +x Orttaai_0.1.0_amd64.AppImage && ./Orttaai_0.1.0_amd64.AppImage
+chmod +x Orttaai_*_amd64.AppImage && ./Orttaai_*_amd64.AppImage
 
 # Linux — Debian/Ubuntu
-sudo apt install ./Orttaai_0.1.0_amd64.deb
+sudo apt install ./Orttaai_*_amd64.deb
 
 # Linux — Fedora/RHEL
-sudo dnf install ./Orttaai-0.1.0-1.x86_64.rpm
+sudo dnf install ./Orttaai-*-1.x86_64.rpm
 ```
 
 On **Windows**, run the `.exe` (or `.msi`) and follow the installer.
 
-Then: open the **Models** tab → download a Whisper model → **Status → Start**, and
-hold the push-to-talk chord (default **Ctrl+Shift+Space**) to dictate into any app.
-The app self-updates via *Settings → Check for updates*.
+Then: open the **Models** tab → download a Whisper model (the quantized **Q5** tiers
+are fastest) → **Dictate → Start**, and press the push-to-talk shortcut (default
+**Ctrl+Shift+Space**) to dictate into any app. Installed builds self-update via
+*Settings → Check for updates*.
 
-> **Linux runtime notes:** dictation captures the mic (PipeWire/ALSA) and types via
-> `wtype` (Wayland) or `xdotool` (X11) — install `wtype` on Wayland. Global hotkeys
-> use X11/XWayland. See [`docs/gaps.md`](docs/gaps.md).
+> **GPU:** the default build runs on CPU (tuned + quantized models). On **NVIDIA**, build with
+> `--features cuda` for ~5–15× on medium/large models (needs the CUDA toolkit + driver). See
+> [`docs/performance.md`](docs/performance.md). _(Cross-vendor Vulkan is pending an upstream
+> whisper-rs fix — its 0.16 bindings reference ggml symbols the bundled whisper.cpp removed.)_
+>
+> **Linux runtime notes:** dictation captures the mic (PipeWire/ALSA) and types via the
+> XDG **RemoteDesktop portal** on Wayland (grant the one-time prompt) or `wtype`/X11.
+> See [`docs/gaps.md`](docs/gaps.md).
 
 ## Build
 
