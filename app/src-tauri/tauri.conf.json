@@ -14,8 +14,11 @@
     "windows": [
       {
         "title": "Orttaai",
-        "width": 880,
-        "height": 640
+        "width": 1040,
+        "height": 720,
+        "minWidth": 820,
+        "minHeight": 560,
+        "theme": "Dark"
       },
       {
         "label": "panel",

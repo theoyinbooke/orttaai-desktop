@@ -160,6 +160,17 @@ impl Store {
         } else {
             0.0
         };
+        let total_duration_ms: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(duration_ms), 0) FROM transcriptions",
+            [],
+            |r| r.get(0),
+        )?;
+        // Average dictation speed across all recordings (words ÷ minutes spoken).
+        let avg_wpm = if total_duration_ms > 0 {
+            total_words as f64 / (total_duration_ms as f64 / 60_000.0)
+        } else {
+            0.0
+        };
 
         let mut stmt = self.conn.prepare(
             "SELECT date(created_at, 'unixepoch', 'localtime') AS day, COUNT(*)
@@ -193,6 +204,7 @@ impl Store {
             total,
             total_words,
             avg_words,
+            avg_wpm,
             last7_days,
             top_apps,
         })
@@ -265,6 +277,8 @@ pub struct DashboardStats {
     pub total: i64,
     pub total_words: i64,
     pub avg_words: f64,
+    /// Average dictation speed in words per minute, across all recordings.
+    pub avg_wpm: f64,
     pub last7_days: Vec<DailyCount>,
     pub top_apps: Vec<AppCount>,
 }
