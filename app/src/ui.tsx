@@ -384,16 +384,37 @@ export function Select<T extends string>({
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLUListElement>(null);
   const selected = options.find((o) => o.value === value);
+
+  // The menu is portaled to <body>, so no ancestor card's `overflow`/stacking
+  // context can clip it or paint over it. Anchor it under the trigger using the
+  // trigger's viewport rect.
+  const place = () => {
+    const r = ref.current?.getBoundingClientRect();
+    if (r) setRect({ top: r.bottom + 6, left: r.left, width: r.width });
+  };
 
   useEffect(() => {
     if (!open) return;
+    place();
     const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (ref.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
     };
+    // A scroll/resize would detach the fixed menu from its trigger — just close.
+    const onShift = () => setOpen(false);
     document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    window.addEventListener("resize", onShift);
+    window.addEventListener("scroll", onShift, true);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("resize", onShift);
+      window.removeEventListener("scroll", onShift, true);
+    };
   }, [open]);
 
   useEffect(() => {
@@ -440,26 +461,34 @@ export function Select<T extends string>({
         </span>
         <Icon name="chevronDown" size={16} className="select-caret" />
       </button>
-      {open && (
-        <ul className="select-menu" role="listbox">
-          {options.length === 0 && <li className="select-empty">No options</li>}
-          {options.map((o, i) => (
-            <li
-              key={o.value}
-              role="option"
-              aria-selected={o.value === value}
-              className={`select-option ${i === active ? "active" : ""} ${
-                o.value === value ? "selected" : ""
-              }`}
-              onMouseEnter={() => setActive(i)}
-              onClick={() => pick(i)}
-            >
-              <span>{o.label}</span>
-              {o.value === value && <Icon name="check" size={15} />}
-            </li>
-          ))}
-        </ul>
-      )}
+      {open &&
+        rect &&
+        createPortal(
+          <ul
+            className="select-menu"
+            role="listbox"
+            ref={menuRef}
+            style={{ top: rect.top, left: rect.left, width: rect.width }}
+          >
+            {options.length === 0 && <li className="select-empty">No options</li>}
+            {options.map((o, i) => (
+              <li
+                key={o.value}
+                role="option"
+                aria-selected={o.value === value}
+                className={`select-option ${i === active ? "active" : ""} ${
+                  o.value === value ? "selected" : ""
+                }`}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => pick(i)}
+              >
+                <span>{o.label}</span>
+                {o.value === value && <Icon name="check" size={15} />}
+              </li>
+            ))}
+          </ul>,
+          document.body,
+        )}
     </div>
   );
 }

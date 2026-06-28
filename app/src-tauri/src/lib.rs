@@ -44,6 +44,10 @@ struct EngineState {
     /// source. `None` on Wayland, where the focused app can't be detected.
     source_app: Mutex<Option<String>>,
     running: AtomicBool,
+    /// Set for the duration of `start_dictation` while the (slow) model load runs
+    /// on a background thread — guards against overlapping starts from a double
+    /// click or the tray firing while a start is already in flight.
+    starting: AtomicBool,
 }
 
 #[derive(Serialize)]
@@ -58,15 +62,45 @@ fn engine_status(state: State<EngineState>) -> EngineStatus {
     }
 }
 
+/// Start the dictation engine. Loading the whisper model takes seconds for the
+/// larger models, so the whole setup runs on a blocking background thread via
+/// `spawn_blocking` — the WebView's main thread is never blocked, so the window
+/// never goes "Not Responding". Emits `engine-state` "loading" while the model
+/// loads, then "idle" (ready) or "off" (failed/rolled back).
 #[tauri::command]
-fn start_dictation(
-    app: AppHandle,
-    state: State<EngineState>,
-    model_path: String,
-) -> Result<(), String> {
-    if state.running.load(Ordering::SeqCst) {
-        return Ok(());
+async fn start_dictation(app: AppHandle, model_path: String) -> Result<(), String> {
+    {
+        let state = app.state::<EngineState>();
+        // No-op if already running; the `starting` swap also rejects a second
+        // start fired while the first is still loading the model.
+        if state.running.load(Ordering::SeqCst) || state.starting.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
     }
+    emit_state(&app, "loading");
+
+    let worker_app = app.clone();
+    let outcome =
+        tauri::async_runtime::spawn_blocking(move || start_engine(&worker_app, model_path))
+            .await
+            .unwrap_or_else(|e| Err(format!("engine start task panicked: {e}")));
+
+    app.state::<EngineState>()
+        .starting
+        .store(false, Ordering::SeqCst);
+    if outcome.is_err() {
+        // Roll the UI back to "off" so the Start button returns and the user can
+        // fix the problem (e.g. download the model) and retry.
+        emit_state(&app, "off");
+    }
+    outcome
+}
+
+/// Build and start the engine on the calling (background) thread: load the model,
+/// spin up the dictation worker, and register the global hotkey. Blocking — only
+/// ever called from `spawn_blocking`.
+fn start_engine(app: &AppHandle, model_path: String) -> Result<(), String> {
+    let state = app.state::<EngineState>();
     let settings = Settings::load_or_default();
 
     // Empty path → use the active model from settings (must be downloaded).
@@ -173,7 +207,7 @@ fn start_dictation(
         }
     }
     state.running.store(true, Ordering::SeqCst);
-    emit_state(&app, "idle");
+    emit_state(app, "idle");
     Ok(())
 }
 
@@ -421,6 +455,13 @@ fn preset_to_str(p: DecodePreset) -> &'static str {
 #[tauri::command]
 fn list_models() -> Result<Vec<orttaai_core::models::ModelInfo>, String> {
     orttaai_core::models::list().map_err(|e| e.to_string())
+}
+
+/// Delete a downloaded model file to reclaim disk. The active model can be
+/// deleted too; the engine keeps any already-loaded model until it's restarted.
+#[tauri::command]
+fn delete_model(id: String) -> Result<(), String> {
+    orttaai_core::models::delete(&id).map_err(|e| e.to_string())
 }
 
 /// Download a model in the background, emitting `model-progress`/`model-done`/
@@ -671,6 +712,7 @@ pub fn run() {
             set_settings,
             list_models,
             download_model,
+            delete_model,
             recent_history,
             engine_status,
             start_dictation,

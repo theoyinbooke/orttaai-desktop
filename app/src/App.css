@@ -627,11 +627,10 @@ button {
   transform: rotate(180deg);
 }
 .select-menu {
-  position: absolute;
-  z-index: 40;
-  top: calc(100% + 6px);
-  left: 0;
-  right: 0;
+  /* Portaled to <body>; top/left/width are set inline from the trigger rect.
+     `fixed` + a high z-index keeps it above every card and panel. */
+  position: fixed;
+  z-index: 1000;
   margin: 0;
   padding: 5px;
   list-style: none;
@@ -1193,53 +1192,60 @@ button {
 }
 
 /* ---- Models -------------------------------------------------------------- */
-.model-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+/* Compact table: one row per model, with size / language / status columns and a
+   trailing delete column to remove a download. */
+.model-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
 }
-.model-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 15px 18px;
+.model-table thead th {
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
 }
-.model-row.is-active {
-  border-color: var(--accent-line);
+.model-table tbody td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
 }
-.model-info {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
+.model-table tbody tr:last-child td {
+  border-bottom: none;
 }
-.model-name-row {
+.model-table tbody tr.is-active {
+  background: var(--accent-quiet);
+}
+.model-table tbody tr:hover:not(.is-active) {
+  background: var(--surface-2);
+}
+.mt-name {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 .model-name {
-  font-size: 14.5px;
+  font-size: 14px;
   font-weight: 600;
 }
-.model-sub {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 12.5px;
+.ta-right {
+  text-align: right;
 }
-.ok-text {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--ok);
+/* Right-align the status control / progress bar within its cell. */
+.model-table .ta-right .dl-progress,
+.model-table .ta-right .active-pill {
+  margin-left: auto;
 }
-.model-action {
-  flex: none;
+.model-table .dl-progress {
+  justify-content: flex-end;
 }
 .active-pill {
   display: inline-flex;

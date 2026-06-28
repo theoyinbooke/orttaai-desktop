@@ -55,10 +55,11 @@ export type Tab =
   | "assistant"
   | "settings";
 
-export type EngineState = "off" | "idle" | "recording" | "processing";
+export type EngineState = "off" | "loading" | "idle" | "recording" | "processing";
 
 export const STATE_LABEL: Record<EngineState, string> = {
   off: "Off",
+  loading: "Starting…",
   idle: "Listening",
   recording: "Recording",
   processing: "Transcribing",

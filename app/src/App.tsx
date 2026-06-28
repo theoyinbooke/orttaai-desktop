@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { runUpdate } from "./lib/updater";
 import "./App.css";
 import {
   Icon,
@@ -104,7 +103,26 @@ function AppShell() {
       }),
       listen<{ error: string }>("model-error", (e) => toast(e.payload.error, "error")),
     ];
-    return () => unlisten.forEach((p) => p.then((off) => off()));
+
+    // Auto-check for updates shortly after launch. Silent: stays quiet when
+    // already up to date (or in a dev build with no updater), and only surfaces
+    // UI once an update is actually found. Safe to install + relaunch here — the
+    // engine is always "off" at startup, so nothing is mid-dictation.
+    const updateTimer = setTimeout(() => {
+      runUpdate(
+        (s) => {
+          if (s.kind === "available") toast(`Update ${s.version} found — installing…`, "info");
+          else if (s.kind === "installed") toast(`Updated to ${s.version} — restarting…`, "success");
+          else if (s.kind === "error") toast(`Update failed: ${s.message}`, "warn");
+        },
+        { silent: true },
+      );
+    }, 3000);
+
+    return () => {
+      clearTimeout(updateTimer);
+      unlisten.forEach((p) => p.then((off) => off()));
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -132,17 +150,20 @@ function AppShell() {
   const themeIcon = choice === "dark" ? "moon" : choice === "light" ? "sun" : "monitor";
 
   async function checkUpdates() {
-    toast("Checking for updates…", "info");
-    try {
-      const update = await check();
-      if (!update) return toast("You're on the latest version.", "success");
-      toast(`Downloading ${update.version}…`, "info");
-      await update.downloadAndInstall();
-      toast("Update installed — restarting…", "success");
-      await relaunch();
-    } catch (e) {
-      toast(`Update check failed: ${String(e)}`, "error");
-    }
+    await runUpdate((s) => {
+      switch (s.kind) {
+        case "checking":
+          return toast("Checking for updates…", "info");
+        case "uptodate":
+          return toast("You're on the latest version.", "success");
+        case "downloading":
+          return toast(`Downloading ${s.version}…`, "info");
+        case "installed":
+          return toast("Update installed — restarting…", "success");
+        case "error":
+          return toast(`Update check failed: ${s.message}`, "error");
+      }
+    });
   }
 
   return (
@@ -249,6 +270,14 @@ function AppShell() {
               );
               refreshSettings();
             }}
+            onDelete={(id) =>
+              invoke("delete_model", { id })
+                .then(() => {
+                  refreshModels();
+                  toast("Model deleted", "success");
+                })
+                .catch((e) => toast(String(e), "error"))
+            }
           />
         )}
         {tab === "assistant" && <Assistant />}

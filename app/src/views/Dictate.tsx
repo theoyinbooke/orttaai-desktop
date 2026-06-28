@@ -52,7 +52,8 @@ export default function Dictate(props: {
   onNavigate: (tab: Tab) => void;
 }) {
   const { engine, settings, activeModel, canStart, level, onNavigate } = props;
-  const running = engine !== "off";
+  const starting = engine === "loading";
+  const running = engine !== "off" && !starting;
   const recording = engine === "recording";
   const combo = settings?.push_to_talk ?? "Ctrl+Shift+Space";
 
@@ -79,12 +80,17 @@ export default function Dictate(props: {
 
   const subtitle: Record<EngineState, string> = {
     off: "Engine stopped. Start the engine to begin dictating.",
+    loading: "Loading the model — this can take a few seconds for larger models…",
     idle: "Ready. Press your shortcut anywhere and speak.",
     recording: "Listening — speak now, then press your shortcut again.",
     processing: "Transcribing your speech on-device…",
   };
 
-  const action = !running ? (
+  const action = starting ? (
+    <Button variant="primary" loading>
+      Starting…
+    </Button>
+  ) : !running ? (
     canStart ? (
       <Button variant="primary" icon="play" onClick={props.onStart}>
         Start engine

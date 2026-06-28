@@ -44,3 +44,22 @@ runs everywhere), and offer a separate **CUDA "NVIDIA"** download for max throug
 
 > Note: GPU builds can't be validated in a headless/virtualized environment without a working
 > GPU driver — verify on real hardware with `whisper-cli` / bench.
+
+## Portable release builds (`GGML_NATIVE=OFF`)
+
+ggml defaults to `GGML_NATIVE=ON`, which compiles whisper.cpp with `-march=native` —
+optimizing for **the build machine's exact CPU**. Ideal for a local build, **fatal for a
+distributed one**: GitHub's CI runners are AVX-512-capable Intel Xeons, so a default CI build
+bakes in AVX-512 instructions. On the many consumer CPUs without AVX-512 (e.g. 12th/13th-gen
+Intel Core, AMD Zen < 4 mobile) the binary crashes with an **illegal instruction (SIGILL)** the
+moment whisper runs — even though a *locally*-built binary on the same machine works fine.
+(See whisper.cpp issue #2928.)
+
+The release workflow therefore sets `GGML_NATIVE: 'OFF'` (and, redundantly, `GGML_AVX512: 'OFF'`).
+On a normal build, `GGML_NATIVE=OFF` enables an **AVX2 + FMA + F16C + BMI2** baseline and leaves
+AVX-512 off — fast, and portable to every x86-64 CPU since ~2013 (Haswell / Zen 1).
+`whisper-rs-sys`' build script forwards any `GGML_*` / `CMAKE_*` env var to CMake, so this is a
+one-line env change in `.github/workflows/release.yml` — no code change.
+
+> **Rule:** any CI/distribution build of whisper.cpp/ggml/llama.cpp must set `GGML_NATIVE=OFF`.
+> Local dev builds can keep the default (native, slightly faster, targets your own CPU).

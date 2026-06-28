@@ -14,6 +14,13 @@ jobs:
       contents: write
     strategy:
       fail-fast: false
+      # Serialize the platforms. Each tauri-action run does a read-modify-write of
+      # the SHARED `latest.json` on the release (it merges its platform entry into
+      # whatever is already there). Run in parallel and the two legs race — the
+      # last writer wins and clobbers the other platform's entry, leaving the
+      # updater unable to update half your users. Sequential = same total CI
+      # minutes, correct merge. (Builds into a DRAFT; `publish-release` flips it.)
+      max-parallel: 1
       matrix:
         include:
           - platform: ubuntu-22.04 # deb / rpm / AppImage
@@ -49,16 +56,66 @@ jobs:
         run: npm ci
 
       - uses: tauri-apps/tauri-action@v0
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater signing — set these repo secrets (see README › Releases).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # CRITICAL: build whisper.cpp/ggml for a PORTABLE CPU baseline.
+          # ggml defaults to GGML_NATIVE=ON → `-march=native`, which bakes in the
+          # BUILD machine's full ISA. GitHub's runners are AVX512-capable Xeons, so
+          # the default release SIGILLs (illegal instruction) on the many consumer
+          # CPUs without AVX512 (e.g. 12th/13th-gen Intel Core, AMD Zen<4 mobile).
+          # GGML_NATIVE=OFF → AVX2 + FMA + F16C + BMI2, no AVX512: fast and portable.
+          # GGML_AVX512=OFF is redundant (already the ggml default) but pins intent
+          # against future ggml default changes. whisper-rs-sys/build.rs forwards
+          # GGML_*/CMAKE_* env vars to CMake. See docs/performance.md.
+          GGML_NATIVE: 'OFF'
+          GGML_AVX512: 'OFF'
         with:
           projectPath: ./app
           tagName: ${{ github.ref_name }}
           releaseName: 'Orttaai ${{ github.ref_name }}'
           releaseBody: 'Download the installer for your platform below.'
-          releaseDraft: false
+          # Build every platform into a DRAFT release. The `/releases/latest/...`
+          # updater endpoint only resolves to a PUBLISHED release, so the app never
+          # sees a half-built release (or a raced latest.json) mid-run. The
+          # `publish-release` job flips the draft to published once all platforms
+          # have uploaded and latest.json holds every platform.
+          releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  # Publish the drafted release atomically, only after the whole matrix finished
+  # uploading installers + the merged latest.json. This is what makes the release
+  # become "latest" for the auto-updater.
+  publish-release:
+    needs: publish-tauri
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            // NB: getReleaseByTag returns only PUBLISHED releases, so list and
+            // match the draft by tag_name instead.
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+            const release = releases.find((r) => r.tag_name === tag);
+            if (!release) {
+              core.setFailed(`No release found for tag ${tag}`);
+              return;
+            }
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release.id,
+              draft: false,
+              prerelease: false,
+            });

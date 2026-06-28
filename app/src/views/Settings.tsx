@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { runUpdate } from "../lib/updater";
 import {
   Button,
   Card,
@@ -56,17 +55,20 @@ export default function Settings(props: {
   }
 
   async function checkUpdates() {
-    setUpdateMsg("Checking…");
-    try {
-      const update = await check();
-      if (!update) return setUpdateMsg("You're up to date.");
-      setUpdateMsg(`Downloading ${update.version}…`);
-      await update.downloadAndInstall();
-      setUpdateMsg("Installed — restarting…");
-      await relaunch();
-    } catch (e) {
-      setUpdateMsg(`Update check failed: ${String(e)}`);
-    }
+    await runUpdate((s) => {
+      switch (s.kind) {
+        case "checking":
+          return setUpdateMsg("Checking…");
+        case "uptodate":
+          return setUpdateMsg("You're up to date.");
+        case "downloading":
+          return setUpdateMsg(`Downloading ${s.version}…`);
+        case "installed":
+          return setUpdateMsg("Installed — restarting…");
+        case "error":
+          return setUpdateMsg(`Update check failed: ${s.message}`);
+      }
+    });
   }
 
   const themes: { value: ThemeChoice; label: string; icon: string }[] = [

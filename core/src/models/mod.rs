@@ -78,6 +78,15 @@ pub fn is_downloaded(id: &str) -> bool {
     local_path(id).map(|p| p.exists()).unwrap_or(false)
 }
 
+/// Delete a downloaded model's file to reclaim disk. No-op if it isn't present.
+pub fn delete(id: &str) -> Result<()> {
+    let path = local_path(id)?;
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
 /// The catalog annotated with on-disk status.
 pub fn list() -> Result<Vec<ModelInfo>> {
     let dir = models_dir()?;
