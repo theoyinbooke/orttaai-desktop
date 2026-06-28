@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { CopyButton, EmptyState, Icon, Modal, PageHeader } from "../ui";
+import { invoke } from "@tauri-apps/api/core";
+import { Button, ConfirmDialog, CopyButton, EmptyState, Icon, Modal, PageHeader, useToast } from "../ui";
 import type { HistoryItem } from "../types";
 
 function relativeTime(unix: number): string {
@@ -13,6 +14,20 @@ function relativeTime(unix: number): string {
 
 export default function History({ items }: { items: HistoryItem[] }) {
   const [selected, setSelected] = useState<HistoryItem | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<HistoryItem | null>(null);
+  const toast = useToast();
+
+  async function confirmDelete() {
+    const item = pendingDelete;
+    setPendingDelete(null);
+    if (!item) return;
+    if (selected?.id === item.id) setSelected(null);
+    try {
+      await invoke("delete_transcription", { id: item.id });
+    } catch (e) {
+      toast(String(e), "error");
+    }
+  }
 
   if (items.length === 0) {
     return (
@@ -55,7 +70,20 @@ export default function History({ items }: { items: HistoryItem[] }) {
                 <td className="col-words mono">{item.word_count}</td>
                 <td className="col-when mono muted">{relativeTime(item.created_at)}</td>
                 <td className="col-act">
-                  <CopyButton text={item.text} compact />
+                  <div className="row-actions">
+                    <CopyButton text={item.text} compact />
+                    <button
+                      className="row-del"
+                      aria-label="Delete"
+                      title="Delete"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPendingDelete(item);
+                      }}
+                    >
+                      <Icon name="trash" size={15} />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -83,11 +111,25 @@ export default function History({ items }: { items: HistoryItem[] }) {
                 <span className="dot-sep">·</span>
                 <span className="mono">{new Date(selected.created_at * 1000).toLocaleString()}</span>
               </span>
-              <CopyButton text={selected.text} />
+              <div className="hist-detail-actions">
+                <Button variant="ghost" size="sm" icon="trash" onClick={() => setPendingDelete(selected)}>
+                  Delete
+                </Button>
+                <CopyButton text={selected.text} />
+              </div>
             </div>
           </div>
         )}
       </Modal>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete this transcription?"
+        body="It will be permanently removed from your history. This can't be undone."
+        confirmLabel="Delete"
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

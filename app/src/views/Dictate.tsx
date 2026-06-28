@@ -4,12 +4,14 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDialog,
   CopyButton,
   EmptyState,
   Icon,
   Kbd,
   LevelMeter,
   PageHeader,
+  useToast,
 } from "../ui";
 import {
   STATE_LABEL,
@@ -56,11 +58,24 @@ export default function Dictate(props: {
 
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [recent, setRecent] = useState<HistoryItem[]>([]);
+  const [pendingDelete, setPendingDelete] = useState<HistoryItem | null>(null);
+  const toast = useToast();
 
   useEffect(() => {
     invoke<DashboardStats>("dashboard_stats").then(setStats).catch(() => {});
     invoke<HistoryItem[]>("recent_history", { limit: 10 }).then(setRecent).catch(() => {});
   }, [props.historyVersion]);
+
+  async function confirmDelete() {
+    const item = pendingDelete;
+    setPendingDelete(null);
+    if (!item) return;
+    try {
+      await invoke("delete_transcription", { id: item.id });
+    } catch (e) {
+      toast(String(e), "error");
+    }
+  }
 
   const subtitle: Record<EngineState, string> = {
     off: "Engine stopped. Start the engine to begin dictating.",
@@ -202,6 +217,14 @@ export default function Dictate(props: {
                 <span className="recent-text">{r.text}</span>
                 <span className="recent-time mono">{ago(r.created_at)}</span>
                 <CopyButton text={r.text} compact />
+                <button
+                  className="row-del"
+                  aria-label="Delete"
+                  title="Delete"
+                  onClick={() => setPendingDelete(r)}
+                >
+                  <Icon name="trash" size={15} />
+                </button>
               </li>
             ))}
           </ul>
@@ -212,6 +235,15 @@ export default function Dictate(props: {
         <Icon name="info" size={14} /> 100% on-device transcription. The text is typed into the
         focused window — keep your target app focused while you dictate.
       </p>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete this transcription?"
+        body="It will be permanently removed from your history. This can't be undone."
+        confirmLabel="Delete"
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

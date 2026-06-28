@@ -1754,11 +1754,33 @@ button {
   width: 98px;
 }
 .col-act {
-  width: 54px;
+  width: 92px;
   text-align: right;
 }
-.col-act .copy-btn {
-  margin-left: auto;
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+.row-del {
+  display: inline-grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px;
+  border-radius: var(--r-sm);
+  transition: color var(--dur-1), background var(--dur-1);
+}
+.row-del:hover {
+  color: var(--danger);
+  background: var(--danger-quiet);
+}
+.hist-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .modal:has(.hist-detail) {
