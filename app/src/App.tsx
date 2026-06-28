@@ -230,7 +230,7 @@ function AppShell() {
             onStart={() => invoke("start_dictation", { modelPath: "" }).catch((e) => toast(String(e), "error"))}
             onStop={() => invoke("stop_dictation").catch((e) => toast(String(e), "error"))}
             onToggleRecord={() => invoke("toggle_recording").catch((e) => toast(String(e), "error"))}
-            onPickModel={() => setTab("models")}
+            onNavigate={(t) => setTab(t)}
           />
         )}
         {tab === "history" && <History items={history} />}

@@ -18,6 +18,7 @@ import {
   type HistoryItem,
   type ModelInfo,
   type Settings,
+  type Tab,
 } from "../types";
 
 function ago(unix: number): string {
@@ -27,6 +28,13 @@ function ago(unix: number): string {
   if (d < 86400) return `${Math.floor(d / 3600)}h`;
   return `${Math.floor(d / 86400)}d`;
 }
+
+const SHORTCUTS: { tab: Tab; label: string; icon: string; hint: string }[] = [
+  { tab: "models", label: "Models", icon: "models", hint: "Switch engine" },
+  { tab: "assistant", label: "Assistant", icon: "assistant", hint: "Local AI chat" },
+  { tab: "dictionary", label: "Dictionary", icon: "dictionary", hint: "Fixes & snippets" },
+  { tab: "insights", label: "Insights", icon: "insights", hint: "Activity & trends" },
+];
 
 export default function Dictate(props: {
   engine: EngineState;
@@ -39,9 +47,9 @@ export default function Dictate(props: {
   onStart: () => void;
   onStop: () => void;
   onToggleRecord: () => void;
-  onPickModel: () => void;
+  onNavigate: (tab: Tab) => void;
 }) {
-  const { engine, settings, activeModel, canStart, level } = props;
+  const { engine, settings, activeModel, canStart, level, onNavigate } = props;
   const running = engine !== "off";
   const recording = engine === "recording";
   const combo = settings?.push_to_talk ?? "Ctrl+Shift+Space";
@@ -67,7 +75,7 @@ export default function Dictate(props: {
         Start engine
       </Button>
     ) : (
-      <Button variant="primary" icon="download" onClick={props.onPickModel}>
+      <Button variant="primary" icon="download" onClick={() => onNavigate("models")}>
         Get a model
       </Button>
     )
@@ -121,7 +129,7 @@ export default function Dictate(props: {
               <span className="muted">Hold-to-talk on Windows/X11; a toggle on Wayland.</span>
             </span>
           </div>
-          <button className="model-chip" onClick={props.onPickModel}>
+          <button className="model-chip" onClick={() => onNavigate("models")}>
             <Icon name="models" size={15} />
             <span className="muted">Model</span>
             <span>{activeModel ? activeModel.name : settings?.model_id ?? "—"}</span>
@@ -138,23 +146,6 @@ export default function Dictate(props: {
       </div>
 
       <div className="dash-grid">
-        <Card className="recent-card">
-          <span className="overline">Recent</span>
-          {recent.length === 0 ? (
-            <EmptyState icon="history" title="Nothing yet" desc="Your latest dictations will appear here." />
-          ) : (
-            <ul className="recent-list">
-              {recent.map((r) => (
-                <li key={r.id} className="recent-row">
-                  <span className="recent-text">{r.text}</span>
-                  <span className="recent-time mono">{ago(r.created_at)}</span>
-                  <CopyButton text={r.text} compact />
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-
         <Card className="apps-card">
           <span className="overline">Top apps</span>
           {topApps.length === 0 ? (
@@ -175,7 +166,47 @@ export default function Dictate(props: {
             </ul>
           )}
         </Card>
+
+        <Card className="shortcuts-card">
+          <span className="overline">Shortcuts</span>
+          <div className="shortcut-grid">
+            {SHORTCUTS.map((s) => (
+              <button key={s.tab} className="shortcut-tile" onClick={() => onNavigate(s.tab)}>
+                <span className="shortcut-ico">
+                  <Icon name={s.icon} size={18} />
+                </span>
+                <span className="shortcut-meta">
+                  <span className="shortcut-label">{s.label}</span>
+                  <span className="shortcut-hint">{s.hint}</span>
+                </span>
+                <Icon name="chevronRight" size={15} className="shortcut-caret" />
+              </button>
+            ))}
+          </div>
+        </Card>
       </div>
+
+      <Card className="recent-card recent-full">
+        <div className="recent-head">
+          <span className="overline">Recent</span>
+          <button className="ghost-link" onClick={() => onNavigate("history")}>
+            View all <Icon name="arrowRight" size={14} />
+          </button>
+        </div>
+        {recent.length === 0 ? (
+          <EmptyState icon="history" title="Nothing yet" desc="Your latest dictations will appear here." />
+        ) : (
+          <ul className="recent-list">
+            {recent.map((r) => (
+              <li key={r.id} className="recent-row">
+                <span className="recent-text">{r.text}</span>
+                <span className="recent-time mono">{ago(r.created_at)}</span>
+                <CopyButton text={r.text} compact />
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
 
       <p className="foot-note">
         <Icon name="info" size={14} /> 100% on-device transcription. The text is typed into the
