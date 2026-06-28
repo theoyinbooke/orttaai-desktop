@@ -14,7 +14,7 @@ use crate::error::{CoreError, Result};
 use crate::settings::Settings;
 use crate::types::InjectionResult;
 use ashpd::desktop::remote_desktop::{DeviceType, KeyState, RemoteDesktop};
-use ashpd::desktop::PersistMode;
+use ashpd::desktop::{PersistMode, Session};
 
 struct Job {
     text: String,
@@ -58,71 +58,39 @@ impl WaylandPortalInjector {
                             return;
                         }
                     };
-                    let session = match rd.create_session().await {
+                    let mut session = match open_keyboard_session(&rd).await {
                         Ok(s) => s,
                         Err(e) => {
-                            let _ = ready_tx.send(Err(format!("create session: {e}")));
+                            let _ = ready_tx.send(Err(e));
                             return;
                         }
                     };
-                    let saved = Settings::load_or_default().wayland_restore_token;
-                    if let Err(e) = rd
-                        .select_devices(
-                            &session,
-                            DeviceType::Keyboard.into(),
-                            saved.as_deref(),
-                            PersistMode::ExplicitlyRevoked,
-                        )
-                        .await
-                    {
-                        let _ = ready_tx.send(Err(format!("select devices: {e}")));
-                        return;
-                    }
-                    let response = match rd.start(&session, None).await {
-                        Ok(req) => match req.response() {
-                            Ok(r) => r,
-                            Err(e) => {
-                                let _ =
-                                    ready_tx.send(Err(format!("permission denied/dismissed: {e}")));
-                                return;
-                            }
-                        },
-                        Err(e) => {
-                            let _ = ready_tx.send(Err(format!("start: {e}")));
-                            return;
-                        }
-                    };
-                    if !response.devices().contains(DeviceType::Keyboard) {
-                        let _ = ready_tx.send(Err("keyboard control was not granted".into()));
-                        return;
-                    }
-                    if let Some(token) = response.restore_token() {
-                        save_restore_token(token);
-                    }
                     let _ = ready_tx.send(Ok(()));
 
-                    // ---- serve type requests for the session's lifetime -------
+                    // ---- serve type requests, healing a dropped session -------
+                    // GNOME closes a RemoteDesktop session after use/idle, so a
+                    // later inject fails with "Invalid session". When that happens
+                    // *before any key is typed*, transparently re-open with the
+                    // saved restore token (no dialog) and retry once. We never
+                    // retry mid-text, so a partial type can't double up in the
+                    // user's app.
                     while let Some(job) = rx.recv().await {
-                        let mut result = Ok(());
-                        for ch in job.text.chars() {
-                            let keysym = char_to_keysym(ch);
-                            if let Err(e) = rd
-                                .notify_keyboard_keysym(&session, keysym, KeyState::Pressed)
-                                .await
-                            {
-                                result = Err(e.to_string());
-                                break;
+                        let result = match type_keysyms(&rd, &session, &job.text).await {
+                            Ok(()) => Ok(()),
+                            Err((0, msg)) => {
+                                eprintln!("orttaai: portal session unusable ({msg}); re-opening");
+                                match open_keyboard_session(&rd).await {
+                                    Ok(s) => {
+                                        session = s;
+                                        type_keysyms(&rd, &session, &job.text)
+                                            .await
+                                            .map_err(|(_, m)| m)
+                                    }
+                                    Err(e) => Err(format!("session re-open failed: {e}")),
+                                }
                             }
-                            if let Err(e) = rd
-                                .notify_keyboard_keysym(&session, keysym, KeyState::Released)
-                                .await
-                            {
-                                result = Err(e.to_string());
-                                break;
-                            }
-                            // A small gap helps the compositor register each key.
-                            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-                        }
+                            Err((_, msg)) => Err(msg),
+                        };
                         let _ = job.reply.send(result);
                     }
                 });
@@ -166,6 +134,62 @@ impl WaylandPortalInjector {
             Err(_) => Err(CoreError::Injection("portal worker dropped".into())),
         }
     }
+}
+
+/// Open (or re-open) a keyboard-only RemoteDesktop session. The saved restore
+/// token lets GNOME restore the grant without showing the permission dialog, so
+/// this is safe to call again whenever the compositor drops the session.
+async fn open_keyboard_session<'a>(
+    rd: &RemoteDesktop<'a>,
+) -> std::result::Result<Session<'a, RemoteDesktop<'a>>, String> {
+    let session = rd
+        .create_session()
+        .await
+        .map_err(|e| format!("create session: {e}"))?;
+    let saved = Settings::load_or_default().wayland_restore_token;
+    rd.select_devices(
+        &session,
+        DeviceType::Keyboard.into(),
+        saved.as_deref(),
+        PersistMode::ExplicitlyRevoked,
+    )
+    .await
+    .map_err(|e| format!("select devices: {e}"))?;
+    let response = rd
+        .start(&session, None)
+        .await
+        .map_err(|e| format!("start: {e}"))?
+        .response()
+        .map_err(|e| format!("permission denied/dismissed: {e}"))?;
+    if !response.devices().contains(DeviceType::Keyboard) {
+        return Err("keyboard control was not granted".to_string());
+    }
+    if let Some(token) = response.restore_token() {
+        save_restore_token(token);
+    }
+    Ok(session)
+}
+
+/// Type `text` as keysym press/release pairs. On error, returns how many chars
+/// were already typed so the caller can avoid retrying mid-text (which would
+/// double-type). A failure at index 0 means nothing was typed — safe to retry.
+async fn type_keysyms<'a>(
+    rd: &RemoteDesktop<'a>,
+    session: &Session<'a, RemoteDesktop<'a>>,
+    text: &str,
+) -> std::result::Result<(), (usize, String)> {
+    for (i, ch) in text.chars().enumerate() {
+        let keysym = char_to_keysym(ch);
+        rd.notify_keyboard_keysym(session, keysym, KeyState::Pressed)
+            .await
+            .map_err(|e| (i, e.to_string()))?;
+        rd.notify_keyboard_keysym(session, keysym, KeyState::Released)
+            .await
+            .map_err(|e| (i, e.to_string()))?;
+        // A small gap helps the compositor register each key.
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    Ok(())
 }
 
 /// Map a character to an X11 keysym for the portal.

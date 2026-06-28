@@ -100,14 +100,33 @@ impl HotkeyManager for PortalHotkeyManager {
                     let shortcut =
                         NewShortcut::new(SHORTCUT_ID, "Dictate — press to start, again to insert")
                             .preferred_trigger(Some(trigger.as_str()));
-                    if let Err(e) = gs
+                    match gs
                         .bind_shortcuts(&session, &[shortcut], None)
                         .await
                         .and_then(|r| r.response())
                     {
-                        let _ =
-                            ready_tx.send(Err(CoreError::Hotkey(format!("bind shortcut: {e}"))));
-                        return;
+                        Ok(resp) => {
+                            // GNOME often ignores `preferred_trigger` and binds no
+                            // usable trigger (the user must assign the key in
+                            // Settings → Keyboard). Log exactly what it bound so a
+                            // non-firing shortcut can be diagnosed.
+                            if resp.shortcuts().is_empty() {
+                                eprintln!("orttaai: GlobalShortcuts bind returned NO shortcuts");
+                            }
+                            for sc in resp.shortcuts() {
+                                eprintln!(
+                                    "orttaai: bound shortcut id={:?} trigger={:?} desc={:?}",
+                                    sc.id(),
+                                    sc.trigger_description(),
+                                    sc.description()
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            let _ =
+                                ready_tx.send(Err(CoreError::Hotkey(format!("bind shortcut: {e}"))));
+                            return;
+                        }
                     }
                     let _ = ready_tx.send(Ok(()));
 
