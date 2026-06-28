@@ -4,93 +4,91 @@ import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import "./App.css";
+import {
+  Icon,
+  ThemeProvider,
+  ToastProvider,
+  useTheme,
+  useToast,
+} from "./ui";
+import {
+  STATE_LABEL,
+  type AppInfo,
+  type EngineState,
+  type HistoryItem,
+  type ModelInfo,
+  type Settings,
+  type Tab,
+} from "./types";
+import Dictate from "./views/Dictate";
+import History from "./views/History";
+import Insights from "./views/Insights";
+import Dictionary from "./views/Dictionary";
+import Models from "./views/Models";
+import Assistant from "./views/Assistant";
+import SettingsView from "./views/Settings";
 
-type AppInfo = { name: string; version: string; platform: string };
-type Settings = {
-  model_id: string;
-  push_to_talk: string;
-  preserve_clipboard: boolean;
-  low_latency: boolean;
-  ollama_endpoint: string;
-  strict_secure: boolean;
-};
-type HistoryItem = {
-  id: number;
-  text: string;
-  app: string | null;
-  word_count: number;
-  created_at: number;
-};
-type ModelInfo = {
-  id: string;
-  name: string;
-  approx_size_mb: number;
-  multilingual: boolean;
-  url: string;
-  downloaded: boolean;
-  path: string;
-};
-type DashboardStats = {
-  total: number;
-  total_words: number;
-  avg_words: number;
-  last7_days: { day: string; count: number }[];
-  top_apps: { app: string; count: number }[];
-};
-type MemoryEntry = {
-  id: number | null;
-  kind: string;
-  trigger: string;
-  replacement: string;
-};
+const NAV: { group: string; items: { tab: Tab; label: string; icon: string }[] }[] = [
+  {
+    group: "Workspace",
+    items: [
+      { tab: "dictate", label: "Dictate", icon: "dictate" },
+      { tab: "history", label: "History", icon: "history" },
+      { tab: "insights", label: "Insights", icon: "insights" },
+    ],
+  },
+  {
+    group: "Library",
+    items: [
+      { tab: "dictionary", label: "Dictionary", icon: "dictionary" },
+      { tab: "models", label: "Models", icon: "models" },
+      { tab: "assistant", label: "Assistant", icon: "assistant" },
+    ],
+  },
+];
 
-type Tab =
-  | "home"
-  | "status"
-  | "models"
-  | "memory"
-  | "history"
-  | "chat"
-  | "settings";
-type EngineState = "off" | "idle" | "recording" | "processing";
+function BrandMark() {
+  return (
+    <svg className="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="9" width="2.6" height="6" rx="1.3" />
+      <rect x="8" y="5" width="2.6" height="14" rx="1.3" />
+      <rect x="13.4" y="2.5" width="2.6" height="19" rx="1.3" />
+      <rect x="18.8" y="8" width="2.6" height="8" rx="1.3" />
+    </svg>
+  );
+}
 
-const STATE_LABEL: Record<EngineState, string> = {
-  off: "Off",
-  idle: "Listening",
-  recording: "Recording",
-  processing: "Transcribing",
-};
-
-function App() {
-  const [tab, setTab] = useState<Tab>("home");
+function AppShell() {
+  const [tab, setTab] = useState<Tab>("dictate");
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem("orttaai-rail") === "1",
+  );
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [progress, setProgress] = useState<Record<string, number>>({});
-  const [error, setError] = useState<string | null>(null);
-
   const [engine, setEngine] = useState<EngineState>("off");
   const [lastTranscript, setLastTranscript] = useState("");
-  const [notice, setNotice] = useState<string | null>(null);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [level, setLevel] = useState(0);
+  const { choice, setChoice } = useTheme();
+  const toast = useToast();
 
   const refreshSettings = () =>
-    invoke<Settings>("get_settings").then(setSettings).catch((e) => setError(String(e)));
+    invoke<Settings>("get_settings").then(setSettings).catch((e) => toast(String(e), "error"));
   const refreshModels = () =>
-    invoke<ModelInfo[]>("list_models").then(setModels).catch((e) => setError(String(e)));
+    invoke<ModelInfo[]>("list_models").then(setModels).catch((e) => toast(String(e), "error"));
 
   useEffect(() => {
-    invoke<AppInfo>("app_info").then(setInfo).catch((e) => setError(String(e)));
+    invoke<AppInfo>("app_info").then(setInfo).catch((e) => toast(String(e), "error"));
     refreshSettings();
     refreshModels();
-
     const unlisten = [
       listen<string>("engine-state", (e) => setEngine(e.payload as EngineState)),
       listen<string>("transcript", (e) => setLastTranscript(e.payload)),
-      listen<string>("engine-error", (e) => setError(e.payload)),
-      listen<string>("engine-warning", (e) => setNotice(e.payload)),
+      listen<string>("engine-error", (e) => toast(e.payload, "error")),
+      listen<string>("engine-warning", (e) => toast(e.payload, "warn")),
       listen("history-changed", () => setHistoryVersion((v) => v + 1)),
       listen<number>("audio-level", (e) => setLevel(e.payload)),
       listen<{ id: string; fraction: number }>("model-progress", (e) =>
@@ -104,590 +102,170 @@ function App() {
         });
         refreshModels();
       }),
-      listen<{ error: string }>("model-error", (e) => setError(e.payload.error)),
+      listen<{ error: string }>("model-error", (e) => toast(e.payload.error, "error")),
     ];
-    return () => {
-      unlisten.forEach((p) => p.then((off) => off()));
-    };
+    return () => unlisten.forEach((p) => p.then((off) => off()));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (tab === "history") {
       invoke<HistoryItem[]>("recent_history", { limit: 50 })
         .then(setHistory)
-        .catch((e) => setError(String(e)));
+        .catch((e) => toast(String(e), "error"));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, historyVersion]);
 
   const activeModel = models.find((m) => m.id === settings?.model_id);
   const canStart = !!activeModel?.downloaded;
 
-  async function start() {
-    setError(null);
+  const toggleRail = () => {
+    setCollapsed((c) => {
+      localStorage.setItem("orttaai-rail", c ? "0" : "1");
+      return !c;
+    });
+  };
+
+  const cycleTheme = () =>
+    setChoice(choice === "dark" ? "light" : choice === "light" ? "system" : "dark");
+  const themeIcon = choice === "dark" ? "moon" : choice === "light" ? "sun" : "monitor";
+
+  async function checkUpdates() {
+    toast("Checking for updates…", "info");
     try {
-      await invoke("start_dictation", { modelPath: "" });
+      const update = await check();
+      if (!update) return toast("You're on the latest version.", "success");
+      toast(`Downloading ${update.version}…`, "info");
+      await update.downloadAndInstall();
+      toast("Update installed — restarting…", "success");
+      await relaunch();
     } catch (e) {
-      setError(String(e));
-    }
-  }
-  async function stop() {
-    try {
-      await invoke("stop_dictation");
-    } catch (e) {
-      setError(String(e));
+      toast(`Update check failed: ${String(e)}`, "error");
     }
   }
 
   return (
-    <div className="app">
-      <header className="topbar">
+    <div className={`app ${collapsed ? "rail-collapsed" : ""}`}>
+      <aside className="sidebar">
         <div className="brand">
-          <span className={`dot ${engine}`} />
-          <span className="brand-name">{info?.name ?? "Orttaai"}</span>
-        </div>
-        <span className="meta">
-          v{info?.version ?? "—"} · {info?.platform ?? "—"}
-        </span>
-      </header>
-
-      <nav className="tabs">
-        {(
-          ["home", "status", "models", "memory", "history", "chat", "settings"] as Tab[]
-        ).map((t) => (
           <button
-            key={t}
-            className={t === tab ? "tab active" : "tab"}
-            onClick={() => setTab(t)}
+            className="brand-badge"
+            onClick={collapsed ? toggleRail : undefined}
+            title={collapsed ? "Expand sidebar" : undefined}
+            aria-label={collapsed ? "Expand sidebar" : "Orttaai"}
           >
-            {t[0].toUpperCase() + t.slice(1)}
+            <BrandMark />
           </button>
-        ))}
-      </nav>
+          <span className="brand-name">Orttaai</span>
+          <button
+            className="icon-btn rail-toggle"
+            onClick={toggleRail}
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar"
+          >
+            <Icon name="chevronLeft" size={18} />
+          </button>
+        </div>
 
-      {error && (
-        <div className="error" onClick={() => setError(null)} role="alert">
-          {error}
+        <div className={`engine-pill engine-${engine}`} title={`Engine: ${STATE_LABEL[engine]}`}>
+          <span className="engine-dot" />
+          <span className="engine-text">{STATE_LABEL[engine]}</span>
         </div>
-      )}
-      {notice && (
-        <div className="notice" onClick={() => setNotice(null)} role="status">
-          {notice}
+
+        <nav className="nav">
+          {NAV.map((section) => (
+            <div key={section.group} className="nav-group">
+              <span className="nav-group-label">{section.group}</span>
+              {section.items.map((it) => (
+                <button
+                  key={it.tab}
+                  className={`nav-item ${tab === it.tab ? "active" : ""}`}
+                  onClick={() => setTab(it.tab)}
+                  title={collapsed ? it.label : undefined}
+                >
+                  <Icon name={it.icon} size={19} />
+                  <span className="nav-label">{it.label}</span>
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+
+        <div className="sidebar-foot">
+          <button
+            className={`nav-item ${tab === "settings" ? "active" : ""}`}
+            onClick={() => setTab("settings")}
+            title={collapsed ? "Settings" : undefined}
+          >
+            <Icon name="settings" size={19} />
+            <span className="nav-label">Settings</span>
+          </button>
+          <div className="foot-tools">
+            <button
+              className="icon-btn"
+              onClick={checkUpdates}
+              title="Check for updates"
+              aria-label="Check for updates"
+            >
+              <Icon name="refresh" size={17} />
+            </button>
+            <button className="icon-btn" onClick={cycleTheme} title={`Theme: ${choice}`} aria-label="Toggle theme">
+              <Icon name={themeIcon} size={17} />
+            </button>
+          </div>
         </div>
-      )}
+      </aside>
 
       <main className="content">
-        {tab === "home" && <HomeView key={historyVersion} />}
-        {tab === "status" && (
-          <StatusView
-            settings={settings}
+        {tab === "dictate" && (
+          <Dictate
             engine={engine}
+            settings={settings}
             activeModel={activeModel}
             canStart={canStart}
             level={level}
             lastTranscript={lastTranscript}
-            onStart={start}
-            onStop={stop}
+            historyVersion={historyVersion}
+            onStart={() => invoke("start_dictation", { modelPath: "" }).catch((e) => toast(String(e), "error"))}
+            onStop={() => invoke("stop_dictation").catch((e) => toast(String(e), "error"))}
+            onToggleRecord={() => invoke("toggle_recording").catch((e) => toast(String(e), "error"))}
             onPickModel={() => setTab("models")}
-            onToggleRecord={() =>
-              invoke("toggle_recording").catch((e) => setError(String(e)))
-            }
           />
         )}
+        {tab === "history" && <History items={history} />}
+        {tab === "insights" && <Insights />}
+        {tab === "dictionary" && <Dictionary />}
         {tab === "models" && (
-          <ModelsView
+          <Models
             models={models}
             progress={progress}
             activeId={settings?.model_id}
             onDownload={(id) => invoke("download_model", { id })}
             onUse={async (id) => {
               if (!settings) return;
-              await invoke("set_settings", {
-                input: { ...settings, model_id: id },
-              }).catch((e) => setError(String(e)));
+              await invoke("set_settings", { input: { ...settings, model_id: id } }).catch((e) =>
+                toast(String(e), "error"),
+              );
               refreshSettings();
             }}
           />
         )}
-        {tab === "memory" && <MemoryView />}
-        {tab === "history" && <HistoryView items={history} />}
-        {tab === "chat" && <ChatView />}
+        {tab === "assistant" && <Assistant />}
         {tab === "settings" && (
-          <SettingsView settings={settings} onSaved={refreshSettings} />
+          <SettingsView settings={settings} info={info} onSaved={refreshSettings} />
         )}
       </main>
     </div>
   );
 }
 
-function StatusView(props: {
-  settings: Settings | null;
-  engine: EngineState;
-  activeModel: ModelInfo | undefined;
-  canStart: boolean;
-  level: number;
-  lastTranscript: string;
-  onStart: () => void;
-  onStop: () => void;
-  onPickModel: () => void;
-  onToggleRecord: () => void;
-}) {
-  const { settings, engine, activeModel, canStart, level, lastTranscript } = props;
-  const running = engine !== "off";
-
+export default function App() {
   return (
-    <section className="panel">
-      <div className="status-hero">
-        <div className={`status-badge ${engine}`}>{STATE_LABEL[engine]}</div>
-        <p className="status-hint">
-          Hold <kbd>{settings?.push_to_talk ?? "Ctrl+Shift+Space"}</kbd> and
-          speak. Release to transcribe and inject.
-        </p>
-      </div>
-
-      <div className="controls">
-        <div className="active-model">
-          <span className="label">Model</span>
-          <span>
-            {activeModel ? activeModel.name : settings?.model_id ?? "—"}
-            {activeModel && !activeModel.downloaded && " (not downloaded)"}
-          </span>
-        </div>
-        {running ? (
-          <button className="btn stop" onClick={props.onStop}>
-            Stop
-          </button>
-        ) : canStart ? (
-          <button className="btn start" onClick={props.onStart}>
-            Start
-          </button>
-        ) : (
-          <button className="btn" onClick={props.onPickModel}>
-            Get a model
-          </button>
-        )}
-      </div>
-
-      {running && (
-        <div className="ptt">
-          <button
-            className={`btn ${engine === "recording" ? "stop" : "start"}`}
-            onClick={props.onToggleRecord}
-          >
-            {engine === "recording" ? "■ Stop & insert" : "● Click to record"}
-          </button>
-          <span className="note inline">
-            Hold-to-talk not firing (common on Wayland)? Click here — or the tray
-            — then speak, and click again to insert.
-          </span>
-        </div>
-      )}
-
-      {running && (
-        <div className="mic">
-          <span className="mic-label">Mic</span>
-          <div
-            className="meter"
-            role="meter"
-            aria-label="Microphone input level"
-            title="Microphone input level — speak and watch this move"
-          >
-            <div
-              className="meter-fill"
-              style={{
-                width: `${Math.min(100, Math.round(Math.sqrt(Math.max(0, level)) * 110))}%`,
-              }}
-            />
-          </div>
-        </div>
-      )}
-
-      {lastTranscript && (
-        <div className="last-transcript">
-          <span className="label">Last</span>
-          <p>{lastTranscript}</p>
-        </div>
-      )}
-
-      <p className="note">
-        Linux/Windows only for live dictation (mic + global hotkey need OS
-        permissions). The transcript is typed into whatever window is focused.
-      </p>
-    </section>
+    <ThemeProvider>
+      <ToastProvider>
+        <AppShell />
+      </ToastProvider>
+    </ThemeProvider>
   );
 }
-
-function ModelsView(props: {
-  models: ModelInfo[];
-  progress: Record<string, number>;
-  activeId: string | undefined;
-  onDownload: (id: string) => void;
-  onUse: (id: string) => void;
-}) {
-  return (
-    <section className="panel">
-      <ul className="models">
-        {props.models.map((m) => {
-          const frac = props.progress[m.id];
-          const downloading = frac !== undefined;
-          return (
-            <li key={m.id} className="model-row">
-              <div className="model-info">
-                <span className="model-name">{m.name}</span>
-                <span className="model-sub">
-                  ~{m.approx_size_mb} MB · {m.multilingual ? "multilingual" : "English"}
-                </span>
-              </div>
-              {downloading ? (
-                <div className="progress">
-                  <div className="bar" style={{ width: `${Math.round(frac * 100)}%` }} />
-                  <span>{Math.round(frac * 100)}%</span>
-                </div>
-              ) : m.downloaded ? (
-                props.activeId === m.id ? (
-                  <span className="badge active-badge">Active</span>
-                ) : (
-                  <button className="btn small" onClick={() => props.onUse(m.id)}>
-                    Use
-                  </button>
-                )
-              ) : (
-                <button className="btn small ghost" onClick={() => props.onDownload(m.id)}>
-                  Download
-                </button>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
-
-function HistoryView({ items }: { items: HistoryItem[] }) {
-  if (items.length === 0) {
-    return (
-      <section className="panel empty">
-        <p>No transcriptions yet.</p>
-        <p className="note">Dictate something and it will show up here.</p>
-      </section>
-    );
-  }
-  return (
-    <section className="panel">
-      <ul className="history">
-        {items.map((item) => (
-          <li key={item.id} className="history-item">
-            <p className="history-text">{item.text}</p>
-            <div className="history-meta">
-              <span>{item.app ?? "unknown app"}</span>
-              <span>{item.word_count} words</span>
-              <span>{new Date(item.created_at * 1000).toLocaleString()}</span>
-            </div>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function HomeView() {
-  const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
-    invoke<DashboardStats>("dashboard_stats").then(setStats).catch((e) => setErr(String(e)));
-  }, []);
-  if (err)
-    return (
-      <section className="panel">
-        <p className="error inline">{err}</p>
-      </section>
-    );
-  if (!stats) return <section className="panel">Loading…</section>;
-  const maxDay = Math.max(1, ...stats.last7_days.map((d) => d.count));
-  return (
-    <section className="panel">
-      <div className="stat-cards">
-        <Stat label="Dictations" value={stats.total} />
-        <Stat label="Words" value={stats.total_words} />
-        <Stat label="Avg words" value={stats.avg_words.toFixed(1)} />
-      </div>
-      <h3 className="section-title">Last 7 days</h3>
-      <div className="spark">
-        {stats.last7_days.length === 0 && <p className="note">No activity yet.</p>}
-        {stats.last7_days.map((d) => (
-          <div key={d.day} className="spark-col" title={`${d.day}: ${d.count}`}>
-            <div className="spark-bar" style={{ height: `${(d.count / maxDay) * 100}%` }} />
-            <span className="spark-label">{d.day.slice(5)}</span>
-          </div>
-        ))}
-      </div>
-      <h3 className="section-title">Top apps</h3>
-      <ul className="top-apps">
-        {stats.top_apps.length === 0 && <li className="note">—</li>}
-        {stats.top_apps.map((a) => (
-          <li key={a.app}>
-            <span>{a.app}</span>
-            <span>{a.count}</span>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: number | string }) {
-  return (
-    <div className="stat">
-      <span className="stat-value">{value}</span>
-      <span className="stat-label">{label}</span>
-    </div>
-  );
-}
-
-function MemoryView() {
-  const [entries, setEntries] = useState<MemoryEntry[]>([]);
-  const [kind, setKind] = useState("dictionary");
-  const [trigger, setTrigger] = useState("");
-  const [replacement, setReplacement] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-
-  const refresh = () =>
-    invoke<MemoryEntry[]>("list_memory").then(setEntries).catch((e) => setErr(String(e)));
-  useEffect(() => {
-    refresh();
-  }, []);
-
-  async function add() {
-    if (!trigger.trim() || !replacement.trim()) return;
-    await invoke("add_memory", { kind, trigger, replacement }).catch((e) => setErr(String(e)));
-    setTrigger("");
-    setReplacement("");
-    refresh();
-  }
-  async function remove(id: number | null) {
-    if (id == null) return;
-    await invoke("delete_memory", { id }).catch((e) => setErr(String(e)));
-    refresh();
-  }
-
-  return (
-    <section className="panel">
-      <div className="mem-add">
-        <select value={kind} onChange={(e) => setKind(e.currentTarget.value)}>
-          <option value="dictionary">Dictionary</option>
-          <option value="snippet">Snippet</option>
-        </select>
-        <input
-          placeholder={kind === "snippet" ? "trigger" : "from"}
-          value={trigger}
-          onChange={(e) => setTrigger(e.currentTarget.value)}
-        />
-        <input
-          placeholder={kind === "snippet" ? "expansion" : "to"}
-          value={replacement}
-          onChange={(e) => setReplacement(e.currentTarget.value)}
-        />
-        <button className="btn small start" onClick={add}>
-          Add
-        </button>
-      </div>
-      {err && <div className="error inline">{err}</div>}
-      <ul className="mem-list">
-        {entries.length === 0 && <li className="note">No entries yet.</li>}
-        {entries.map((e) => (
-          <li key={e.id ?? e.trigger} className="mem-item">
-            <span className="mem-kind">{e.kind}</span>
-            <span className="mem-trigger">{e.trigger}</span>
-            <span className="mem-arrow">→</span>
-            <span className="mem-rep">{e.replacement}</span>
-            <button className="mem-del" onClick={() => remove(e.id)}>
-              ✕
-            </button>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function ChatView() {
-  const [messages, setMessages] = useState<{ role: "user" | "ai"; text: string }[]>([]);
-  const [input, setInput] = useState("");
-  const [model, setModel] = useState("");
-  const [models, setModels] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    invoke<string[]>("ollama_models")
-      .then((m) => {
-        setModels(m);
-        if (m[0]) setModel(m[0]);
-      })
-      .catch((e) => setErr(String(e)));
-  }, []);
-
-  async function send() {
-    const prompt = input.trim();
-    if (!prompt || busy) return;
-    setInput("");
-    setMessages((m) => [...m, { role: "user", text: prompt }]);
-    setBusy(true);
-    setErr(null);
-    try {
-      const reply = await invoke<string>("ollama_chat", { prompt, model });
-      setMessages((m) => [...m, { role: "ai", text: reply }]);
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="panel chat">
-      <div className="chat-head">
-        <select value={model} onChange={(e) => setModel(e.currentTarget.value)}>
-          {models.length === 0 && <option value="">no models</option>}
-          {models.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
-        <span className="note inline">Local Ollama — start it and pull a model.</span>
-      </div>
-      <div className="chat-log">
-        {messages.length === 0 && !busy && (
-          <p className="note">Ask anything. Responses come from your local Ollama.</p>
-        )}
-        {messages.map((m, i) => (
-          <div key={i} className={`msg ${m.role}`}>
-            {m.text}
-          </div>
-        ))}
-        {busy && <div className="msg ai thinking">…</div>}
-      </div>
-      {err && <div className="error inline">{err}</div>}
-      <div className="chat-input">
-        <input
-          value={input}
-          placeholder="Message…"
-          onChange={(e) => setInput(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") send();
-          }}
-        />
-        <button className="btn start" onClick={send} disabled={busy}>
-          Send
-        </button>
-      </div>
-    </section>
-  );
-}
-
-function SettingsView(props: { settings: Settings | null; onSaved: () => void }) {
-  const [form, setForm] = useState<Settings | null>(props.settings);
-  const [saved, setSaved] = useState(false);
-  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
-
-  useEffect(() => setForm(props.settings), [props.settings]);
-
-  async function checkUpdates() {
-    setUpdateMsg("Checking…");
-    try {
-      const update = await check();
-      if (!update) {
-        setUpdateMsg("You're up to date.");
-        return;
-      }
-      setUpdateMsg(`Downloading ${update.version}…`);
-      await update.downloadAndInstall();
-      setUpdateMsg("Installed — restarting…");
-      await relaunch();
-    } catch (e) {
-      setUpdateMsg(`Update check failed: ${String(e)}`);
-    }
-  }
-
-  if (!form) return <section className="panel">Loading…</section>;
-
-  const update = (patch: Partial<Settings>) => {
-    setForm({ ...form, ...patch });
-    setSaved(false);
-  };
-
-  async function save() {
-    await invoke("set_settings", { input: form });
-    setSaved(true);
-    props.onSaved();
-  }
-
-  return (
-    <section className="panel">
-      <div className="form">
-        <label>
-          <span>Push-to-talk</span>
-          <input
-            value={form.push_to_talk}
-            onChange={(e) => update({ push_to_talk: e.currentTarget.value })}
-          />
-        </label>
-        <label>
-          <span>Ollama endpoint</span>
-          <input
-            value={form.ollama_endpoint}
-            onChange={(e) => update({ ollama_endpoint: e.currentTarget.value })}
-          />
-        </label>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={form.preserve_clipboard}
-            onChange={(e) => update({ preserve_clipboard: e.currentTarget.checked })}
-          />
-          <span>Preserve clipboard</span>
-        </label>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={form.low_latency}
-            onChange={(e) => update({ low_latency: e.currentTarget.checked })}
-          />
-          <span>Low-latency mode</span>
-        </label>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={form.strict_secure}
-            onChange={(e) => update({ strict_secure: e.currentTarget.checked })}
-          />
-          <span>
-            Never type into password fields
-            <small className="hint">
-              Refuses to insert text unless the focused field is confirmed safe.
-              On Linux the field type can’t be detected, so this blocks typing
-              until you paste manually — leave off unless you dictate near
-              password boxes.
-            </small>
-          </span>
-        </label>
-        <div className="form-actions">
-          <button className="btn start" onClick={save}>
-            Save
-          </button>
-          {saved && <span className="saved">Saved ✓</span>}
-        </div>
-      </div>
-      <div className="updates">
-        <button className="btn small ghost" onClick={checkUpdates}>
-          Check for updates
-        </button>
-        {updateMsg && <span className="note inline">{updateMsg}</span>}
-      </div>
-      <p className="note">Model is chosen in the Models tab.</p>
-    </section>
-  );
-}
-
-export default App;

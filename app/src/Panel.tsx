@@ -12,12 +12,17 @@ export default function Panel() {
     };
   }, []);
 
-  const label = state === "processing" ? "Transcribing…" : "Recording";
+  const recording = state === "recording";
 
   return (
     <div className="panel-pill" data-state={state}>
-      <span className="pulse" />
-      <span>{label}</span>
+      <span className="panel-bars" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+        <i />
+      </span>
+      <span className="panel-label">{recording ? "Recording" : "Transcribing…"}</span>
     </div>
   );
 }
