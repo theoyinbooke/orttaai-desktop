@@ -31,3 +31,8 @@ orttaai-core = { path = "../../core", features = ["full"] }
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 
+# Native Wayland typing via the RemoteDesktop portal is Linux-only; Cargo unions
+# these features with the base dependency, so Windows builds never pull in ashpd.
+[target."cfg(target_os = \"linux\")".dependencies]
+orttaai-core = { path = "../../core", features = ["portal"] }
+

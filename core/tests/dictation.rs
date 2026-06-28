@@ -134,3 +134,42 @@ fn memory_persistence_and_stats() {
     assert_eq!(stats.total_words, 3);
     assert_eq!(stats.top_apps[0].app, "Firefox");
 }
+
+/// A transcriber that always fails — used to exercise error-state recovery.
+struct FailingTranscriber;
+impl orttaai_core::transcription::Transcriber for FailingTranscriber {
+    fn load_model(&mut self, _model_id: &str) -> orttaai_core::Result<()> {
+        Ok(())
+    }
+    fn loaded_model(&self) -> Option<&str> {
+        Some("failing")
+    }
+    fn transcribe(&self, _samples: &[f32], _opts: &DecodeOptions) -> orttaai_core::Result<String> {
+        Err(orttaai_core::CoreError::Transcription("boom".into()))
+    }
+}
+
+#[test]
+fn coordinator_recovers_from_error_state() {
+    use orttaai_core::CoreError;
+
+    let mut coord = DictationCoordinator::new(
+        Box::new(FailingTranscriber),
+        Box::new(MockAudioCapture::new(1.0)),
+        Box::new(MockTextInjector::new()),
+        MemoryService::new(),
+        DecodeOptions::default(),
+    );
+
+    // First dictation fails during transcription → the coordinator lands in Error.
+    coord.on_press().unwrap();
+    assert_eq!(coord.state(), RecordingState::Recording);
+    let result = coord.on_release();
+    assert!(matches!(result, Err(CoreError::Transcription(_))));
+    assert_eq!(coord.state(), RecordingState::Error);
+
+    // A subsequent press must recover and start a fresh recording rather than
+    // staying bricked for the rest of the session.
+    coord.on_press().unwrap();
+    assert_eq!(coord.state(), RecordingState::Recording);
+}

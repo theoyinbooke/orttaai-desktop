@@ -34,7 +34,11 @@ injection = ["dep:enigo"]
 hotkey = ["dep:global-hotkey", "dep:windows-sys"]
 models = ["dep:ureq"]
 ollama = ["dep:ureq"]
-# Everything the desktop app needs.
+# Native GNOME/Wayland typing via the XDG RemoteDesktop portal (Linux only).
+# Kept out of `full` so Windows builds never pull in ashpd; the desktop app
+# adds it via a linux-only target dependency.
+portal = ["dep:ashpd", "dep:tokio", "dep:futures-util", "injection"]
+# Everything the desktop app needs (portal is added per-target on Linux).
 full = ["whisper", "cpal-audio", "injection", "hotkey", "models", "ollama"]
 
 [dev-dependencies]
@@ -42,3 +46,9 @@ hound = "3.5"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"], optional = true }
+
+# The RemoteDesktop portal (input injection on Wayland) is Linux-only.
+[target."cfg(target_os = \"linux\")".dependencies]
+ashpd = { version = "0.11", optional = true, default-features = false, features = ["tokio"] }
+tokio = { version = "1", optional = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+futures-util = { version = "0.3", optional = true }

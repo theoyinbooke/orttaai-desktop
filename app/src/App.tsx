@@ -71,6 +71,9 @@ function App() {
 
   const [engine, setEngine] = useState<EngineState>("off");
   const [lastTranscript, setLastTranscript] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const [level, setLevel] = useState(0);
 
   const refreshSettings = () =>
     invoke<Settings>("get_settings").then(setSettings).catch((e) => setError(String(e)));
@@ -86,6 +89,9 @@ function App() {
       listen<string>("engine-state", (e) => setEngine(e.payload as EngineState)),
       listen<string>("transcript", (e) => setLastTranscript(e.payload)),
       listen<string>("engine-error", (e) => setError(e.payload)),
+      listen<string>("engine-warning", (e) => setNotice(e.payload)),
+      listen("history-changed", () => setHistoryVersion((v) => v + 1)),
+      listen<number>("audio-level", (e) => setLevel(e.payload)),
       listen<{ id: string; fraction: number }>("model-progress", (e) =>
         setProgress((p) => ({ ...p, [e.payload.id]: e.payload.fraction })),
       ),
@@ -110,7 +116,7 @@ function App() {
         .then(setHistory)
         .catch((e) => setError(String(e)));
     }
-  }, [tab, engine]);
+  }, [tab, historyVersion]);
 
   const activeModel = models.find((m) => m.id === settings?.model_id);
   const canStart = !!activeModel?.downloaded;
@@ -158,23 +164,32 @@ function App() {
       </nav>
 
       {error && (
-        <div className="error" onClick={() => setError(null)}>
+        <div className="error" onClick={() => setError(null)} role="alert">
           {error}
+        </div>
+      )}
+      {notice && (
+        <div className="notice" onClick={() => setNotice(null)} role="status">
+          {notice}
         </div>
       )}
 
       <main className="content">
-        {tab === "home" && <HomeView />}
+        {tab === "home" && <HomeView key={historyVersion} />}
         {tab === "status" && (
           <StatusView
             settings={settings}
             engine={engine}
             activeModel={activeModel}
             canStart={canStart}
+            level={level}
             lastTranscript={lastTranscript}
             onStart={start}
             onStop={stop}
             onPickModel={() => setTab("models")}
+            onToggleRecord={() =>
+              invoke("toggle_recording").catch((e) => setError(String(e)))
+            }
           />
         )}
         {tab === "models" && (
@@ -208,12 +223,14 @@ function StatusView(props: {
   engine: EngineState;
   activeModel: ModelInfo | undefined;
   canStart: boolean;
+  level: number;
   lastTranscript: string;
   onStart: () => void;
   onStop: () => void;
   onPickModel: () => void;
+  onToggleRecord: () => void;
 }) {
-  const { settings, engine, activeModel, canStart, lastTranscript } = props;
+  const { settings, engine, activeModel, canStart, level, lastTranscript } = props;
   const running = engine !== "off";
 
   return (
@@ -248,6 +265,40 @@ function StatusView(props: {
           </button>
         )}
       </div>
+
+      {running && (
+        <div className="ptt">
+          <button
+            className={`btn ${engine === "recording" ? "stop" : "start"}`}
+            onClick={props.onToggleRecord}
+          >
+            {engine === "recording" ? "■ Stop & insert" : "● Click to record"}
+          </button>
+          <span className="note inline">
+            Hold-to-talk not firing (common on Wayland)? Click here — or the tray
+            — then speak, and click again to insert.
+          </span>
+        </div>
+      )}
+
+      {running && (
+        <div className="mic">
+          <span className="mic-label">Mic</span>
+          <div
+            className="meter"
+            role="meter"
+            aria-label="Microphone input level"
+            title="Microphone input level — speak and watch this move"
+          >
+            <div
+              className="meter-fill"
+              style={{
+                width: `${Math.min(100, Math.round(Math.sqrt(Math.max(0, level)) * 110))}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
 
       {lastTranscript && (
         <div className="last-transcript">

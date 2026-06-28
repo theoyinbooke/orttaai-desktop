@@ -27,6 +27,9 @@ pub enum InjectionResult {
     Success,
     BlockedSecureField,
     NoTranscript,
+    /// A transcript was produced but typing it into the focused app failed
+    /// (e.g. GNOME/Wayland has no virtual-keyboard protocol for `wtype`).
+    Failed,
 }
 
 /// Whether the focused field is a secure/password field. `Unknown` is the honest

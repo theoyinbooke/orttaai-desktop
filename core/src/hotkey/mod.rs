@@ -219,6 +219,26 @@ impl Drop for SystemHotkeyManager {
     }
 }
 
+/// The best hotkey manager for the current session: the GlobalShortcuts portal
+/// on Wayland (where X11 key grabs aren't delivered), otherwise the system
+/// global hotkey (`RegisterHotKey` / `XGrabKey`).
+pub fn default_manager() -> Box<dyn HotkeyManager> {
+    #[cfg(all(feature = "portal", target_os = "linux"))]
+    {
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var("XDG_SESSION_TYPE")
+                .map(|s| s.eq_ignore_ascii_case("wayland"))
+                .unwrap_or(false);
+        if wayland {
+            return Box::new(portal::PortalHotkeyManager::new());
+        }
+    }
+    Box::new(SystemHotkeyManager::new())
+}
+
+#[cfg(all(feature = "portal", target_os = "linux"))]
+mod portal;
+
 #[cfg(feature = "hotkey")]
 fn to_global_hotkey(combo: &HotkeyCombo) -> Result<global_hotkey::hotkey::HotKey> {
     use crate::types::Modifier;

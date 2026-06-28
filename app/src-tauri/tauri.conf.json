@@ -60,11 +60,21 @@
           "libgtk-3-0",
           "libasound2",
           "libxdo3",
-          "libssl3"
-        ]
+          "libssl3",
+          "libayatana-appindicator3-1"
+        ],
+        "recommends": ["wtype", "wl-clipboard"]
       },
       "rpm": {
-        "depends": ["webkit2gtk4.1", "gtk3", "alsa-lib", "xdotool", "openssl"]
+        "depends": [
+          "webkit2gtk4.1",
+          "gtk3",
+          "alsa-lib",
+          "libxdo",
+          "openssl",
+          "libayatana-appindicator-gtk3"
+        ],
+        "recommends": ["wtype", "wl-clipboard"]
       }
     }
   },

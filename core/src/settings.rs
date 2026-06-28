@@ -16,6 +16,10 @@ pub struct Settings {
     pub preserve_clipboard: bool,
     pub low_latency: bool,
     pub ollama_endpoint: String,
+    /// XDG RemoteDesktop portal restore token (Wayland) — lets us re-open the
+    /// input-injection session on later launches without re-prompting.
+    #[serde(default)]
+    pub wayland_restore_token: Option<String>,
 }
 
 impl Default for Settings {
@@ -27,6 +31,7 @@ impl Default for Settings {
             preserve_clipboard: true,
             low_latency: false,
             ollama_endpoint: "http://localhost:11434".to_string(),
+            wayland_restore_token: None,
         }
     }
 }

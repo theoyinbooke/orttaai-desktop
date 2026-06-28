@@ -6,12 +6,12 @@
 
 use orttaai_core::audio::CpalAudioCapture;
 use orttaai_core::coordinator::DictationCoordinator;
-use orttaai_core::hotkey::{HotkeyCallback, HotkeyManager, SystemHotkeyManager};
+use orttaai_core::hotkey::{default_manager, HotkeyCallback, HotkeyManager};
 use orttaai_core::injection::SystemTextInjector;
 use orttaai_core::settings::Settings;
-use orttaai_core::store::Store;
+use orttaai_core::store::{Store, TranscriptionRecord};
 use orttaai_core::transcription::WhisperTranscriber;
-use orttaai_core::types::{DecodeOptions, HotkeyCombo, Modifier};
+use orttaai_core::types::{DecodeOptions, HotkeyCombo, Modifier, RecordingState};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,7 +27,10 @@ const TRAY_ID: &str = "main";
 
 #[derive(Default)]
 struct EngineState {
-    hotkey: Mutex<Option<SystemHotkeyManager>>,
+    hotkey: Mutex<Option<Box<dyn HotkeyManager>>>,
+    /// The live coordinator, shared with the hotkey thread and the manual
+    /// (Wayland/tray) record toggle. `None` when the engine is stopped.
+    coordinator: Mutex<Option<Arc<Mutex<DictationCoordinator>>>>,
     running: AtomicBool,
 }
 
@@ -81,43 +84,183 @@ fn start_dictation(
         DecodeOptions::default(),
     );
     let coordinator = Arc::new(Mutex::new(coordinator));
+    *state.coordinator.lock().unwrap() = Some(coordinator.clone());
 
     let on_down: HotkeyCallback = {
         let app = app.clone();
         let coordinator = coordinator.clone();
-        Box::new(move || {
-            if coordinator.lock().unwrap().on_press().is_ok() {
-                emit_state(&app, "recording");
-            }
-        })
+        Box::new(move || do_press(&app, &coordinator))
     };
     let on_up: HotkeyCallback = {
         let app = app.clone();
         let coordinator = coordinator.clone();
-        Box::new(move || {
-            emit_state(&app, "processing");
-            match coordinator.lock().unwrap().on_release() {
-                Ok(outcome) => {
-                    if let Some(text) = outcome.transcript {
-                        let _ = app.emit("transcript", text);
-                    }
-                }
-                Err(e) => {
-                    let _ = app.emit("engine-error", e.to_string());
-                }
-            }
-            emit_state(&app, "idle");
-        })
+        Box::new(move || do_release(&app, &coordinator))
     };
 
-    let mut hotkey = SystemHotkeyManager::new();
-    hotkey
-        .register(settings.push_to_talk, on_down, on_up)
-        .map_err(|e| e.to_string())?;
-    *state.hotkey.lock().unwrap() = Some(hotkey);
+    // Try to grab the global hotkey. On Wayland (and some WMs) this can't
+    // register — or registers but never delivers events — so DON'T fail the
+    // whole engine: keep running and let the user dictate with the on-screen /
+    // tray "Record" toggle instead.
+    let mut hotkey = default_manager();
+    match hotkey.register(settings.push_to_talk, on_down, on_up) {
+        Ok(()) => {
+            *state.hotkey.lock().unwrap() = Some(hotkey);
+            if is_wayland() {
+                let _ = app.emit(
+                    "engine-warning",
+                    "On Wayland your shortcut is a toggle: with your target app focused, press it once to start, then press it again to stop and insert. (Configure it in Settings → Keyboard.)",
+                );
+            }
+        }
+        Err(e) => {
+            let _ = app.emit(
+                "engine-warning",
+                format!(
+                    "Global push-to-talk is unavailable ({e}). Use the “Click to record” button (or the tray) to dictate."
+                ),
+            );
+        }
+    }
     state.running.store(true, Ordering::SeqCst);
     emit_state(&app, "idle");
     Ok(())
+}
+
+/// Start recording on the shared coordinator and reflect it in the UI. Safe to
+/// call from the hotkey thread or an IPC command.
+fn do_press(app: &AppHandle, coordinator: &Arc<Mutex<DictationCoordinator>>) {
+    let mut coord = coordinator.lock().unwrap();
+    match coord.on_press() {
+        Ok(()) if coord.state() == RecordingState::Recording => {
+            drop(coord);
+            emit_state(app, "recording");
+            spawn_level_meter(app.clone(), coordinator.clone());
+        }
+        Ok(()) => {} // already recording — ignore the repeat press
+        Err(e) => {
+            drop(coord);
+            let _ = app.emit("engine-error", e.to_string());
+        }
+    }
+}
+
+/// While recording, emit `audio-level` (0.0..=1.0) ~12×/s so the UI can show a
+/// live mic meter — the user's proof that the right input source is captured.
+fn spawn_level_meter(app: AppHandle, coordinator: Arc<Mutex<DictationCoordinator>>) {
+    std::thread::spawn(move || {
+        loop {
+            let (recording, level) = {
+                let c = coordinator.lock().unwrap();
+                (c.state() == RecordingState::Recording, c.level())
+            };
+            if !recording {
+                break;
+            }
+            let _ = app.emit("audio-level", level);
+            std::thread::sleep(std::time::Duration::from_millis(80));
+        }
+        let _ = app.emit("audio-level", 0.0_f32);
+    });
+}
+
+/// Stop recording, transcribe, inject, and persist the transcript. This blocks
+/// for the duration of the decode, so IPC callers should run it off-thread.
+fn do_release(app: &AppHandle, coordinator: &Arc<Mutex<DictationCoordinator>>) {
+    emit_state(app, "processing");
+    let outcome = coordinator.lock().unwrap().on_release();
+    match outcome {
+        Ok(o) => {
+            eprintln!(
+                "orttaai: dictation done — has_transcript={}, inject_error={:?}",
+                o.transcript.is_some(),
+                o.inject_error
+            );
+            if let Some(text) = o.transcript {
+                persist_transcript(&text, o.duration_ms);
+                let _ = app.emit("transcript", text.clone());
+                let _ = app.emit("history-changed", ());
+                if let Some(err) = o.inject_error {
+                    // Typing failed (common on GNOME/Wayland). Don't lose the
+                    // transcript: it is saved to History; also copy it so the
+                    // user can paste it manually.
+                    copy_to_clipboard(&text);
+                    let _ = app.emit(
+                        "engine-warning",
+                        format!("Couldn't type into the focused app ({err}). Saved to History and copied to the clipboard — press Ctrl+V to paste."),
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            let _ = app.emit("engine-error", e.to_string());
+        }
+    }
+    emit_state(app, "idle");
+}
+
+/// Best-effort clipboard copy so a transcript is recoverable when injection
+/// fails (common on GNOME/Wayland). Tries `wl-copy` (Wayland) then `xclip`/`xsel`.
+fn copy_to_clipboard(text: &str) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let candidates: [(&str, &[&str]); 3] = [
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+        ("xsel", &["--clipboard", "--input"]),
+    ];
+    for (bin, args) in candidates {
+        if let Ok(mut child) = Command::new(bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            // wl-copy forks to serve the selection; don't block waiting on it.
+            return;
+        }
+    }
+}
+
+/// Whether we're in a Wayland session (where the global hotkey is unreliable).
+fn is_wayland() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var("XDG_SESSION_TYPE")
+            .map(|s| s.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false)
+}
+
+/// Best-effort write of a completed dictation to the history store so Home and
+/// History actually populate.
+fn persist_transcript(text: &str, duration_ms: i64) {
+    match Store::open_default() {
+        Ok(store) => {
+            let record = TranscriptionRecord::new(text, active_app(), duration_ms, now_unix());
+            if let Err(e) = store.insert_transcription(&record) {
+                eprintln!("orttaai: failed to persist transcription: {e}");
+            }
+        }
+        Err(e) => eprintln!("orttaai: failed to open history store: {e}"),
+    }
+}
+
+/// Current Unix time in seconds.
+fn now_unix() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Name of the foreground application, when known. Real per-platform detection
+/// (X11 `_NET_ACTIVE_WINDOW`, Windows `GetForegroundWindow`) is a follow-up;
+/// Wayland has no portable API, so this stays `None` there.
+fn active_app() -> Option<String> {
+    None
 }
 
 #[tauri::command]
@@ -125,9 +268,39 @@ fn stop_dictation(app: AppHandle, state: State<EngineState>) -> Result<(), Strin
     if let Some(mut hotkey) = state.hotkey.lock().unwrap().take() {
         hotkey.unregister().map_err(|e| e.to_string())?;
     }
+    *state.coordinator.lock().unwrap() = None;
     state.running.store(false, Ordering::SeqCst);
     emit_state(&app, "off");
     Ok(())
+}
+
+/// Toggle recording on the shared coordinator. Shared by the IPC command and the
+/// tray menu so both work when the global hotkey doesn't (Wayland).
+fn toggle_recording_impl(app: &AppHandle, state: &EngineState) {
+    let coordinator = state.coordinator.lock().unwrap().clone();
+    let Some(coordinator) = coordinator else {
+        let _ = app.emit("engine-error", "Engine is not running — press Start first.");
+        return;
+    };
+    let recording = matches!(
+        coordinator.lock().unwrap().state(),
+        RecordingState::Recording
+    );
+    if recording {
+        // Decode blocks; keep the IPC runtime responsive by going off-thread.
+        let app = app.clone();
+        std::thread::spawn(move || do_release(&app, &coordinator));
+    } else {
+        do_press(app, &coordinator);
+    }
+}
+
+/// Manual push-to-talk toggle for when the global hotkey is unavailable (Wayland)
+/// or the user prefers clicking: the first call starts recording, the second
+/// stops, transcribes, and injects.
+#[tauri::command]
+fn toggle_recording(app: AppHandle, state: State<EngineState>) {
+    toggle_recording_impl(&app, state.inner());
 }
 
 /// Broadcast a state change to the frontend, reflect it in the tray tooltip, and
@@ -143,13 +316,11 @@ fn emit_state(app: &AppHandle, state: &str) {
         };
         let _ = tray.set_tooltip(Some(tip));
     }
-    if let Some(panel) = app.get_webview_window("panel") {
-        let _ = if matches!(state, "recording" | "processing") {
-            panel.show()
-        } else {
-            panel.hide()
-        };
-    }
+    // NOTE: the floating panel window steals keyboard focus when shown on
+    // Wayland, which routed the injected text to the wrong window. Keep it hidden
+    // until it can be made non-focusable; recording state still shows via the
+    // tray tooltip, the main-window badge, and the mic meter.
+    let _ = app.get_webview_window("panel").map(|p| p.hide());
 }
 
 // ---- Settings + models ------------------------------------------------------
@@ -357,8 +528,9 @@ fn recent_history(limit: i64) -> Result<Vec<HistoryItem>, String> {
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show Orttaai", true, None::<&str>)?;
+    let rec = MenuItem::with_id(app, "rec", "Start / stop recording", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &rec, &quit])?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Orttaai")
@@ -371,6 +543,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     let _ = window.set_focus();
                 }
             }
+            "rec" => toggle_recording_impl(app, app.state::<EngineState>().inner()),
             _ => {}
         });
     if let Some(icon) = app.default_window_icon().cloned() {
@@ -416,6 +589,7 @@ pub fn run() {
             engine_status,
             start_dictation,
             stop_dictation,
+            toggle_recording,
             ollama_models,
             ollama_chat,
             dashboard_stats,

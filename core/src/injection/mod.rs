@@ -96,6 +96,8 @@ impl TextInjector for MockTextInjector {
 pub struct SystemTextInjector {
     #[cfg(all(feature = "injection", target_os = "linux"))]
     wayland: bool,
+    #[cfg(all(feature = "portal", target_os = "linux"))]
+    portal: Option<portal::WaylandPortalInjector>,
 }
 
 impl SystemTextInjector {
@@ -103,6 +105,32 @@ impl SystemTextInjector {
         Self {
             #[cfg(all(feature = "injection", target_os = "linux"))]
             wayland: is_wayland_session(),
+            #[cfg(all(feature = "portal", target_os = "linux"))]
+            portal: init_portal(),
+        }
+    }
+}
+
+/// On Wayland, try to open a RemoteDesktop portal session (shows the permission
+/// dialog the first time). Returns `None` if unavailable or denied so we fall
+/// back to `wtype`/clipboard.
+#[cfg(all(feature = "portal", target_os = "linux"))]
+fn init_portal() -> Option<portal::WaylandPortalInjector> {
+    if !is_wayland_session() {
+        return None;
+    }
+    match portal::WaylandPortalInjector::new() {
+        Ok(p) if p.is_ready() => {
+            tracing::info!("Wayland injection via the RemoteDesktop portal");
+            Some(p)
+        }
+        Ok(_) => {
+            tracing::warn!("RemoteDesktop portal not granted; falling back to wtype");
+            None
+        }
+        Err(e) => {
+            tracing::warn!("RemoteDesktop portal unavailable: {e}");
+            None
         }
     }
 }
@@ -151,6 +179,10 @@ impl TextInjector for SystemTextInjector {
 #[cfg(feature = "injection")]
 impl SystemTextInjector {
     fn type_text(&self, text: &str) -> Result<InjectionResult> {
+        #[cfg(all(feature = "portal", target_os = "linux"))]
+        if let Some(portal) = &self.portal {
+            return portal.inject(text);
+        }
         #[cfg(target_os = "linux")]
         if self.wayland {
             return type_via_wtype(text);
@@ -181,15 +213,25 @@ fn type_via_enigo(text: &str) -> Result<InjectionResult> {
 
 #[cfg(all(feature = "injection", target_os = "linux"))]
 fn type_via_wtype(text: &str) -> Result<InjectionResult> {
-    let status = std::process::Command::new("wtype")
-        .arg(text)
-        .status()
-        .map_err(|e| CoreError::Injection(format!("spawn wtype (install `wtype`): {e}")))?;
-    if status.success() {
-        Ok(InjectionResult::Success)
-    } else {
-        Err(CoreError::Injection(format!("wtype exited with {status}")))
+    match std::process::Command::new("wtype").arg(text).status() {
+        Ok(status) if status.success() => Ok(InjectionResult::Success),
+        Ok(status) => Err(CoreError::Injection(format!("wtype exited with {status}"))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(CoreError::Injection(
+            "Wayland typing needs the `wtype` tool, which isn't installed. \
+             Install it with `sudo apt install wtype` (Debian/Ubuntu) or \
+             `sudo dnf install wtype` (Fedora), then try again."
+                .to_string(),
+        )),
+        Err(e) => Err(CoreError::Injection(format!("failed to run wtype: {e}"))),
     }
+}
+
+/// Whether the `wtype` binary is available on `PATH` (used for first-run checks).
+#[cfg(all(feature = "injection", target_os = "linux"))]
+pub fn wtype_available() -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join("wtype").is_file()))
+        .unwrap_or(false)
 }
 
 #[cfg(all(feature = "injection", target_os = "linux"))]
@@ -199,3 +241,6 @@ fn is_wayland_session() -> bool {
             .map(|s| s.eq_ignore_ascii_case("wayland"))
             .unwrap_or(false)
 }
+
+#[cfg(all(feature = "portal", target_os = "linux"))]
+mod portal;
