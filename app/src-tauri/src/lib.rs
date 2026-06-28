@@ -40,6 +40,9 @@ struct EngineState {
     /// Queue to the single dictation worker thread (which owns the coordinator
     /// and runs the slow decode). `None` when the engine is stopped.
     commands: Mutex<Option<std::sync::mpsc::Sender<DictationCmd>>>,
+    /// The app focused when recording started — recorded as the dictation's
+    /// source. `None` on Wayland, where the focused app can't be detected.
+    source_app: Mutex<Option<String>>,
     running: AtomicBool,
 }
 
@@ -180,6 +183,10 @@ fn do_press(app: &AppHandle, coordinator: &Arc<Mutex<DictationCoordinator>>) {
     match coord.on_press() {
         Ok(()) if coord.state() == RecordingState::Recording => {
             drop(coord);
+            // Capture the focused app now (recording start) as this dictation's
+            // source. `None` on Wayland, where focus can't be detected.
+            *app.state::<EngineState>().source_app.lock().unwrap() =
+                orttaai_core::focus::focused_app();
             emit_state(app, "recording");
             spawn_level_meter(app.clone(), coordinator.clone());
         }
@@ -224,7 +231,8 @@ fn do_release(app: &AppHandle, coordinator: &Arc<Mutex<DictationCoordinator>>) {
                 o.inject_error
             );
             if let Some(text) = o.transcript {
-                persist_transcript(&text, o.duration_ms);
+                let source = app.state::<EngineState>().source_app.lock().unwrap().clone();
+                persist_transcript(&text, o.duration_ms, source);
                 let _ = app.emit("transcript", text.clone());
                 let _ = app.emit("history-changed", ());
                 if let Some(err) = o.inject_error {
@@ -282,11 +290,12 @@ fn is_wayland() -> bool {
 }
 
 /// Best-effort write of a completed dictation to the history store so Home and
-/// History actually populate.
-fn persist_transcript(text: &str, duration_ms: i64) {
+/// History actually populate. `source` is the app it was dictated into (captured
+/// at recording start; `None` on Wayland where focus can't be detected).
+fn persist_transcript(text: &str, duration_ms: i64, source: Option<String>) {
     match Store::open_default() {
         Ok(store) => {
-            let record = TranscriptionRecord::new(text, active_app(), duration_ms, now_unix());
+            let record = TranscriptionRecord::new(text, source, duration_ms, now_unix());
             if let Err(e) = store.insert_transcription(&record) {
                 eprintln!("orttaai: failed to persist transcription: {e}");
             }
@@ -302,13 +311,6 @@ fn now_unix() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
-}
-
-/// Name of the foreground application, when known. Real per-platform detection
-/// (X11 `_NET_ACTIVE_WINDOW`, Windows `GetForegroundWindow`) is a follow-up;
-/// Wayland has no portable API, so this stays `None` there.
-fn active_app() -> Option<String> {
-    None
 }
 
 #[tauri::command]
@@ -456,10 +458,19 @@ async fn ollama_chat(prompt: String, model: String) -> Result<String, String> {
 // ---- Analytics + Personal Memory --------------------------------------------
 
 #[tauri::command]
-fn dashboard_stats() -> Result<orttaai_core::store::DashboardStats, String> {
+fn dashboard_stats(days: Option<i64>) -> Result<orttaai_core::store::DashboardStats, String> {
     Store::open_default()
-        .and_then(|s| s.stats())
+        .and_then(|s| s.stats(days))
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_transcription(app: AppHandle, id: i64) -> Result<(), String> {
+    Store::open_default()
+        .and_then(|s| s.delete_transcription(id))
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("history-changed", ());
+    Ok(())
 }
 
 #[tauri::command]
@@ -640,6 +651,7 @@ pub fn run() {
             ollama_models,
             ollama_chat,
             dashboard_stats,
+            delete_transcription,
             list_memory,
             add_memory,
             delete_memory

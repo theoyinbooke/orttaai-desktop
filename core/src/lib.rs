@@ -11,6 +11,7 @@ pub mod audio;
 pub mod clipboard;
 pub mod coordinator;
 pub mod error;
+pub mod focus;
 pub mod hotkey;
 pub mod injection;
 #[cfg(feature = "ollama")]

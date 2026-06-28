@@ -135,6 +135,13 @@ impl Store {
         Ok(out)
     }
 
+    /// Delete a single transcription by id.
+    pub fn delete_transcription(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM transcriptions WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     /// Total number of stored transcriptions.
     pub fn count(&self) -> Result<i64> {
         let n = self
@@ -145,14 +152,30 @@ impl Store {
 
     // ---- Analytics ----------------------------------------------------------
 
-    /// Aggregate stats for the Home/Analytics dashboards.
-    pub fn stats(&self) -> Result<DashboardStats> {
-        let total: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM transcriptions", [], |r| r.get(0))?;
+    /// Aggregate stats for the dashboards. `days` limits the window (e.g. `Some(7)`
+    /// for the last week); `None` or `Some(0)` means all-time.
+    pub fn stats(&self, days: Option<i64>) -> Result<DashboardStats> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let window = days.filter(|d| *d > 0);
+        // 0 includes everything; otherwise the start of the selected window.
+        let cutoff = window.map(|d| now - d * 86_400).unwrap_or(0);
+
+        let total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM transcriptions WHERE created_at >= ?1",
+            [cutoff],
+            |r| r.get(0),
+        )?;
         let total_words: i64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(word_count), 0) FROM transcriptions",
-            [],
+            "SELECT COALESCE(SUM(word_count), 0) FROM transcriptions WHERE created_at >= ?1",
+            [cutoff],
+            |r| r.get(0),
+        )?;
+        let total_duration_ms: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(duration_ms), 0) FROM transcriptions WHERE created_at >= ?1",
+            [cutoff],
             |r| r.get(0),
         )?;
         let avg_words = if total > 0 {
@@ -160,26 +183,22 @@ impl Store {
         } else {
             0.0
         };
-        let total_duration_ms: i64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(duration_ms), 0) FROM transcriptions",
-            [],
-            |r| r.get(0),
-        )?;
-        // Average dictation speed across all recordings (words ÷ minutes spoken).
+        // Average dictation speed (words ÷ minutes spoken).
         let avg_wpm = if total_duration_ms > 0 {
             total_words as f64 / (total_duration_ms as f64 / 60_000.0)
         } else {
             0.0
         };
 
+        // Per-day activity for the chart over the selected window (default 30 days).
+        let chart_cutoff = now - window.unwrap_or(30) * 86_400;
         let mut stmt = self.conn.prepare(
             "SELECT date(created_at, 'unixepoch', 'localtime') AS day, COUNT(*)
-             FROM transcriptions
-             WHERE created_at >= strftime('%s', 'now', '-7 days')
+             FROM transcriptions WHERE created_at >= ?1
              GROUP BY day ORDER BY day",
         )?;
         let last7_days = stmt
-            .query_map([], |r| {
+            .query_map([chart_cutoff], |r| {
                 Ok(DailyCount {
                     day: r.get(0)?,
                     count: r.get(1)?,
@@ -187,12 +206,15 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        // Top apps within the window — only real, captured app names.
         let mut stmt = self.conn.prepare(
-            "SELECT COALESCE(app, 'unknown') AS a, COUNT(*) AS c
-             FROM transcriptions GROUP BY a ORDER BY c DESC LIMIT 5",
+            "SELECT app AS a, COUNT(*) AS c
+             FROM transcriptions
+             WHERE created_at >= ?1 AND app IS NOT NULL AND app != ''
+             GROUP BY a ORDER BY c DESC LIMIT 5",
         )?;
         let top_apps = stmt
-            .query_map([], |r| {
+            .query_map([cutoff], |r| {
                 Ok(AppCount {
                     app: r.get(0)?,
                     count: r.get(1)?,

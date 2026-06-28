@@ -199,7 +199,7 @@ fn memory_persistence_and_stats() {
             1_700_000_000,
         ))
         .unwrap();
-    let stats = store.stats().unwrap();
+    let stats = store.stats(None).unwrap();
     assert_eq!(stats.total, 1);
     assert_eq!(stats.total_words, 3);
     assert_eq!(stats.top_apps[0].app, "Firefox");
