@@ -108,6 +108,30 @@ fn injection_failure_preserves_transcript() {
 }
 
 #[test]
+fn blank_audio_marker_is_not_injected() {
+    // whisper emits "[BLANK_AUDIO]" for silence; it must never be typed/saved.
+    let injector = MockTextInjector::new();
+    let log = injector.log();
+    let mut coord = coordinator_with("[BLANK_AUDIO]", injector, MemoryService::new());
+    coord.on_press().unwrap();
+    let outcome = coord.on_release().unwrap();
+    assert_eq!(outcome.result, InjectionResult::NoTranscript);
+    assert!(log.all().is_empty());
+}
+
+#[test]
+fn inline_nonspeech_marker_is_stripped_before_injection() {
+    // Real speech with a trailing non-speech tag should type only the speech.
+    let injector = MockTextInjector::new();
+    let log = injector.log();
+    let mut coord = coordinator_with("hello there [BLANK_AUDIO]", injector, MemoryService::new());
+    coord.on_press().unwrap();
+    let outcome = coord.on_release().unwrap();
+    assert_eq!(outcome.result, InjectionResult::Success);
+    assert_eq!(log.last().as_deref(), Some("hello there"));
+}
+
+#[test]
 fn release_without_press_is_a_noop() {
     let mut coord = coordinator_with("ignored", MockTextInjector::new(), MemoryService::new());
     let outcome = coord.on_release().unwrap();

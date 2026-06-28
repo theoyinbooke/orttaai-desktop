@@ -132,8 +132,9 @@ impl DictationCoordinator {
                 self.state = RecordingState::Error;
             })?;
 
-        let text = self.memory.apply(raw.trim());
-        if text.is_empty() || is_blank_marker(&text) {
+        let cleaned = strip_nonspeech_markers(raw.trim());
+        let text = self.memory.apply(&cleaned);
+        if text.trim().is_empty() {
             self.state = RecordingState::Idle;
             return Ok(DictationOutcome {
                 result: InjectionResult::NoTranscript,
@@ -183,11 +184,75 @@ impl DictationCoordinator {
     }
 }
 
-/// whisper.cpp emits placeholder tokens like `[BLANK_AUDIO]` for silence — treat
-/// those as "nothing said" rather than a real transcript.
-fn is_blank_marker(text: &str) -> bool {
-    let t = text.trim();
-    t.eq_ignore_ascii_case("[BLANK_AUDIO]")
-        || t.eq_ignore_ascii_case("[ Silence ]")
-        || t.eq_ignore_ascii_case("(silence)")
+/// whisper.cpp annotates non-speech audio with bracketed tags like
+/// `[BLANK_AUDIO]`, `[Music]`, or `(dramatic music)` — and emits them *inline*
+/// within an otherwise-real transcript, not only on their own. Strip any
+/// bracketed/parenthesized span that names a non-speech sound, leaving genuine
+/// dictated parentheticals (e.g. "call me (maybe)") intact, then collapse the
+/// whitespace the removed spans leave behind.
+fn strip_nonspeech_markers(text: &str) -> String {
+    const NONSPEECH: &[&str] = &[
+        "blank_audio",
+        "music",
+        "silence",
+        "applause",
+        "laughter",
+        "inaudible",
+        "noise",
+        "no audio",
+        "no speech",
+        "sighs",
+        "coughs",
+        "beep",
+    ];
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        let c = text[i..].chars().next().unwrap();
+        let closer = match c {
+            '[' => Some(']'),
+            '(' => Some(')'),
+            _ => None,
+        };
+        if let Some(close_ch) = closer {
+            if let Some(rel) = text[i + 1..].find(close_ch) {
+                let inner = text[i + 1..i + 1 + rel].to_ascii_lowercase();
+                if NONSPEECH.iter().any(|k| inner.contains(k)) {
+                    i += 1 + rel + 1; // skip the whole span, including the closer
+                    continue;
+                }
+            }
+        }
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_nonspeech_markers;
+
+    #[test]
+    fn strips_inline_and_standalone_nonspeech_tags() {
+        assert_eq!(
+            strip_nonspeech_markers("I hope it is working. [BLANK_AUDIO]"),
+            "I hope it is working."
+        );
+        assert_eq!(
+            strip_nonspeech_markers("[Music] This is working. [Music]"),
+            "This is working."
+        );
+        assert_eq!(strip_nonspeech_markers("(dramatic music)"), "");
+        assert_eq!(strip_nonspeech_markers("[BLANK_AUDIO]"), "");
+    }
+
+    #[test]
+    fn keeps_genuine_parentheticals() {
+        assert_eq!(strip_nonspeech_markers("call me (maybe)"), "call me (maybe)");
+        assert_eq!(
+            strip_nonspeech_markers("the deadline (urgent) is today"),
+            "the deadline (urgent) is today"
+        );
+    }
 }
