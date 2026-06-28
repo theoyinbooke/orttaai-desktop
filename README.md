@@ -20,7 +20,17 @@ See [`docs/architecture.md`](docs/architecture.md) and the full build plan for d
 
 **Phase 1 — all real backends landed.** The OS-agnostic core (traits, coordinator, memory, settings, store) is green, and **all four platform backends are implemented**: whisper.cpp transcription, cpal microphone capture (rubato resampling to 16 kHz), text injection (`enigo` + `wtype`), and the global push-to-talk hotkey (`global-hotkey`, with a win32 message pump on Windows). The **full `dictate` loop is wired end-to-end** — hold hotkey → speak → release → transcribe → inject. Everything compiles and lints clean across every target; live capture/injection/hotkey are verified on the target machine (they need OS permissions a CI/sandbox can't grant — see the platform notes).
 
-**Phase 2 — the Tauri desktop app is feature-complete.** `app/` is a Tauri 2 + React app over the core: a **system tray**, a **floating recording panel** (separate borderless window), and tabs for **Home** (7-day activity, top apps), **Status** (live Start/Stop + state badge), **Models** (download GGUF models with a progress bar, pick the active one), **Memory** (dictionary/snippet CRUD, applied during dictation), **History**, **Chat AI** (local Ollama), and editable **Settings**. The engine runs the real dictation loop and emits live `engine-state`/`transcript` events. Everything builds + lints clean; live dictation runs on Linux/Windows.
+**Phase 2 — the Tauri desktop app is feature-complete.** `app/` is a Tauri 2 + React app over the core, with a **system tray** and tabs:
+
+- **Dictate** — Start/Stop the engine, live state badge + mic level meter, the "click to record" toggle (for Wayland), recent dictations, and quick stats.
+- **History** — full transcript history with per-row delete.
+- **Insights** — activity & trends (words, WPM, top apps) with a time-range filter.
+- **Dictionary** — snippet/replacement CRUD, applied live during dictation.
+- **Models** — a compact table to download, switch, and **delete** GGUF models (with a download progress bar).
+- **Assistant** — local AI chat via Ollama.
+- **Settings** — hotkey, decode preset/threads, secure-field guard, theme, and updates.
+
+The engine runs the real dictation loop and emits live `engine-state`/`transcript` events; the model loads on a background thread so the window never freezes during start. Everything builds + lints clean; live dictation runs on Linux/Windows.
 
 ## Install
 
@@ -50,13 +60,18 @@ On **Windows**, run the `.exe` (or `.msi`) and follow the installer.
 
 Then: open the **Models** tab → download a Whisper model (the quantized **Q5** tiers
 are fastest) → **Dictate → Start**, and press the push-to-talk shortcut (default
-**Ctrl+Shift+Space**) to dictate into any app. Installed builds self-update via
-*Settings → Check for updates*.
+**Ctrl+Shift+Space**) to dictate into any app.
 
-> **GPU:** the default build runs on CPU (tuned + quantized models). On **NVIDIA**, build with
-> `--features cuda` for ~5–15× on medium/large models (needs the CUDA toolkit + driver). See
-> [`docs/performance.md`](docs/performance.md). _(Cross-vendor Vulkan is pending an upstream
-> whisper-rs fix — its 0.16 bindings reference ggml symbols the bundled whisper.cpp removed.)_
+**Auto-update:** installed builds check for updates **automatically on launch** and
+install the signed update (you can also trigger it from *Settings → Check for updates*).
+
+> **GPU:** the default download is a **portable CPU build** — compiled for an AVX2 baseline,
+> so it runs on every x86-64 CPU since ~2013 and never crashes on CPUs without AVX-512 (see
+> _Releases_ below). On **NVIDIA**, grab the separate **`*-cuda`** download (or build
+> `--features cuda` yourself) for ~5–15× on medium/large models — needs the NVIDIA driver at
+> runtime. See [`docs/performance.md`](docs/performance.md). _(Cross-vendor Vulkan is pending an
+> upstream whisper-rs fix — its 0.16 bindings reference ggml symbols the bundled whisper.cpp
+> removed.)_
 >
 > **Linux runtime notes:** dictation captures the mic (PipeWire/ALSA) and types via the
 > XDG **RemoteDesktop portal** on Wayland (grant the one-time prompt) or `wtype`/X11.
@@ -174,30 +189,48 @@ Secure/password-field detection is unreliable on Linux, Wayland global hotkeys a
 - **Linux:** `.AppImage`, `.deb`, `.rpm`
 - **Windows:** `.exe` (NSIS) and `.msi`
 
+**Portable CPU builds.** The release sets `GGML_NATIVE=OFF` so whisper.cpp compiles for an
+**AVX2 + FMA + F16C + BMI2** baseline instead of the runner's native ISA. This is essential:
+GitHub's runners are AVX-512-capable Xeons, and the ggml default (`-march=native`) would bake
+in AVX-512 and crash with an illegal instruction (SIGILL) on the many consumer CPUs without it.
+See [`docs/performance.md`](docs/performance.md) › _Portable release builds_.
+
 **Cut a release:**
 
 ```bash
-# 1. bump "version" in app/src-tauri/tauri.conf.json
+# 1. bump the version in ALL of these (keep them in sync):
+#      app/src-tauri/tauri.conf.json   ("version")
+#      app/src-tauri/Cargo.toml        ([package] version)
+#      app/package.json                ("version")
+#      Cargo.toml                      ([workspace.package] version)  ← core + cli
 # 2. tag and push
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.2.1 && git push origin v0.2.1
 ```
 
-CI builds each platform, signs the updater artifacts, and opens a **draft** GitHub
-Release with the installers + a `latest.json` manifest. Publish it to go live.
+CI builds each platform **sequentially** (`max-parallel: 1`) into a **draft** release —
+serialized so the per-platform merge into `latest.json` can't race — signs the updater
+artifacts, and a final `publish-release` job flips the draft to **published** atomically once
+every platform has uploaded. The `releases/latest/download/latest.json` endpoint only resolves
+to the published release, so the app never sees a half-built one.
 
-**One-time secret setup** (the updater signing key was generated with
-`tauri signer generate`; the public key is committed in `tauri.conf.json`):
+**GPU (CUDA) builds** are decoupled in `.github/workflows/release-cuda.yml` (manual dispatch):
+*Actions → release-cuda → Run workflow → tag*. It builds `--features cuda` and uploads `*-cuda`
+assets to that release. CUDA builds are intentionally **not** in `latest.json` — the
+auto-updater stays on the portable CPU build; NVIDIA users grab the `-cuda` download manually.
+
+**Updater signing secrets** (already configured; the signing key was generated with
+`tauri signer generate` and its public key is committed in `tauri.conf.json` — do **not**
+regenerate it, or already-installed builds will reject updates):
 
 | Secret | Value |
 |---|---|
 | `TAURI_SIGNING_PRIVATE_KEY` | contents of the private key file (kept out of the repo) |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the key password (empty if none) |
 
-**Auto-updates:** the app's *Settings → Check for updates* uses
-`@tauri-apps/plugin-updater`, fetching
-`releases/latest/download/latest.json` and installing the signed bundle for the
-current platform, then relaunching. The repository's Releases must be **public**
-for the default endpoint to be reachable.
+**Auto-updates:** the app checks **automatically on launch** (and from *Settings → Check for
+updates*) via `@tauri-apps/plugin-updater`, fetching `releases/latest/download/latest.json` and
+installing the signed bundle for the current platform, then relaunching. The repository's
+Releases must be **public** for the default endpoint to be reachable.
 
 ## License
 
