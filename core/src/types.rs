@@ -60,6 +60,9 @@ pub struct DecodeOptions {
     pub language: Option<String>,
     pub preset: DecodePreset,
     pub temperature: f32,
+    /// Decode threads; `0` lets the engine pick (≈ physical performance cores).
+    #[serde(default)]
+    pub n_threads: i32,
 }
 
 impl Default for DecodeOptions {
@@ -68,6 +71,7 @@ impl Default for DecodeOptions {
             language: Some("en".to_string()),
             preset: DecodePreset::Balanced,
             temperature: 0.0,
+            n_threads: 0,
         }
     }
 }

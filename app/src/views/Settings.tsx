@@ -9,6 +9,7 @@ import {
   Icon,
   Kbd,
   PageHeader,
+  Select,
   Toggle,
   useTheme,
   useToast,
@@ -110,17 +111,55 @@ export default function Settings(props: {
             hint="Restore your clipboard after pasting a transcript on fallback."
           />
           <Toggle
-            checked={form.low_latency}
-            onChange={(v) => update({ low_latency: v })}
-            label="Low-latency mode"
-            hint="Favor speed over a little accuracy when transcribing."
-          />
-          <Toggle
             checked={form.strict_secure}
             onChange={(v) => update({ strict_secure: v })}
             label="Never type into password fields"
             hint="Refuses to insert unless the focused field is confirmed safe. On Linux field type can't be detected, so this blocks typing until you paste manually — leave off unless you dictate near password boxes."
           />
+        </div>
+      </Card>
+
+      <Card className="settings-section">
+        <h2 className="section-h">Performance</h2>
+        <div className="field">
+          <span className="field-label">Speed vs accuracy</span>
+          <div className="segmented" role="radiogroup" aria-label="Decode preset">
+            {(["fast", "balanced", "accuracy"] as const).map((p) => (
+              <button
+                key={p}
+                role="radio"
+                aria-checked={form.preset === p}
+                className={`seg-btn ${form.preset === p ? "active" : ""}`}
+                onClick={() => update({ preset: p })}
+              >
+                {p[0].toUpperCase() + p.slice(1)}
+              </button>
+            ))}
+          </div>
+          <span className="field-hint">
+            Fast &amp; Balanced decode in a single deterministic pass (lowest latency). Accuracy
+            re-tries hard audio at higher temperature — slower worst-case, more robust.
+          </span>
+        </div>
+        <div className="field">
+          <span className="field-label">Decode threads</span>
+          <Select
+            value={String(form.n_threads)}
+            onChange={(v) => update({ n_threads: Number(v) })}
+            ariaLabel="Decode threads"
+            options={[
+              { value: "0", label: "Auto (recommended)" },
+              { value: "4", label: "4 threads" },
+              { value: "6", label: "6 threads" },
+              { value: "8", label: "8 threads" },
+              { value: "12", label: "12 threads" },
+              { value: "16", label: "16 threads" },
+            ]}
+          />
+          <span className="field-hint">
+            More isn't always faster on hybrid CPUs (performance + efficiency cores). Auto picks a
+            sensible default. Takes effect next time you start the engine.
+          </span>
         </div>
       </Card>
 

@@ -40,17 +40,23 @@ fn spec(id: &str, name: &str, size: u32, multilingual: bool) -> ModelSpec {
     }
 }
 
-/// The static catalog of downloadable models.
+/// The static catalog of downloadable models, fastest → most accurate.
+///
+/// Quantized (`q5`) tiers are the default recommendation: ~2.4–2.9× smaller than
+/// f16 and faster to load and decode on CPU, with only a minor accuracy cost.
+/// `large-v3-turbo` is the speed/accuracy sweet spot for a capable GPU.
 pub fn catalog() -> Vec<ModelSpec> {
     vec![
-        spec("ggml-tiny.en", "Tiny (English)", 75, false),
-        spec("ggml-tiny", "Tiny", 75, true),
-        spec("ggml-base.en", "Base (English)", 142, false),
-        spec("ggml-base", "Base", 142, true),
-        spec("ggml-small.en", "Small (English)", 466, false),
-        spec("ggml-small", "Small", 466, true),
-        spec("ggml-medium.en", "Medium (English)", 1500, false),
-        spec("ggml-large-v3-turbo", "Large v3 Turbo", 1600, true),
+        spec("ggml-tiny.en-q5_1", "Tiny · English (Q5)", 32, false),
+        spec("ggml-base.en-q5_1", "Base · English (Q5)", 60, false),
+        spec("ggml-base.en", "Base · English", 148, false),
+        spec("ggml-base-q5_1", "Base (Q5)", 60, true),
+        spec("ggml-small.en-q5_1", "Small · English (Q5)", 190, false),
+        spec("ggml-small-q5_1", "Small (Q5)", 190, true),
+        spec("ggml-medium-q5_0", "Medium (Q5)", 539, true),
+        spec("ggml-large-v3-turbo-q5_0", "Large v3 Turbo (Q5)", 574, true),
+        spec("ggml-large-v3-turbo", "Large v3 Turbo", 1620, true),
+        spec("ggml-large-v3-q5_0", "Large v3 (Q5)", 1081, true),
     ]
 }
 

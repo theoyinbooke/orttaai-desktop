@@ -5,7 +5,7 @@
 
 use super::Transcriber;
 use crate::error::{CoreError, Result};
-use crate::types::DecodeOptions;
+use crate::types::{DecodeOptions, DecodePreset};
 use std::path::{Path, PathBuf};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
@@ -48,7 +48,15 @@ impl WhisperTranscriber {
         let path_str = path
             .to_str()
             .ok_or_else(|| CoreError::Transcription("non-UTF-8 model path".to_string()))?;
-        let ctx = WhisperContext::new_with_params(path_str, WhisperContextParameters::default())
+        // Explicit params so GPU builds actually use the device. `use_gpu` only has
+        // an effect when a GPU backend was compiled in (the `vulkan`/`cuda`
+        // features); on a CPU build it's a no-op. flash_attn is a CUDA-kernel win
+        // (it disables DTW token timestamps, which dictation doesn't use).
+        let mut cparams = WhisperContextParameters::default();
+        cparams.use_gpu(cfg!(any(feature = "vulkan", feature = "cuda")));
+        cparams.gpu_device(0);
+        cparams.flash_attn(cfg!(feature = "cuda"));
+        let ctx = WhisperContext::new_with_params(path_str, cparams)
             .map_err(|e| CoreError::Transcription(format!("failed to load model {id}: {e}")))?;
         self.ctx = Some(ctx);
         self.model_id = Some(id);
@@ -79,7 +87,32 @@ impl Transcriber for WhisperTranscriber {
             other => other,
         };
         params.set_language(language);
-        params.set_n_threads(self.n_threads);
+
+        let threads = if opts.n_threads > 0 {
+            opts.n_threads
+        } else {
+            self.n_threads
+        };
+        params.set_n_threads(threads.max(1));
+
+        // Push-to-talk: each clip is one short, independent utterance, so drop the
+        // prior-transcript prompt, force a single segment, and skip timestamp/DTW
+        // work — all pure latency wins with no quality cost for plain-text dictation.
+        params.set_no_context(true);
+        params.set_single_segment(true);
+        params.set_no_timestamps(true);
+        params.set_suppress_nst(true);
+        params.set_temperature(opts.temperature);
+        // whisper.cpp's default temperature fallback re-decodes a "hard" clip up to
+        // ~6× (0.0→0.2→…), silently multiplying latency. Disable it for the fast
+        // presets; only Accuracy keeps the fallback for genuinely tough audio.
+        let temp_inc = if matches!(opts.preset, DecodePreset::Accuracy) {
+            0.2
+        } else {
+            0.0
+        };
+        params.set_temperature_inc(temp_inc);
+
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
@@ -107,8 +140,13 @@ impl Transcriber for WhisperTranscriber {
     }
 }
 
+/// Default decode threads. whisper.cpp matmul is compute-bound, so on a hybrid
+/// CPU (P + E cores + hyperthreads) piling on every logical thread hurts — the
+/// slowest E-core/HT straggler gates each layer. Cap at ~the performance-core
+/// count; users can override via `DecodeOptions::n_threads`.
 fn default_threads() -> i32 {
-    std::thread::available_parallelism()
-        .map(|n| n.get() as i32)
-        .unwrap_or(4)
+    let logical = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    logical.min(8) as i32
 }

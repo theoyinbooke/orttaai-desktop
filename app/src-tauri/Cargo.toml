@@ -36,3 +36,9 @@ tauri-plugin-process = "2.3.1"
 [target."cfg(target_os = \"linux\")".dependencies]
 orttaai-core = { path = "../../core", features = ["portal"] }
 
+# Opt-in GPU builds: `cargo build --features vulkan` (cross-platform default) or
+# `--features cuda` (NVIDIA-only variant). Off by default → CPU build.
+[features]
+vulkan = ["orttaai-core/vulkan"]
+cuda = ["orttaai-core/cuda"]
+

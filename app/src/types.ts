@@ -6,9 +6,10 @@ export type Settings = {
   model_id: string;
   push_to_talk: string;
   preserve_clipboard: boolean;
-  low_latency: boolean;
   ollama_endpoint: string;
   strict_secure: boolean;
+  preset: string;
+  n_threads: number;
 };
 
 export type HistoryItem = {

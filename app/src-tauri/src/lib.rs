@@ -11,7 +11,7 @@ use orttaai_core::injection::SystemTextInjector;
 use orttaai_core::settings::Settings;
 use orttaai_core::store::{Store, TranscriptionRecord};
 use orttaai_core::transcription::WhisperTranscriber;
-use orttaai_core::types::{DecodeOptions, HotkeyCombo, Modifier, RecordingState};
+use orttaai_core::types::{DecodePreset, HotkeyCombo, Modifier, RecordingState};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -93,7 +93,8 @@ fn start_dictation(
         Box::new(CpalAudioCapture::new()),
         Box::new(SystemTextInjector::new()),
         memory,
-        DecodeOptions::default(),
+        // Decode preset + thread count come from settings (the Performance panel).
+        settings.decode.clone(),
     );
     // Refuse to type into fields we can't confirm are non-secure (password
     // boxes) when the user opts in. On Linux/Wayland field status is always
@@ -375,9 +376,12 @@ struct SettingsInput {
     model_id: String,
     push_to_talk: String,
     preserve_clipboard: bool,
-    low_latency: bool,
     ollama_endpoint: String,
     strict_secure: bool,
+    /// "fast" | "balanced" | "accuracy" — the decode speed/accuracy preset.
+    preset: String,
+    /// Decode threads; 0 = auto.
+    n_threads: i32,
 }
 
 #[tauri::command]
@@ -386,10 +390,27 @@ fn set_settings(input: SettingsInput) -> Result<(), String> {
     settings.model_id = input.model_id;
     settings.push_to_talk = HotkeyCombo::parse(&input.push_to_talk);
     settings.preserve_clipboard = input.preserve_clipboard;
-    settings.low_latency = input.low_latency;
     settings.ollama_endpoint = input.ollama_endpoint;
     settings.strict_secure = input.strict_secure;
+    settings.decode.preset = preset_from_str(&input.preset);
+    settings.decode.n_threads = input.n_threads.clamp(0, 256);
     settings.save().map_err(|e| e.to_string())
+}
+
+fn preset_from_str(s: &str) -> DecodePreset {
+    match s {
+        "fast" => DecodePreset::Fast,
+        "accuracy" => DecodePreset::Accuracy,
+        _ => DecodePreset::Balanced,
+    }
+}
+
+fn preset_to_str(p: DecodePreset) -> &'static str {
+    match p {
+        DecodePreset::Fast => "fast",
+        DecodePreset::Balanced => "balanced",
+        DecodePreset::Accuracy => "accuracy",
+    }
 }
 
 #[tauri::command]
@@ -519,9 +540,10 @@ struct SettingsDto {
     model_id: String,
     push_to_talk: String,
     preserve_clipboard: bool,
-    low_latency: bool,
     ollama_endpoint: String,
     strict_secure: bool,
+    preset: String,
+    n_threads: i32,
 }
 
 #[tauri::command]
@@ -531,9 +553,10 @@ fn get_settings() -> SettingsDto {
         model_id: settings.model_id,
         push_to_talk: format_combo(&settings.push_to_talk),
         preserve_clipboard: settings.preserve_clipboard,
-        low_latency: settings.low_latency,
         ollama_endpoint: settings.ollama_endpoint,
         strict_secure: settings.strict_secure,
+        preset: preset_to_str(settings.decode.preset).to_string(),
+        n_threads: settings.decode.n_threads,
     }
 }
 
