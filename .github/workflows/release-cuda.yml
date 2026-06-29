@@ -52,6 +52,23 @@ jobs:
           method: local
           linux-local-args: '["--toolkit"]'
 
+      # The silent CUDA install on CI often doesn't register its MSBuild
+      # integration with Visual Studio, so CMake's `enable_language(CUDA)` fails
+      # with "No CUDA toolset found". Copy the integration into every VS
+      # BuildCustomizations dir so the MSBuild generator can find it.
+      - name: Register CUDA with Visual Studio (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $src = Join-Path $env:CUDA_PATH 'extras\visual_studio_integration\MSBuildExtensions'
+          if (-not (Test-Path $src)) { throw "CUDA VS integration not found at $src" }
+          $dests = Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\2022\*\MSBuild\Microsoft\VC\*\BuildCustomizations' -Directory -ErrorAction SilentlyContinue
+          if (-not $dests) { throw "No VS BuildCustomizations directory found" }
+          foreach ($d in $dests) {
+            Copy-Item "$src\*" $d.FullName -Force
+            Write-Host "Registered CUDA -> $($d.FullName)"
+          }
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
