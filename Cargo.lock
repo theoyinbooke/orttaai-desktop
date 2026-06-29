@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "orttaai-cli"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "hound",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "orttaai-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "ashpd",

@@ -401,11 +401,22 @@ fn emit_state(app: &AppHandle, state: &str) {
         };
         let _ = tray.set_tooltip(Some(tip));
     }
-    // NOTE: the floating panel window steals keyboard focus when shown on
-    // Wayland, which routed the injected text to the wrong window. Keep it hidden
-    // until it can be made non-focusable; recording state still shows via the
-    // tray tooltip, the main-window badge, and the mic meter.
-    let _ = app.get_webview_window("panel").map(|p| p.hide());
+    // Floating recording overlay — shown ONLY while recording (key held), and
+    // hidden the instant the key is released (i.e. before "processing", which is
+    // when transcription + INJECTION run). This is deliberate: even with
+    // `focusable:false`, GNOME/Mutter does not reliably keep an always-on-top
+    // window out of the focus chain, so a panel left visible during injection
+    // can capture the synthesized keystrokes. Hiding it on release returns focus
+    // to the user's target app before any text is typed. (`engine-state` is the
+    // single source of truth; every non-"recording" state hides it, so it can't
+    // get stuck on-screen.)
+    if let Some(panel) = app.get_webview_window("panel") {
+        let _ = if state == "recording" {
+            panel.show()
+        } else {
+            panel.hide()
+        };
+    }
 }
 
 // ---- Settings + models ------------------------------------------------------
@@ -681,6 +692,9 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
 }
 
 /// Park the floating panel near the bottom-center of the primary monitor.
+/// (No click-through: `set_ignore_cursor_events` on the not-yet-realized hidden
+/// window panics inside tao's GTK event loop, and `focusable:false` alone already
+/// stops it stealing keyboard focus — the property that matters for injection.)
 fn position_panel(app: &tauri::App) {
     if let Some(panel) = app.get_webview_window("panel") {
         if let Ok(Some(monitor)) = panel.primary_monitor() {
