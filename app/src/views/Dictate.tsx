@@ -146,8 +146,8 @@ export default function Dictate(props: {
           <div className="shortcut-block">
             <Kbd combo={combo} />
             <span className="shortcut-note">
-              Press to start, press again to insert.{" "}
-              <span className="muted">Hold-to-talk on Windows/X11; a toggle on Wayland.</span>
+              Hold to talk, release to insert.{" "}
+              <span className="muted">Works anywhere — the text lands in your focused app.</span>
             </span>
           </div>
           <button className="model-chip" onClick={() => onNavigate("models")}>

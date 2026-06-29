@@ -193,7 +193,7 @@ fn start_engine(app: &AppHandle, model_path: String) -> Result<(), String> {
             if is_wayland() {
                 let _ = app.emit(
                     "engine-warning",
-                    "On Wayland your shortcut is a toggle: with your target app focused, press it once to start, then press it again to stop and insert. (Configure it in Settings → Keyboard.)",
+                    "On Wayland, hold your shortcut to record and release to insert. If pressing it does nothing, open GNOME Settings → Keyboard and assign a key to Orttaai's “push-to-talk” shortcut.",
                 );
             }
         }

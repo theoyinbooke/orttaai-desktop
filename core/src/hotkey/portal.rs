@@ -98,7 +98,7 @@ impl HotkeyManager for PortalHotkeyManager {
                         }
                     };
                     let shortcut =
-                        NewShortcut::new(SHORTCUT_ID, "Dictate — press to start, again to insert")
+                        NewShortcut::new(SHORTCUT_ID, "Dictate — hold to talk, release to insert")
                             .preferred_trigger(Some(trigger.as_str()));
                     match gs
                         .bind_shortcuts(&session, &[shortcut], None)
@@ -130,13 +130,29 @@ impl HotkeyManager for PortalHotkeyManager {
                     }
                     let _ = ready_tx.send(Ok(()));
 
-                    // GNOME reliably delivers Activated (press) but Deactivated
-                    // (release) is flaky, so treat the shortcut as a TOGGLE:
-                    // press to start, press again to stop + insert. Because it's
-                    // a global shortcut, pressing it never steals focus from the
-                    // user's target app, so the text lands there.
+                    // Hold-to-talk. Verified against mutter / gnome-shell /
+                    // xdg-desktop-portal-gnome source: the portal emits one
+                    // `Activated` on press, then REPEATS it at the key auto-repeat
+                    // rate while held, then one `Deactivated` on release. So the
+                    // FIRST Activated starts recording, repeats are ignored, and
+                    // Deactivated stops + inserts. Because it's a global shortcut,
+                    // pressing it never steals focus, so the text lands in the
+                    // user's target app.
+                    //
+                    // Two safety nets guarantee a dropped release can never strand
+                    // recording "on":
+                    //   * watchdog — once autorepeat is seen, a gap with no further
+                    //     Activated means the key was released (covers a missed
+                    //     Deactivated). Only armed once repeats are actually
+                    //     arriving, so it can't false-stop a genuine hold when the
+                    //     user has key-repeat disabled.
+                    //   * hard cap — stop after MAX_HOLD regardless.
+                    const WATCHDOG_GAP: std::time::Duration = std::time::Duration::from_millis(1200);
+                    const MAX_HOLD: std::time::Duration = std::time::Duration::from_secs(60);
                     let mut active = false;
+                    let mut started_at: Option<std::time::Instant> = None;
                     let mut last_activated: Option<std::time::Instant> = None;
+                    let mut repeats: u32 = 0;
                     loop {
                         if stop.load(Ordering::Relaxed) {
                             break;
@@ -145,30 +161,42 @@ impl HotkeyManager for PortalHotkeyManager {
                             ev = activated.next() => {
                                 if matches!(&ev, Some(e) if e.shortcut_id() == SHORTCUT_ID) {
                                     let now = std::time::Instant::now();
-                                    // GNOME re-emits Activated while the key is held
-                                    // (and sometimes twice per press); collapse a
-                                    // burst into one toggle. Sliding the window on
-                                    // every event keeps a long hold as one toggle.
-                                    let fresh = last_activated
-                                        .is_none_or(|t| now.duration_since(t).as_millis() > 700);
                                     last_activated = Some(now);
-                                    if fresh {
-                                        eprintln!("orttaai: shortcut toggle (was_active={active})");
-                                        if active {
-                                            on_up();
-                                        } else {
-                                            on_down();
-                                        }
-                                        active = !active;
+                                    if active {
+                                        repeats += 1; // autorepeat while held — ignore
+                                    } else {
+                                        active = true;
+                                        started_at = Some(now);
+                                        repeats = 0;
+                                        eprintln!("orttaai: hotkey DOWN — recording");
+                                        on_down();
                                     }
                                 }
                             }
                             ev = deactivated.next() => {
-                                if matches!(&ev, Some(e) if e.shortcut_id() == SHORTCUT_ID) {
-                                    eprintln!("orttaai: GlobalShortcut Deactivated");
+                                if matches!(&ev, Some(e) if e.shortcut_id() == SHORTCUT_ID) && active {
+                                    eprintln!("orttaai: hotkey UP — stop + insert");
+                                    active = false;
+                                    on_up();
                                 }
                             }
-                            _ = tokio::time::sleep(std::time::Duration::from_millis(150)) => {}
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                                if active {
+                                    let now = std::time::Instant::now();
+                                    if started_at.is_some_and(|t| now.duration_since(t) > MAX_HOLD) {
+                                        eprintln!("orttaai: hotkey max-hold reached — stop");
+                                        active = false;
+                                        on_up();
+                                    } else if repeats >= 1
+                                        && last_activated
+                                            .is_some_and(|t| now.duration_since(t) > WATCHDOG_GAP)
+                                    {
+                                        eprintln!("orttaai: release inferred (missed Deactivated) — stop");
+                                        active = false;
+                                        on_up();
+                                    }
+                                }
+                            }
                         }
                     }
                 });
