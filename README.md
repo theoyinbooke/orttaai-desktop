@@ -4,6 +4,15 @@
 
 This is a standalone Rust + Tauri reimplementation of [Orttaai](https://github.com/theoyinbooke/orttaai) (the native macOS app) for **Linux and Windows**. The macOS app is a separate project and is not affected by this one.
 
+## Screenshots
+
+![Orttaai — Dictate: hold your shortcut, speak, and your words are typed into whatever app is focused](docs/screenshots/dictate.png)
+
+|  |  |
+| --- | --- |
+| **Models** — download, switch & delete on-device whisper models<br>![Models](docs/screenshots/models.png) | **Insights** — your dictation activity at a glance<br>![Insights](docs/screenshots/insights.png) |
+| **Dictionary** — spelling fixes & snippets, applied to every transcript<br>![Dictionary](docs/screenshots/dictionary.png) | **Settings** — shortcut, performance & secure-field guard<br>![Settings](docs/screenshots/settings.png) |
+
 ## Architecture
 
 A **write-once Rust core** + a **disposable Tauri UI shell**. Every OS-specific behavior (audio, text injection, global hotkey) lives behind a trait, so a change in one platform never forces a rewrite elsewhere.
