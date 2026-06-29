@@ -41,13 +41,16 @@ jobs:
             libgtk-3-dev libasound2-dev libxdo-dev
 
       # nvcc + CUDA libs to compile ggml-cuda. No GPU/driver needed to build.
-      # (First run may need the version/sub-packages tuned — CUDA CI is finicky.)
+      # Use the FULL local toolkit installer — reliable cross-platform. On Linux
+      # `--toolkit` installs the toolkit only (skips the driver; CI has no GPU).
+      # (A network install with hand-picked sub-packages failed because cuBLAS
+      # ships as libcublas-*, not cuda-cublas-*, so the apt names didn't resolve.)
       - name: Install CUDA Toolkit
         uses: Jimver/cuda-toolkit@v0.2.19
         with:
           cuda: '12.5.1'
-          method: network
-          sub-packages: '["nvcc","cudart","cublas","cublas_dev"]'
+          method: local
+          linux-local-args: '["--toolkit"]'
 
       - uses: actions/setup-node@v4
         with:
@@ -70,6 +73,10 @@ jobs:
           # Portable CPU fallback paths in the same binary (see release.yml).
           GGML_NATIVE: 'OFF'
           GGML_AVX512: 'OFF'
+          # Build CUDA kernels for a broad range of NVIDIA archs so the public
+          # GPU download isn't tied to one card: Turing(75), Ampere(80,86),
+          # Ada(89), Hopper(90). (whisper-rs-sys forwards CMAKE_* to CMake.)
+          CMAKE_CUDA_ARCHITECTURES: '75;80;86;89;90'
         run: npx tauri build --features cuda
 
       # Rename each bundle with a `-cuda` suffix (so it never collides with the
