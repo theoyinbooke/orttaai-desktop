@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button, ConfirmDialog, CopyButton, EmptyState, Icon, Modal, PageHeader, useToast } from "../ui";
 import type { HistoryItem } from "../types";
+
+const PER_PAGE = 20;
 
 function relativeTime(unix: number): string {
   const diff = Date.now() / 1000 - unix;
@@ -15,7 +17,15 @@ function relativeTime(unix: number): string {
 export default function History({ items }: { items: HistoryItem[] }) {
   const [selected, setSelected] = useState<HistoryItem | null>(null);
   const [pendingDelete, setPendingDelete] = useState<HistoryItem | null>(null);
+  const [page, setPage] = useState(1);
   const toast = useToast();
+
+  const pageCount = Math.max(1, Math.ceil(items.length / PER_PAGE));
+  // Keep the page valid if items shrink (e.g. after deleting the last row on a page).
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+  const pageItems = items.slice((page - 1) * PER_PAGE, page * PER_PAGE);
 
   async function confirmDelete() {
     const item = pendingDelete;
@@ -61,7 +71,7 @@ export default function History({ items }: { items: HistoryItem[] }) {
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => (
+            {pageItems.map((item) => (
               <tr key={item.id} className="htable-row" onClick={() => setSelected(item)}>
                 <td className="col-text">
                   <span className="cell-text">{item.text}</span>
@@ -90,6 +100,32 @@ export default function History({ items }: { items: HistoryItem[] }) {
           </tbody>
         </table>
       </div>
+
+      {pageCount > 1 && (
+        <div className="pager">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="chevronLeft"
+            disabled={page <= 1}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+          >
+            Prev
+          </Button>
+          <span className="pager-info muted small">
+            Page {page} of {pageCount}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="chevronRight"
+            disabled={page >= pageCount}
+            onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+          >
+            Next
+          </Button>
+        </div>
+      )}
 
       <Modal open={selected !== null} onClose={() => setSelected(null)} labelledBy="hist-title">
         {selected && (

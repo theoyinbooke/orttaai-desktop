@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { runUpdate } from "./lib/updater";
 import "./App.css";
 import {
@@ -26,6 +27,7 @@ import Dictionary from "./views/Dictionary";
 import Models from "./views/Models";
 import Assistant from "./views/Assistant";
 import SettingsView from "./views/Settings";
+import About from "./views/About";
 
 const NAV: { group: string; items: { tab: Tab; label: string; icon: string }[] }[] = [
   {
@@ -128,7 +130,9 @@ function AppShell() {
 
   useEffect(() => {
     if (tab === "history") {
-      invoke<HistoryItem[]>("recent_history", { limit: 50 })
+      // Fetch the full set (backend clamps at 500) so the History page can
+      // paginate through everything, 20 per page — not just the recent few.
+      invoke<HistoryItem[]>("recent_history", { limit: 500 })
         .then(setHistory)
         .catch((e) => toast(String(e), "error"));
     }
@@ -164,6 +168,14 @@ function AppShell() {
           return toast(`Update check failed: ${s.message}`, "error");
       }
     });
+  }
+
+  function openFeedback() {
+    // Open a prefilled "new issue" on GitHub, stamped with the build so reports
+    // are easy to triage. opener:default already permits https URLs.
+    const body = `<!-- Describe your feedback, bug, or feature request below. -->\n\n\n---\nOrttaai v${info?.version ?? "?"} · ${info?.platform ?? "?"}`;
+    const url = `https://github.com/theoyinbooke/orttaai-desktop/issues/new?body=${encodeURIComponent(body)}`;
+    openUrl(url).catch((e) => toast(String(e), "error"));
   }
 
   return (
@@ -214,6 +226,22 @@ function AppShell() {
         </nav>
 
         <div className="sidebar-foot">
+          <button
+            className="nav-item"
+            onClick={openFeedback}
+            title={collapsed ? "Send feedback" : undefined}
+          >
+            <Icon name="send" size={19} />
+            <span className="nav-label">Feedback</span>
+          </button>
+          <button
+            className={`nav-item ${tab === "about" ? "active" : ""}`}
+            onClick={() => setTab("about")}
+            title={collapsed ? "About" : undefined}
+          >
+            <Icon name="info" size={19} />
+            <span className="nav-label">About</span>
+          </button>
           <button
             className={`nav-item ${tab === "settings" ? "active" : ""}`}
             onClick={() => setTab("settings")}
@@ -284,6 +312,7 @@ function AppShell() {
         {tab === "settings" && (
           <SettingsView settings={settings} info={info} onSaved={refreshSettings} />
         )}
+        {tab === "about" && <About info={info} onFeedback={openFeedback} />}
       </main>
     </div>
   );

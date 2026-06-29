@@ -346,6 +346,19 @@ button {
 .rail-collapsed .nav-item.active::before {
   left: -12px;
 }
+/* Footer menus (Feedback / About / Settings): no accent bar or accent color
+   when selected — just a subtle neutral highlight. */
+.sidebar-foot .nav-item.active {
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 500;
+}
+.sidebar-foot .nav-item.active svg {
+  color: var(--text-2);
+}
+.sidebar-foot .nav-item.active::before {
+  display: none;
+}
 
 /* ---------------------------------------------------------------- content -- */
 .content {
@@ -1900,6 +1913,100 @@ button {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+/* ---- About --------------------------------------------------------------- */
+.about-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.about-id {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.about-name {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.about-version {
+  color: var(--muted);
+  font-size: 13px;
+}
+.about-tagline {
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.55;
+  max-width: 62ch;
+}
+.about-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.about-person {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.about-person-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.about-person-name {
+  font-weight: 600;
+  font-size: 14.5px;
+}
+.about-handle {
+  align-self: flex-start;
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+.about-handle:hover {
+  text-decoration: underline;
+}
+.about-links {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.about-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 8px;
+  border: none;
+  background: transparent;
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  font-size: 13.5px;
+  text-align: left;
+  transition: background var(--dur-1), color var(--dur-1);
+}
+.about-link:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.about-link svg {
+  color: var(--muted);
+}
+
+/* ---- Pagination (History) ------------------------------------------------ */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 16px;
+}
+.pager-info {
+  min-width: 92px;
+  text-align: center;
 }
 
 /* ============================================== floating recording panel == */

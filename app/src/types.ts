@@ -53,7 +53,8 @@ export type Tab =
   | "dictionary"
   | "models"
   | "assistant"
-  | "settings";
+  | "settings"
+  | "about";
 
 export type EngineState = "off" | "loading" | "idle" | "recording" | "processing";
 
