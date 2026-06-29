@@ -90,10 +90,11 @@ jobs:
           # Portable CPU fallback paths in the same binary (see release.yml).
           GGML_NATIVE: 'OFF'
           GGML_AVX512: 'OFF'
-          # Build CUDA kernels for a broad range of NVIDIA archs so the public
-          # GPU download isn't tied to one card: Turing(75), Ampere(80,86),
-          # Ada(89), Hopper(90). (whisper-rs-sys forwards CMAKE_* to CMake.)
-          CMAKE_CUDA_ARCHITECTURES: '75;80;86;89;90'
+          # Kept small on purpose: compiling ggml-cuda for many archs on a 2-core
+          # runner takes HOURS. Ampere(86)+Ada(89) covers RTX 30/40. Building GPU
+          # bundles locally (a fast multi-core box) is the recommended path — see
+          # docs/performance.md; CI CUDA is impractically slow on standard runners.
+          CMAKE_CUDA_ARCHITECTURES: '86;89'
         run: npx tauri build --features cuda
 
       # Rename each bundle with a `-cuda` suffix (so it never collides with the
