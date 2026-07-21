@@ -84,7 +84,29 @@ jobs:
         working-directory: app
         run: npm ci
 
-      - name: Build CUDA bundles
+      # whisper.cpp's CUDA backend imports cudart/cublas/cublasLt at load time, so
+      # these DLLs must ship in the exe's directory or the app won't launch on a
+      # user's machine. Stage them from the toolkit; tauri.cuda.conf.json bundles
+      # them and the NSIS hook copies them next to the exe on install.
+      - name: Stage CUDA runtime DLLs (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $dst = 'app/src-tauri/cuda-runtime'
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          $bin = Join-Path $env:CUDA_PATH 'bin'
+          $copied = 0
+          foreach ($pat in 'cudart64_*.dll','cublas64_*.dll','cublasLt64_*.dll') {
+            Get-ChildItem (Join-Path $bin $pat) -ErrorAction SilentlyContinue | ForEach-Object {
+              Copy-Item $_.FullName $dst -Force
+              Write-Host "Staged $($_.Name)"
+              $copied++
+            }
+          }
+          if ($copied -lt 3) { throw "Expected cudart/cublas/cublasLt DLLs in $bin, staged only $copied" }
+
+      - name: Build CUDA bundles (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
         working-directory: app
         env:
           # Portable CPU fallback paths in the same binary (see release.yml).
@@ -96,6 +118,17 @@ jobs:
           # docs/performance.md; CI CUDA is impractically slow on standard runners.
           CMAKE_CUDA_ARCHITECTURES: '86;89'
         run: npx tauri build --features cuda
+
+      # Windows also merges the CUDA overlay config so the runtime DLLs get
+      # bundled and copied next to the exe on install.
+      - name: Build CUDA bundles (Windows)
+        if: matrix.platform == 'windows-latest'
+        working-directory: app
+        env:
+          GGML_NATIVE: 'OFF'
+          GGML_AVX512: 'OFF'
+          CMAKE_CUDA_ARCHITECTURES: '86;89'
+        run: npx tauri build --features cuda -c src-tauri/tauri.cuda.conf.json
 
       # Rename each bundle with a `-cuda` suffix (so it never collides with the
       # CPU release assets) and upload it to the existing release for the tag.
@@ -121,10 +154,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag }}
+        # Only the NSIS installer is shipped for CUDA: its post-install hook copies
+        # the runtime DLLs next to the exe. The WiX/MSI target has no equivalent
+        # hook here, so a `-cuda.msi` would install but the DLLs would sit in the
+        # resources subfolder where the loader can't find them → skip it.
         run: |
           shopt -s nullglob
-          for f in app/src-tauri/target/release/bundle/nsis/*.exe \
-                   app/src-tauri/target/release/bundle/msi/*.msi; do
+          for f in app/src-tauri/target/release/bundle/nsis/*.exe; do
             base="$(basename "$f")"
             cuda="${base%.*}-cuda.${base##*.}"
             cp "$f" "/tmp/$cuda"

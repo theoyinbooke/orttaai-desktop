@@ -42,6 +42,16 @@ CUDA Toolkit 12.x (`nvcc`) at build and the NVIDIA driver at runtime.
 Distribution: ship the **CPU** build as the cross-platform default (it's tuned + quantized and
 runs everywhere), and offer a separate **CUDA "NVIDIA"** download for max throughput.
 
+> **Windows CUDA installer ships its runtime DLLs.** whisper.cpp's CUDA backend imports
+> `cudart64_*`, `cublas64_*` and `cublasLt64_*` at load time, so on Windows those DLLs must sit
+> next to the exe or the app won't launch on a machine without the CUDA Toolkit installed. The
+> `-cuda.exe` (NSIS) produced by `release-cuda.yml` bundles them as resources and a post-install
+> hook (`src-tauri/cuda-nsis-hooks.nsh`, wired via `src-tauri/tauri.cuda.conf.json`) copies them
+> beside the exe. Only the NSIS `-cuda.exe` is shipped for GPU — the MSI has no equivalent hook.
+> A local `npx tauri build --features cuda` does **not** bundle the DLLs; add
+> `-c src-tauri/tauri.cuda.conf.json` (after staging the DLLs into `src-tauri/cuda-runtime/`) to
+> get a redistributable Windows GPU installer.
+
 > Note: GPU builds can't be validated in a headless/virtualized environment without a working
 > GPU driver — verify on real hardware with `whisper-cli` / bench.
 

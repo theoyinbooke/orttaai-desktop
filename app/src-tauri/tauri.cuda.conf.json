@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "//": "Overlay config merged over tauri.conf.json ONLY for the CUDA (NVIDIA) Windows build via `tauri build --features cuda -c src-tauri/tauri.cuda.conf.json`. It ships the CUDA runtime DLLs (cudart/cublas/cublasLt) inside the installer and copies them next to the exe on install, because whisper.cpp's CUDA backend imports them at load time — if they aren't in the exe's directory the app won't launch. The DLLs are staged into src-tauri/cuda-runtime/ by the release-cuda CI job before the build.",
+  "bundle": {
+    "resources": ["cuda-runtime/*.dll"],
+    "windows": {
+      "nsis": {
+        "installerHooks": "./cuda-nsis-hooks.nsh"
+      }
+    }
+  }
+}
