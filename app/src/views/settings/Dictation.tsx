@@ -1,4 +1,211 @@
-// Settings → Dictation. Owned by the engine area.
+// Settings → Dictation (Mac DictationSettingsView + the desktop typing options).
+// Owned by the engine area.
+import { useEffect, useState } from "react";
+import { Segmented, Select } from "../../ui";
+import { call } from "../../lib/api";
+import { useSettings } from "../../lib/settings";
+import { Row, Section, ToggleRow, usePatch } from "../../components/SettingsRows";
+import ShortcutRecorder from "../../components/ShortcutRecorder";
+import type { ModelInfo } from "../../lib/engine";
+import "../../styles/engine.css";
+
+export const SUPPORTED_LANGUAGES: { code: string; name: string }[] = [
+  { code: "en", name: "English" },
+  { code: "es", name: "Spanish" },
+  { code: "fr", name: "French" },
+  { code: "de", name: "German" },
+  { code: "ja", name: "Japanese" },
+  { code: "zh", name: "Chinese" },
+  { code: "ko", name: "Korean" },
+  { code: "pt", name: "Portuguese" },
+  { code: "it", name: "Italian" },
+  { code: "nl", name: "Dutch" },
+  { code: "ru", name: "Russian" },
+  { code: "ar", name: "Arabic" },
+  { code: "hi", name: "Hindi" },
+  { code: "auto", name: "Auto-detect" },
+];
+
+const secondsLabel = (s: number) => (s >= 120 && s % 60 === 0 ? `${s / 60} min` : `${s}s`);
+const minutesLabel = (s: number) => (s % 60 === 0 ? `${s / 60} min` : `${(s / 60).toFixed(1)} min`);
+const silenceLabel = (s: number) => (Math.round(s) === s ? `${s}s` : `${s.toFixed(1)}s`);
+
+/** Preset choices plus the stored value when it is a custom one (Mac `presetOptions`). */
+function presets(values: number[], current: number, min: number, max: number, label: (n: number) => string) {
+  const v = [...values];
+  if (current >= min && current <= max && !v.includes(current)) {
+    v.push(current);
+    v.sort((a, b) => a - b);
+  }
+  return v.map((n) => ({ value: String(n), label: label(n) }));
+}
+
 export default function DictationSettings() {
-  return <p className="muted">Coming together…</p>;
+  const { settings } = useSettings();
+  const save = usePatch();
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [platform, setPlatform] = useState<{ platform: string; session: string } | null>(null);
+  useEffect(() => {
+    call<ModelInfo[]>("list_models").then(setModels).catch(() => {});
+    call<{ platform: string; session: string }>("app_info").then(setPlatform).catch(() => {});
+  }, []);
+  if (!settings) return null;
+
+  const hf = settings.hands_free_enabled;
+  // A custom stored value is only listed while silence stop is on (Mac).
+  const silenceOptions = [
+    { value: "off", label: "Off" },
+    ...presets(
+      [2, 4, 6, 8, 10],
+      settings.hands_free_silence_stop ? settings.hands_free_silence_secs : 4,
+      1,
+      10,
+      silenceLabel,
+    ),
+  ];
+  const silenceValue = settings.hands_free_silence_stop ? String(settings.hands_free_silence_secs) : "off";
+  const languages = SUPPORTED_LANGUAGES.filter((l) => !(settings.low_latency && l.code === "auto"));
+  const activeModel = models.find((m) => m.id === settings.model_id);
+  const englishOnlyMismatch = activeModel?.english_only && settings.dictation_language !== "en";
+  const linux = platform?.platform === "linux";
+
+  return (
+    <>
+      <Section title="Recording">
+        <Row
+          label="Push to Talk Shortcut"
+          hint={
+            hf
+              ? "Hold to dictate and release to insert. A quick tap starts a hands-free recording instead."
+              : "Hold to dictate and release to insert."
+          }
+        >
+          <ShortcutRecorder
+            value={settings.push_to_talk}
+            other={settings.edit_commands_enabled ? settings.edit_shortcut : null}
+            onChange={(c) => save({ push_to_talk: c })}
+          />
+        </Row>
+        <ToggleRow
+          k="hands_free_enabled"
+          label="Hands-Free Dictation"
+          hint="Tap the shortcut to start, and tap again to stop, instead of holding it. The overlay's stop button and Click to record work hands-free too."
+        />
+        {hf && (
+          <>
+            <Row
+              label="Stop After Silence"
+              hint="Ends a hands-free recording once you stop talking for this long. It only starts counting after it hears you speak. Off means it runs until you stop it."
+            >
+              <Segmented
+                value={silenceValue}
+                options={silenceOptions}
+                onChange={(v) =>
+                  v === "off"
+                    ? save({ hands_free_silence_stop: false })
+                    : save({ hands_free_silence_stop: true, hands_free_silence_secs: Number(v) })
+                }
+              />
+            </Row>
+            <Row
+              label="Hands-Free Limit"
+              hint="The longest a hands-free recording can run. The overlay counts down the final 20 seconds."
+            >
+              <Segmented
+                value={String(settings.hands_free_max_secs)}
+                options={presets([300, 600, 900, 1800], settings.hands_free_max_secs, 120, 1800, minutesLabel)}
+                onChange={(v) => save({ hands_free_max_secs: Number(v) })}
+              />
+            </Row>
+          </>
+        )}
+        <Row
+          label="Push-to-Talk Limit"
+          hint="The longest you can hold to talk in one go. The overlay counts down the final 20 seconds."
+        >
+          <Segmented
+            value={String(settings.max_recording_secs)}
+            options={presets([30, 60, 90, 120, 300], settings.max_recording_secs, 10, 300, secondsLabel)}
+            onChange={(v) => save({ max_recording_secs: Number(v) })}
+          />
+        </Row>
+      </Section>
+
+      <Section title="Language">
+        <Row
+          label="Dictation Language"
+          hint={
+            settings.low_latency
+              ? "The language you speak. Auto-detect is unavailable while Low Latency Mode is on (Models › Performance)."
+              : "The language you speak. Auto-detect handles any language but is slower."
+          }
+        >
+          <Select
+            value={settings.dictation_language}
+            options={languages.map((l) => ({ value: l.code, label: l.name }))}
+            onChange={(v) => save({ dictation_language: v })}
+            ariaLabel="Dictation language"
+            className="eng-select"
+          />
+        </Row>
+        {englishOnlyMismatch && (
+          <div className="eng-notice warn">
+            {activeModel?.name} only understands English. Pick a multilingual model in Models to dictate in{" "}
+            {SUPPORTED_LANGUAGES.find((l) => l.code === settings.dictation_language)?.name ?? "this language"}.
+          </div>
+        )}
+      </Section>
+
+      <Section title="Typing">
+        <Row
+          label="Insert Text By"
+          hint="Auto pastes longer text (fast, keeps line breaks) and types short phrases. Type works everywhere; Paste is fastest."
+        >
+          <Segmented
+            value={settings.injection_mode}
+            options={[
+              { value: "auto", label: "Auto" },
+              { value: "type", label: "Typing" },
+              { value: "paste", label: "Pasting" },
+            ]}
+            onChange={(v) => save({ injection_mode: v })}
+          />
+        </Row>
+        <ToggleRow
+          k="preserve_clipboard"
+          label="Restore Clipboard After Pasting"
+          hint="Puts back what you had copied once the dictation is pasted. Plain text only."
+        />
+        <ToggleRow
+          k="strict_secure"
+          label="Never Type Into Password Fields"
+          hint={
+            linux
+              ? "Linux can't tell when a password field is focused, so this stops all typing; transcripts go to the clipboard instead."
+              : "Orttaai never types into fields it knows are passwords. With this on it also skips fields it can't check."
+          }
+        />
+      </Section>
+
+      <Section title="Edit With Voice">
+        <ToggleRow
+          k="edit_commands_enabled"
+          label="Edit Selected Text With Your Voice"
+          hint="Select text, hold the edit shortcut and say how to change it (“make this friendlier”). A local AI model rewrites the selection; if it can't, your text is left untouched."
+        />
+        <Row
+          label="Edit Shortcut"
+          hint="Hold while you speak the instruction, or tap to speak hands-free."
+          disabled={!settings.edit_commands_enabled}
+        >
+          <ShortcutRecorder
+            value={settings.edit_shortcut}
+            other={settings.push_to_talk}
+            disabled={!settings.edit_commands_enabled}
+            onChange={(c) => save({ edit_shortcut: c })}
+          />
+        </Row>
+      </Section>
+    </>
+  );
 }

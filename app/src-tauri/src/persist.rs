@@ -4,7 +4,9 @@
 
 use orttaai_core::store::{now_unix, Store, TranscriptionRecord};
 
-/// Best-effort write of a plain dictation (legacy path used by the engine).
+/// Best-effort write of a plain dictation (legacy path; the engine now saves
+/// full records via [`save_record`]).
+#[allow(dead_code)]
 pub fn save_transcript(text: &str, duration_ms: i64, source: Option<String>) -> Option<i64> {
     let record = TranscriptionRecord::new(text, source, duration_ms, now_unix());
     save_record(&record)

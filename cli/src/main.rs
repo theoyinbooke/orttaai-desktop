@@ -4,13 +4,17 @@
 
 use anyhow::Result;
 use orttaai_core::audio::MockAudioCapture;
+use orttaai_core::clipboard::MockClipboard;
 use orttaai_core::coordinator::DictationCoordinator;
 use orttaai_core::hotkey::{HotkeyManager, SystemHotkeyManager};
-use orttaai_core::injection::{MockTextInjector, SystemTextInjector, TextInjector};
+use orttaai_core::injection::{
+    InjectionService, MockTextInjector, SystemTextInjector, TextInjector,
+};
 use orttaai_core::memory::MemoryService;
 use orttaai_core::settings::Settings;
 use orttaai_core::transcription::MockTranscriber;
 use orttaai_core::types::DecodeOptions;
+use std::sync::Arc;
 
 fn main() -> Result<()> {
     init_tracing();
@@ -50,17 +54,18 @@ fn init_tracing() {
 fn demo() -> Result<()> {
     println!("▶ Orttaai demo (mock backends — works on any OS)\n");
 
-    let injector = MockTextInjector::new();
+    let clipboard = Arc::new(MockClipboard::new());
+    let injector = MockTextInjector::new().with_clipboard(clipboard.clone());
     let log = injector.log();
 
     let mut memory = MemoryService::new();
     memory.add_term("orttaai", "Orttaai");
     memory.add_snippet("sig", "— sent via Orttaai");
 
-    let mut coord = DictationCoordinator::new(
+    let mut coord = DictationCoordinator::with_memory(
         Box::new(MockTranscriber::new("hello from orttaai sig")),
         Box::new(MockAudioCapture::new(1.5)),
-        Box::new(injector),
+        InjectionService::new(Box::new(injector), Box::new(clipboard)),
         memory,
         DecodeOptions::default(),
     );
@@ -73,6 +78,7 @@ fn demo() -> Result<()> {
     println!();
     println!("  result:     {:?}", outcome.result);
     println!("  transcript: {:?}", outcome.transcript);
+    println!("  method:     {:?}", outcome.injection_method);
     println!("  injected:   {:?}", log.last());
     println!("\n  ✔ Memory applied: 'orttaai'→'Orttaai', snippet 'sig' expanded.");
     Ok(())
@@ -80,11 +86,10 @@ fn demo() -> Result<()> {
 
 #[cfg(feature = "audio")]
 fn devices() -> Result<()> {
-    use orttaai_core::audio::{AudioCapture, CpalAudioCapture};
-    let audio = CpalAudioCapture::new();
     println!("Audio input devices (cpal):");
-    for device in audio.devices()? {
-        println!("  - {}", device.0);
+    for device in orttaai_core::audio::list_input_devices()? {
+        let default = if device.is_default { "  (default)" } else { "" };
+        println!("  - {}{default}", device.name);
     }
     Ok(())
 }
@@ -111,7 +116,24 @@ fn info() {
     println!("  model:        {}", settings.model_id);
     println!("  push-to-talk: {:?}", settings.push_to_talk);
     println!("  injector:     {}", injector.backend_name());
+    println!(
+        "  clipboard:    {}",
+        orttaai_core::clipboard::SystemClipboard::new().backend_name()
+    );
     println!("  hotkey:       {}", hotkey.backend_name());
+    let hw = orttaai_core::hardware::detect(&std::env::temp_dir(), &settings.dictation_language);
+    println!(
+        "  hardware:     {} · {} threads · {} GB RAM · {} tier → {}",
+        if hw.cpu_model.is_empty() {
+            "CPU"
+        } else {
+            &hw.cpu_model
+        },
+        hw.logical_cores,
+        hw.ram_gb,
+        hw.tier_label,
+        hw.recommended_model
+    );
     println!("\n(backends not built into this binary show as stubs — see docs/architecture.md)");
 }
 
@@ -150,8 +172,7 @@ fn transcribe_cmd() -> Result<()> {
     std::process::exit(2);
 }
 
-/// Read a WAV into 16 kHz mono `f32`. (Resampling for non-16 kHz inputs is the
-/// Phase 1 audio task; for now we warn.)
+/// Read a WAV into 16 kHz mono `f32` (resampled when built with `audio`).
 #[cfg(feature = "whisper")]
 fn read_wav_16k_mono(path: &str) -> Result<Vec<f32>> {
     let mut reader = hound::WavReader::open(path)?;
@@ -180,8 +201,14 @@ fn read_wav_16k_mono(path: &str) -> Result<Vec<f32>> {
     };
 
     if spec.sample_rate != orttaai_core::types::TARGET_SAMPLE_RATE {
+        #[cfg(feature = "audio")]
+        return Ok(orttaai_core::audio::resample_to_target(
+            &mono,
+            spec.sample_rate,
+        )?);
+        #[cfg(not(feature = "audio"))]
         eprintln!(
-            "warning: WAV is {} Hz; the engine expects {} Hz — accuracy may suffer until resampling lands (Phase 1)",
+            "warning: WAV is {} Hz; the engine expects {} Hz — rebuild with --features audio to resample",
             spec.sample_rate,
             orttaai_core::types::TARGET_SAMPLE_RATE
         );
@@ -305,66 +332,100 @@ fn inject_cmd() -> Result<()> {
 fn dictate_cmd() -> Result<()> {
     use anyhow::Context;
     use orttaai_core::audio::CpalAudioCapture;
-    use orttaai_core::coordinator::DictationCoordinator;
-    use orttaai_core::hotkey::{HotkeyCallback, HotkeyManager, SystemHotkeyManager};
-    use orttaai_core::injection::SystemTextInjector;
-    use orttaai_core::memory::MemoryService;
+    use orttaai_core::clipboard::SystemClipboard;
+    use orttaai_core::coordinator::{CoordinatorConfig, DictationCoordinator};
+    use orttaai_core::hotkey::{HotkeyBinding, HotkeyCallback};
+    use orttaai_core::injection::{InjectionService, SystemTextInjector};
     use orttaai_core::settings::Settings;
-    use orttaai_core::transcription::WhisperTranscriber;
-    use orttaai_core::types::DecodeOptions;
+    use orttaai_core::store::Store;
+    use orttaai_core::transcription::{decode_options_from_settings, WhisperTranscriber};
+    use orttaai_core::types::RecordingState;
     use std::path::Path;
-    use std::sync::{Arc, Mutex};
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use std::time::Duration;
+
+    enum Cmd {
+        Down,
+        Up,
+    }
 
     let model = std::env::args()
         .nth(2)
         .context("usage: orttaai dictate <model.bin>")?;
     let settings = Settings::load_or_default();
+    let memory = Store::open_default()
+        .and_then(|s| s.load_memory_service())
+        .unwrap_or_default();
 
-    // Build the coordinator with REAL backends.
-    let coordinator = DictationCoordinator::new(
+    // Build the coordinator with REAL backends and the saved dictation settings.
+    let mut coordinator = DictationCoordinator::with_memory(
         Box::new(WhisperTranscriber::from_path(Path::new(&model))?),
         Box::new(CpalAudioCapture::new()),
-        Box::new(SystemTextInjector::new()),
-        MemoryService::new(),
-        DecodeOptions::default(),
+        InjectionService::new(
+            Box::new(SystemTextInjector::new()),
+            Box::new(SystemClipboard::new()),
+        ),
+        memory,
+        decode_options_from_settings(&settings),
     );
-    let coordinator = Arc::new(Mutex::new(coordinator));
+    coordinator.set_config(CoordinatorConfig::from_settings(&settings));
 
-    // Hotkey down/up drive the coordinator. on_release transcribes + injects.
+    let (tx, rx) = channel::<Cmd>();
     let on_down: HotkeyCallback = {
-        let coordinator = coordinator.clone();
+        let tx = tx.clone();
         Box::new(move || {
-            if let Err(e) = coordinator.lock().unwrap().on_press() {
-                eprintln!("  start error: {e}");
-            } else {
-                eprintln!("● recording…");
-            }
+            let _ = tx.send(Cmd::Down);
         })
     };
-    let on_up: HotkeyCallback = {
-        let coordinator = coordinator.clone();
-        Box::new(move || match coordinator.lock().unwrap().on_release() {
-            Ok(outcome) => {
-                if let Some(text) = outcome.transcript {
-                    println!("→ {text}");
-                }
-                eprintln!("  {:?}", outcome.result);
-            }
-            Err(e) => eprintln!("  error: {e}"),
-        })
-    };
-
-    let mut hotkey = SystemHotkeyManager::new();
-    hotkey.register(settings.push_to_talk.clone(), on_down, on_up)?;
+    let on_up: HotkeyCallback = Box::new(move || {
+        let _ = tx.send(Cmd::Up);
+    });
+    let mut hotkey = orttaai_core::hotkey::default_manager();
+    hotkey.register_all(vec![HotkeyBinding::push_to_talk(
+        settings.push_to_talk.clone(),
+        on_down,
+        on_up,
+    )])?;
 
     eprintln!(
-        "Ready ({}). Hold {:?} and speak; release to transcribe + inject. Ctrl-C to quit.",
+        "Ready ({}). Hold {} and speak, release to insert — or tap it for hands-free. Ctrl-C to quit.",
         hotkey.backend_name(),
-        settings.push_to_talk
+        settings.push_to_talk.display()
     );
+    let mut last = coordinator.status();
     loop {
-        std::thread::sleep(std::time::Duration::from_secs(3600));
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(Cmd::Down) => coordinator.handle_hotkey_down(),
+            Ok(Cmd::Up) => coordinator.handle_hotkey_up(),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        coordinator.tick();
+        let status = coordinator.status();
+        if status.state != last.state || status.mode != last.mode {
+            match status.state {
+                RecordingState::Recording => eprintln!("● recording ({:?})…", status.mode),
+                RecordingState::Processing => eprintln!("  transcribing…"),
+                RecordingState::Error => {
+                    eprintln!("  {}", status.error.clone().unwrap_or_default())
+                }
+                RecordingState::Idle => {}
+            }
+        }
+        last = status;
+        if coordinator.has_pending() {
+            match coordinator.finish_pending() {
+                Ok(outcome) => {
+                    if let Some(text) = &outcome.transcript {
+                        println!("→ {text}");
+                    }
+                    eprintln!("  {:?} via {:?}", outcome.result, outcome.injection_method);
+                }
+                Err(e) => eprintln!("  error: {e}"),
+            }
+        }
     }
+    Ok(())
 }
 
 #[cfg(not(all(

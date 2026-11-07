@@ -23,6 +23,8 @@ export type Settings = {
   express_word_boost: boolean;
   low_latency: boolean;
   warm_models: boolean;
+  /** Custom speech-model folder; null = the default data folder. */
+  models_dir: string | null;
 
   push_to_talk: HotkeyCombo;
   hands_free_enabled: boolean;

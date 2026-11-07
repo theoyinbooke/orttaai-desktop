@@ -16,6 +16,7 @@ mod engine;
 mod insights;
 mod memory;
 mod persist;
+mod pipeline;
 mod semantic;
 mod settings_cmds;
 
@@ -97,7 +98,9 @@ pub(crate) fn show_main(app: &AppHandle, route: Option<&str>) {
 }
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let status = MenuItem::with_id(app, "status", "Orttaai — Ready", false, None::<&str>)?;
+    let status = MenuItem::with_id(app, "status", "Orttaai — Off", false, None::<&str>)?;
+    // The engine updates this line with its state ("Recording…", "Ready"…).
+    app.manage(engine::TrayStatus(status.clone()));
     let rec = MenuItem::with_id(app, "rec", "Start / stop recording", true, None::<&str>)?;
     let home = MenuItem::with_id(app, "home", "Home", true, None::<&str>)?;
     let analytics = MenuItem::with_id(app, "analytics", "Analytics", true, None::<&str>)?;
@@ -195,9 +198,24 @@ pub fn run() {
             engine::start_dictation,
             engine::stop_dictation,
             engine::toggle_recording,
+            engine::stop_recording,
+            engine::suspend_hotkeys,
+            engine::validate_shortcut,
+            engine::list_audio_devices,
+            engine::start_level_monitor,
+            engine::stop_level_monitor,
+            engine::reset_audio,
+            engine::hardware_info,
+            engine::platform_check,
             engine::list_models,
+            engine::models_storage,
+            engine::set_models_dir,
             engine::download_model,
+            engine::cancel_download,
             engine::delete_model,
+            engine::use_model,
+            engine::verify_model,
+            engine::vad_status,
             // == memory ==
             memory::list_dictionary,
             memory::save_dictionary,
