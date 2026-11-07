@@ -1,0 +1,814 @@
+{
+ "_source": "Mac gauntlet/asr_eval corpus/manifest.json + results.json (Whisper whole/live decodes), trimmed to what the fuzzy recall test reads.",
+ "bias_vocabulary": [
+  "Olanrewaju",
+  "Oyinbooke",
+  "Adebayo",
+  "Temitope",
+  "Folasade",
+  "Babatunde",
+  "Chimamanda",
+  "Ngozi",
+  "Oluwaseun",
+  "Yemisi",
+  "Orttaai",
+  "WhisperKit",
+  "GRDB",
+  "Ollama",
+  "Qwen",
+  "SwiftUI",
+  "Xcode",
+  "Tauri",
+  "Sparkle",
+  "LM Studio",
+  "promptTokens",
+  "committedSampleCount",
+  "finalizeLiveTranscription",
+  "useEffectCallback",
+  "noSpeechThreshold",
+  "chunkingStrategy",
+  "DecodingOptions",
+  "EnergyVAD",
+  "kubectl",
+  "PostgreSQL",
+  "TypeScript",
+  "npm",
+  "appcast",
+  "WebSocket",
+  "Kubernetes",
+  "camelCase"
+ ],
+ "items": [
+  {
+   "id": "pn-001",
+   "reference": "Please forward the design review notes to Olanrewaju before the standup tomorrow morning.",
+   "hard_terms": [
+    "Olanrewaju"
+   ],
+   "whole": "Please forward the design review notes to Alain Rouajou before the stand-up tomorrow morning.",
+   "live": "Please forward the design review notes to Alain Rouajou before the stand-up tomorrow morning."
+  },
+  {
+   "id": "pn-002",
+   "reference": "Oyinbooke asked whether the quarterly report is ready for the board meeting.",
+   "hard_terms": [
+    "Oyinbooke"
+   ],
+   "whole": "Owenbook asked whether the quarterly report is ready for the board meeting.",
+   "live": "Owen Book asked whether the quarterly report is ready for the board meeting."
+  },
+  {
+   "id": "pn-003",
+   "reference": "I spoke with Adebayo about the migration plan and he wants a written summary by Monday.",
+   "hard_terms": [
+    "Adebayo"
+   ],
+   "whole": "I spoke with Adebayo about the migration plan and he wants a written summary by Monday.",
+   "live": "I spoke with Adebayo about the migration plan and he wants a written summary by Monday."
+  },
+  {
+   "id": "pn-004",
+   "reference": "Temitope will present the onboarding metrics at the all hands on Friday.",
+   "hard_terms": [
+    "Temitope"
+   ],
+   "whole": "Tematope will present the onboarding metrics at the All Hands on Friday.",
+   "live": "Tematope will present the onboarding metrics at the All Hands on Friday."
+  },
+  {
+   "id": "pn-005",
+   "reference": "Send the contract draft to Folasade and copy the legal team on the thread.",
+   "hard_terms": [
+    "Folasade"
+   ],
+   "whole": "Send the contract draft to Follosidae and copy the legal team on the thread.",
+   "live": "Send the contract draft to FOLOSIDAY and copy the legal team on the thread."
+  },
+  {
+   "id": "pn-006",
+   "reference": "Babatunde suggested we move the launch date by two weeks to avoid the holidays.",
+   "hard_terms": [
+    "Babatunde"
+   ],
+   "whole": "Babaton suggested we move the launch date by two weeks to avoid the holidays.",
+   "live": "Babaton suggested we move the launch date by two weeks to avoid the holidays."
+  },
+  {
+   "id": "pn-007",
+   "reference": "Chimamanda is reviewing the manuscript and will share her comments next week.",
+   "hard_terms": [
+    "Chimamanda"
+   ],
+   "whole": "Chimamanda is reviewing the manuscript and will share her comments next week.",
+   "live": "Chimamanda is reviewing the manuscript and will share her comments next week."
+  },
+  {
+   "id": "pn-008",
+   "reference": "Ngozi confirmed the venue booking for the Lagos developer conference.",
+   "hard_terms": [
+    "Ngozi"
+   ],
+   "whole": "Ngozi confirmed the venue booking for the Lagos Developer Conference.",
+   "live": "Ngozi confirmed the venue booking for the Lagos Developer Conference."
+  },
+  {
+   "id": "pn-009",
+   "reference": "Oluwaseun rewrote the payment integration and the tests are finally green.",
+   "hard_terms": [
+    "Oluwaseun"
+   ],
+   "whole": "Alu was soon rewrote the payment integration and the tests are finally green.",
+   "live": "Alu was soon rewrote the payment integration and the tests are finally green."
+  },
+  {
+   "id": "pn-010",
+   "reference": "Ask Yemisi to update the slide deck with the new revenue projections.",
+   "hard_terms": [
+    "Yemisi"
+   ],
+   "whole": "Ask Yemesi to update the slide deck with the new revenue projections.",
+   "live": "Ask Yamasee to update the slide deck with the new revenue projections."
+  },
+  {
+   "id": "pn-011",
+   "reference": "Olanrewaju Oyinbooke is the founder and he signs off on every release.",
+   "hard_terms": [
+    "Olanrewaju",
+    "Oyinbooke"
+   ],
+   "whole": "Olanrua Jouinbook is the founder and he signs off on every release.",
+   "live": "Ollan Rua Juhoinbook is the founder and he signs off on every release."
+  },
+  {
+   "id": "pn-012",
+   "reference": "The mentorship program pairs Adebayo with Temitope for the next cohort.",
+   "hard_terms": [
+    "Adebayo",
+    "Temitope"
+   ],
+   "whole": "The mentorship program pairs Adebayo with Tematope for the next cohort.",
+   "live": "The mentorship program pairs Adebayo with Temitope for the next cohort."
+  },
+  {
+   "id": "pn-013",
+   "reference": "Folasade and Ngozi are coordinating the community meetup in Abuja.",
+   "hard_terms": [
+    "Folasade",
+    "Ngozi"
+   ],
+   "whole": "Folasade and Ngozi are coordinating the community meetup in Abuja.",
+   "live": "Folasade and Ngozi are coordinating the community meetup in Abuja."
+  },
+  {
+   "id": "pn-014",
+   "reference": "Babatunde told Oluwaseun that the deployment pipeline needs a rollback plan.",
+   "hard_terms": [
+    "Babatunde",
+    "Oluwaseun"
+   ],
+   "whole": "Babatunde told Aluwasun that the deployment pipeline needs a rollback plan.",
+   "live": "Babatunde told Alu Wasun that the deployment pipeline needs a rollback plan."
+  },
+  {
+   "id": "pn-015",
+   "reference": "Yemisi introduced Chimamanda at the book reading and the crowd loved it.",
+   "hard_terms": [
+    "Yemisi",
+    "Chimamanda"
+   ],
+   "whole": "Yemisi introduced Chimamanda at the book reading and the crowd loved it.",
+   "live": "Yemisi introduced Chimamanda at the book reading and the crowd loved it."
+  },
+  {
+   "id": "pn-016",
+   "reference": "Every Thursday Olanrewaju hosts office hours for the engineering mentees.",
+   "hard_terms": [
+    "Olanrewaju"
+   ],
+   "whole": "Every Thursday, Alan Muadju hosts Office Hours for the Engineering Mentees.",
+   "live": "Every Thursday Alan Muadju hosts Office Hours for the Engineering Mentees."
+  },
+  {
+   "id": "tech-001",
+   "reference": "The useEffectCallback hook fires twice in strict mode, so guard the subscription.",
+   "hard_terms": [
+    "useEffectCallback"
+   ],
+   "whole": "The useEffectCallback hook fires twice in strict mode, so guard the subscription.",
+   "live": "The use effect callback hook fires twice in strict mode. So guard the subscription."
+  },
+  {
+   "id": "tech-002",
+   "reference": "WhisperKit exposes a DecodingOptions struct that controls the sampling loop.",
+   "hard_terms": [
+    "WhisperKit",
+    "DecodingOptions"
+   ],
+   "whole": "WhisperKit exposes a decoding options struct that controls the sampling loop.",
+   "live": "WhisperKit exposes a decoding options struct that controls the sampling loop."
+  },
+  {
+   "id": "tech-003",
+   "reference": "Set the noSpeechThreshold to 0.6 before you benchmark the decoder.",
+   "hard_terms": [
+    "noSpeechThreshold"
+   ],
+   "whole": "Set the no speech threshold to 0.6 before you benchmark the decoder.",
+   "live": "Set the no speech threshold to 0.6 before you benchmark the decoder."
+  },
+  {
+   "id": "tech-004",
+   "reference": "The promptTokens array is trimmed to half the token context by the prefill step.",
+   "hard_terms": [
+    "promptTokens"
+   ],
+   "whole": "The prompt tokens array is trimmed to half the token context by the pre-fill step.",
+   "live": "The prompt tokens array is trimmed to half the token context by the pre-fill step."
+  },
+  {
+   "id": "tech-005",
+   "reference": "GRDB migrations run inside a write transaction, so keep them idempotent.",
+   "hard_terms": [
+    "GRDB"
+   ],
+   "whole": "GRDB migrations run inside a right transaction, so keep them idempotent.",
+   "live": "GRDB migrations run inside a right transaction, so keep them idempotent."
+  },
+  {
+   "id": "tech-006",
+   "reference": "Run kubectl get pods to confirm the deployment rolled out cleanly.",
+   "hard_terms": [
+    "kubectl"
+   ],
+   "whole": "Run kubectl get pods to confirm the deployment rolled out cleanly.",
+   "live": "Run kubectl get pods to confirm the deployment rolled out cleanly."
+  },
+  {
+   "id": "tech-007",
+   "reference": "The PostgreSQL replica lagged behind the primary by almost 40 seconds.",
+   "hard_terms": [
+    "PostgreSQL"
+   ],
+   "whole": "The PostgreSQL replica lagged behind the primary by almost 40 seconds.",
+   "live": "The Postgar SQL replica lagged behind the primary by almost 40 seconds."
+  },
+  {
+   "id": "tech-008",
+   "reference": "Our TypeScript build breaks when npm installs a mismatched peer dependency.",
+   "hard_terms": [
+    "TypeScript",
+    "npm"
+   ],
+   "whole": "Our TypeScript build breaks when npm installs a mismatched peer dependency.",
+   "live": "Our TypeScript build breaks when npm installs a mismatched peer dependency."
+  },
+  {
+   "id": "tech-009",
+   "reference": "The appcast feed tells Sparkle which build to offer as an update.",
+   "hard_terms": [
+    "appcast",
+    "Sparkle"
+   ],
+   "whole": "The app cast feed tells Sparkle which build to offer as an update.",
+   "live": "The app cast feed tells Sparkle which build to offer as an update."
+  },
+  {
+   "id": "tech-010",
+   "reference": "Orttaai commits audio on a 15 second clip grid tracked by committedSampleCount.",
+   "hard_terms": [
+    "Orttaai",
+    "committedSampleCount"
+   ],
+   "whole": "AutoECommits audio on a 15-second clip grid tracked by committedSampleCount.",
+   "live": "Auto E commits audio on a 15 second clip grid tracked by committed sample count."
+  },
+  {
+   "id": "tech-011",
+   "reference": "The finalizeLiveTranscription call decodes only the uncommitted tail of the recording.",
+   "hard_terms": [
+    "finalizeLiveTranscription"
+   ],
+   "whole": "The finalizeLiveTranscription call decodes only the uncommitted tail of the recording.",
+   "live": "The finalized live transcription call decodes only the uncommitted tale of the recording."
+  },
+  {
+   "id": "tech-012",
+   "reference": "Switch the chunkingStrategy to VAD so long recordings split at natural pauses.",
+   "hard_terms": [
+    "chunkingStrategy"
+   ],
+   "whole": "Switch the chunking strategy to VAD so long recordings split at natural pauses.",
+   "live": "Switch the chunking strategy to VAD so long recordings split at natural pauses."
+  },
+  {
+   "id": "tech-013",
+   "reference": "SwiftUI previews crash in Xcode when the model actor touches the main thread.",
+   "hard_terms": [
+    "SwiftUI",
+    "Xcode"
+   ],
+   "whole": "SwiftUI previews crash in Xcode when the model actor touches the main thread.",
+   "live": "Swift 2i previews crash in Xcode when the model actor touches the main thread."
+  },
+  {
+   "id": "tech-014",
+   "reference": "We ship the Linux port with Tauri while the macOS app stays native.",
+   "hard_terms": [
+    "Tauri"
+   ],
+   "whole": "We ship the Linux port with Tori while the Mac OS app stays native.",
+   "live": "We ship the Linux port with Tori while the Mac OS app stays native."
+  },
+  {
+   "id": "tech-015",
+   "reference": "Ollama streams the Qwen model's tokens to the client over a WebSocket connection.",
+   "hard_terms": [
+    "Ollama",
+    "Qwen",
+    "WebSocket"
+   ],
+   "whole": "Olima streams the QenModels tokens to the client over a WebSocket connection.",
+   "live": "Olima streams the QEN model's tokens to the client over a WebSocket connection."
+  },
+  {
+   "id": "tech-016",
+   "reference": "The Kubernetes cluster runs the transcription workers with EnergyVAD preprocessing.",
+   "hard_terms": [
+    "Kubernetes",
+    "EnergyVAD"
+   ],
+   "whole": "The Kubernetes cluster runs the transcription workers with EnergyVAD preprocessing.",
+   "live": "The Kubernetes cluster runs the transcription workers with EnergyVAD pre-processing."
+  },
+  {
+   "id": "num-001",
+   "reference": "The invoice total comes to $1,250.50, due on the 15th.",
+   "hard_terms": [],
+   "whole": "The invoice total comes to $1,250.50, due on the 15th.",
+   "live": "The invoice total comes to $1,250.50, due on the 15th."
+  },
+  {
+   "id": "num-002",
+   "reference": "Our meeting moved from March 3rd to April 17th at 3:30 pm.",
+   "hard_terms": [],
+   "whole": "Our meeting moved from the 3rd of March to the 17th of April at 3:30 PM.",
+   "live": "Our meeting moved from the 3rd of March to the 17th of April at 3.30pm."
+  },
+  {
+   "id": "num-003",
+   "reference": "Revenue grew 23% quarter over quarter, reaching $2.4 million.",
+   "hard_terms": [],
+   "whole": "Revenue grew 23% quarter over quarter, reaching $2.4 million.",
+   "live": "Revenue grew 23% quarter over quarter, reaching $2.4 million."
+  },
+  {
+   "id": "num-004",
+   "reference": "The apartment is 840 square feet and rents for $2,100 a month.",
+   "hard_terms": [],
+   "whole": "The apartment is 840 square feet and rents for $2,100 a month.",
+   "live": "The apartment is 840 square feet and rents for $2,100 a month."
+  },
+  {
+   "id": "num-005",
+   "reference": "Version 1.6.1 shipped on July 22nd, 2026, with 14 bug fixes.",
+   "hard_terms": [],
+   "whole": "Version 1.6.1 shipped on July 22, 2026, with 14 bug fixes.",
+   "live": "Version 1.6.1 shipped on July 22, 2026, with 14 bug fixes."
+  },
+  {
+   "id": "num-006",
+   "reference": "Call me at 555-0182 before 9 am on Tuesday.",
+   "hard_terms": [],
+   "whole": "Call me at 555-0182 before 9 a.m. on Tuesday.",
+   "live": "Call me at 555-0182 before 9am on Tuesday."
+  },
+  {
+   "id": "num-007",
+   "reference": "The marathon is 26.2 miles and I finished in 4 hours and 12 minutes.",
+   "hard_terms": [],
+   "whole": "The marathon is 26.2 miles and I finished in 4 hours and 12 minutes.",
+   "live": "The marathon is 26.2 miles and I finished in 4 hours and 12 minutes."
+  },
+  {
+   "id": "num-008",
+   "reference": "We onboarded 1,847 users in June, up from 923 in May.",
+   "hard_terms": [],
+   "whole": "We onboarded 1,847 users in June, up from 923 in May.",
+   "live": "We onboarded 1,847 users in June, up from 923 in May."
+  },
+  {
+   "id": "num-009",
+   "reference": "The server bill dropped from $340 to $212 after we resized the cluster.",
+   "hard_terms": [],
+   "whole": "The server bill dropped from $340 to $212 after we resized the cluster.",
+   "live": "The server bill dropped from $340 to $212 after we resized the cluster."
+  },
+  {
+   "id": "num-010",
+   "reference": "Flight 214 departs at 6:45 am and lands in Denver at 8:05 local time.",
+   "hard_terms": [],
+   "whole": "Flight 214 departs at 6.45 a.m. and lands in Denver at 8.05 local time.",
+   "live": "Flight 214 departs at 6.45 a.m. and lands in Denver at 8.05 local time."
+  },
+  {
+   "id": "num-011",
+   "reference": "The recipe needs 2 cups of flour, 3 eggs, and half a teaspoon of salt.",
+   "hard_terms": [],
+   "whole": "The recipe needs 2 cups of flour, 3 eggs, and half a teaspoon of salt.",
+   "live": "The recipe needs 2 cups of flour, 3 eggs, and half a teaspoon of salt."
+  },
+  {
+   "id": "num-012",
+   "reference": "Interest rates fell to 4.25% on the 10 year note.",
+   "hard_terms": [],
+   "whole": "Interest rates fell to 4.25% on the 10-year notes.",
+   "live": "Interest rates fell to 4.25% on the 10-year note."
+  },
+  {
+   "id": "num-013",
+   "reference": "My daughter turns 7 on the 28th of September.",
+   "hard_terms": [],
+   "whole": "My daughter turned seven on the 28th of September.",
+   "live": "My daughter turned seven on the 28th of September."
+  },
+  {
+   "id": "num-014",
+   "reference": "The download is 2.9 gigabytes and takes about 6 minutes on our connection.",
+   "hard_terms": [],
+   "whole": "The download is 2.9 gigabytes and takes about six minutes on our connection.",
+   "live": "The download is 2.9 gigabytes and takes about 6 minutes on our connection."
+  },
+  {
+   "id": "ev-001",
+   "reference": "Hey, are we still on for lunch tomorrow?",
+   "hard_terms": [],
+   "whole": "Hey, are we still on for lunch tomorrow?",
+   "live": "Hey, are we still on for lunch tomorrow?"
+  },
+  {
+   "id": "ev-002",
+   "reference": "Sounds good, see you then.",
+   "hard_terms": [],
+   "whole": "Sounds good, see you then.",
+   "live": "Sounds good, see you then."
+  },
+  {
+   "id": "ev-003",
+   "reference": "Can you pick up milk and eggs on your way home?",
+   "hard_terms": [],
+   "whole": "Can you pick up milk and eggs on your way home?",
+   "live": "Can you pick up milk and eggs on your way home?"
+  },
+  {
+   "id": "ev-004",
+   "reference": "I think the meeting ran long because nobody prepared the agenda.",
+   "hard_terms": [],
+   "whole": "I think the meeting ran long because nobody prepared the agenda.",
+   "live": "I think the meeting ran long because nobody prepared the agenda."
+  },
+  {
+   "id": "ev-005",
+   "reference": "Let's move the discussion to email so we have a record of it.",
+   "hard_terms": [],
+   "whole": "Let's move the discussion to email so we have a record of it.",
+   "live": "Let's move the discussion to email so we have a record of it."
+  },
+  {
+   "id": "ev-006",
+   "reference": "The weather looks rough this weekend, so we might postpone the hike.",
+   "hard_terms": [],
+   "whole": "The weather looks rough this weekend, so we might postpone the hike.",
+   "live": "The weather looks rough this weekend, so we might postpone the hike."
+  },
+  {
+   "id": "ev-007",
+   "reference": "Thanks so much for the feedback, it genuinely made the essay better.",
+   "hard_terms": [],
+   "whole": "Thanks so much for the feedback. It genuinely made the essay better.",
+   "live": "Thanks so much for the feedback. It genuinely made the essay better."
+  },
+  {
+   "id": "ev-008",
+   "reference": "Remind me to water the plants before we leave on Friday.",
+   "hard_terms": [],
+   "whole": "Remind me to water the plants before we leave on Friday.",
+   "live": "Remind me to water the plants before we leave on Friday."
+  },
+  {
+   "id": "ev-009",
+   "reference": "Honestly, I just want a quiet weekend with a good book.",
+   "hard_terms": [],
+   "whole": "Honestly, I just want a quiet weekend with a good book.",
+   "live": "Honestly, I just want a quiet weekend with a good book."
+  },
+  {
+   "id": "ev-010",
+   "reference": "The dishwasher is making that noise again, can you take a look?",
+   "hard_terms": [],
+   "whole": "The dishwasher is making that noise again. Can you take a look?",
+   "live": "The dishwasher is making that noise again. Can you take a look?"
+  },
+  {
+   "id": "ev-011",
+   "reference": "We should invite the new neighbors over for dinner sometime.",
+   "hard_terms": [],
+   "whole": "We should invite the new neighbors over for dinner sometime.",
+   "live": "We should invite the new neighbors over for dinner sometime."
+  },
+  {
+   "id": "ev-012",
+   "reference": "Traffic on the bridge was terrible, I sat there for 45 minutes.",
+   "hard_terms": [],
+   "whole": "Traffic on the bridge was terrible. I sat there for 45 minutes.",
+   "live": "Traffic on the bridge was terrible. I sat there for 45 minutes."
+  },
+  {
+   "id": "ev-013",
+   "reference": "Please leave the package with the doorman if I'm not home.",
+   "hard_terms": [],
+   "whole": "Please leave the package with the doorman if I'm not home.",
+   "live": "Please leave the package with the doorman if I'm not home."
+  },
+  {
+   "id": "ev-014",
+   "reference": "That movie was way too long, but the ending almost saved it.",
+   "hard_terms": [],
+   "whole": "That movie was way too long, but the ending almost saved it.",
+   "live": "That movie was way too long, but the ending almost saved it."
+  },
+  {
+   "id": "long-001",
+   "reference": "Good morning team, here is the plan for the week. Olanrewaju wants the release candidate ready by Thursday, which means the remaining bugs need owners today. The crash on resume is the highest priority because it blocks the beta testers. After that comes the memory regression in the history view, which only shows up after about an hour of use. Orttaai should feel faster at the end of this cycle, not slower, so please run the profiler before and after every change. If anything looks risky, flag it in the channel first and we will decide together.",
+   "hard_terms": [
+    "Olanrewaju",
+    "Orttaai"
+   ],
+   "whole": "Good morning team, here is the plan for the week. Alenruiju wants the release candidate ready by Thursday, which means the remaining bugs need owners today. The crash on resume is the highest priority because it blocks the beta testers. After that come the memory regression in the history view, which only shows up after about an hour of use. OrtaE should feel faster at the end of this cycle, not slower, so please run the profiler before and after every change. If anything looks risky, flag it in the channel first and we will decide together",
+   "live": "Good morning team, here is the plan for the week. Alunruaju wants the release candidate ready by Thursday, which means the remaining bugs need owners today. The crash on resume is the highest priority because it blocks the beta testers. After that comes the memory regression in the history view, which only shows up after about an hour of use. Orta E should feel faster at the end of this cycle, not slower. So please run the profiler before and after every change. If anything looks risky, flag it in the channel first and we will decide together."
+  },
+  {
+   "id": "long-002",
+   "reference": "Let me explain how the conditioning work is supposed to land. WhisperKit accepts a promptTokens array inside DecodingOptions, and whatever we pass there becomes the previous context for the decoder. The catch is that the prompt is trimmed to half the token window, so we cannot just dump the whole session transcript into it. We keep the most recent sentences, cap the budget, and drop the prompt entirely whenever the previous decode looked suspicious. That last guard matters because a bad prompt can push the model into a repetition loop, and a repetition loop in a dictation app is far worse than a missing word.",
+   "hard_terms": [
+    "WhisperKit",
+    "promptTokens",
+    "DecodingOptions"
+   ],
+   "whole": "Let me explain how the conditioning work is supposed to land. WhisperKit accepts a prompt tokens array inside decoding options, and whatever we pass there becomes the previous context for the decoder. The catch is that the prompt is trimmed to half the token window, so we cannot just dump the whole session transcript into it, we keep the most recent sentences, cap the budget, and drop the prompt entirely whenever the previous decode looked suspicious. That last guard matters because a bad prompt can push the model into a repetition loop, and a repetition loop in a dictation app is far worse than a missing word.",
+   "live": "Let me explain how the conditioning work is supposed to land. WhisperKit accepts a prompt tokens array inside decoding options, and whatever we pass there becomes the previous context for the decoder. The catch is that the prompt is trimmed to half the token window, so we cannot just dump the whole session transcript into it. We keep the most recent sentences, cap the budget, and drop the prompt entirely whenever the previous decode looked suspicious. That last guard matters because a bad prompt can push the model into a repetition loop, and a repetition loop in a dictation app is far worse than a missing word."
+  },
+  {
+   "id": "long-003",
+   "reference": "Thanks everyone for joining the retrospective. Overall the launch went smoothly, but there are three things we should do better next time. First, the support documentation went live two days after the feature, which left the help desk answering the same question over and over. Second, we never agreed on who owns the status page, so updates during the incident were slow. Third, and this is the big one, we shipped on a Friday. Nobody wants to debug a payment issue at nine in the evening before a weekend. Let's write these down and actually read them before the next release.",
+   "hard_terms": [],
+   "whole": "Thanks everyone for joining the retrospective, overall the launch went smoothly, but there are three things we should do better next time. First, the support documentation went live two days after the feature, which left the help desk answering the same questions. Question over and over. Second, we never agreed on who owns the status page, so updates during the incident were slow. Third, and this is the big one, we shipped on a Friday. Nobody wants to debug a payment issue at 9 in the evening before for a weekend. Let's write these down and actually read them before the next release.",
+   "live": "Thanks everyone for joining the retrospective, overall the launch went smoothly, but there are three things we should do better next time. First, the support documentation went live two days after the feature, which left the help desk answering the same question over and over. Second, we never agreed on who owns the status page, so updates during the incident were slow. Third, and this is the big one, we shipped on a Friday. Nobody wants to debug a payment issue at 9 in the evening before a weekend. Let's write these down and actually read them before the next release."
+  },
+  {
+   "id": "long-004",
+   "reference": "Here is the incident summary for the outage on Tuesday. At around 2:15 pm the PostgreSQL primary ran out of connections because a batch job leaked them for over an hour. The Kubernetes autoscaler then made things worse by doubling the number of workers, each of which opened its own pool. Latency climbed past eight seconds and checkout effectively stopped. We recovered by killing the batch job and cycling the connection pooler, and the whole event lasted 34 minutes. The follow up items are a connection budget per service and an alert on pool saturation, both assigned and due next sprint.",
+   "hard_terms": [
+    "PostgreSQL",
+    "Kubernetes"
+   ],
+   "whole": "Here is the incident summary for the outage on Tuesday. At around 2.15pm the Postgar SQL primary ran out of connections because a batch job leaked them for over an hour. The Cubanid's autoskeler then made things worse by doubling the number of workers, each of which opened its own pool. Latency climbed past 8 seconds and checkout effectively stopped. We recovered by killing the batch job and cycling the connection pooler, and the whole event lasted 34 minutes. The follow-up items are a connection budget per service and an alert on pools saturation, both assigned and due next sprint.",
+   "live": "Here is the incident summary for the outage on Tuesday. At around 2.15pm the Postgar SQL primary ran out of connections because a batch job leaked them for over an hour. The Cubanite's autoskiller then made things worse by doubling the number of workers, each of which opened its own pool, latency climbed past 8 seconds and checkout effectively stopped. We recovered by killing the batch job and cycling the connection pooler, and the whole event lasted 34 minutes. The follow-up items are a connection budget per service and an alert on pool saturation, both assigned and due next sprint."
+  },
+  {
+   "id": "long-005",
+   "reference": "A quick note about the offsite in October. Adebayo has volunteered to organize the venue, and Folasade is handling travel for everyone coming in from outside the city. The agenda is deliberately light, one morning of planning, one afternoon of open discussion, and the rest is unstructured time to actually talk to each other. Last year we packed the schedule so tight that people left more tired than when they arrived. Please fill in the dietary form by the end of the month, and if you need a visa letter, ask early because the embassy has been slow lately.",
+   "hard_terms": [
+    "Adebayo",
+    "Folasade"
+   ],
+   "whole": "A quick note about the off-site in October: Autobio has volunteered to organize the venue, and Folosaday is handling travel for everyone coming in from outside the city. The agenda is deliberately light: one morning of planning, one afternoon of open open discussion, and the rest is unstructured time to actually talk to each other. Last year we packed the schedule so tight that people left more tired than when they arrived. Please fill in the dietary form by the end of the month, and if you need a visa letter, ask because the embassy has been slow lately.",
+   "live": "A quick note about the off-site in October, Autobio has volunteered to organize the venue, and Foloside is handling travel for everyone coming in from outside the city. The agenda is deliberately light: one morning of planning, one afternoon of open discussion, and the rest is unstructured time to actually talk to each other. Last year we packed the schedule so tight that people left more tired than when they arrived. Please fill in the dietary form by the end of the month. And if you need a visa letter, ask early because the embassy has been slow lately."
+  },
+  {
+   "id": "long-006",
+   "reference": "I want to dictate some thoughts about the book before I forget them. The first half is a fairly conventional memoir, childhood, school, the move to the city, but the voice is so dry and funny that none of it drags. Then the middle section switches to the mother's letters and the whole thing opens up. You suddenly understand that every story in the first half was secondhand, and the letters quietly correct the record. The ending felt rushed to me, maybe twenty pages where it needed sixty, but I still think it is the best thing she has written.",
+   "hard_terms": [],
+   "whole": "I want to dictate some thoughts about the book before I forget them. The first half is a fairly conventional memoir: childhood, school, the move to the city, but the voice is so dry and funny that none of it drags. Then the middle section switches to the mother's letters and the whole thing opens up, you suddenly understand that every story in the first half was second hand, and the letters quietly correct the record. The ending felt rushed to me, maybe 20 pages where it needed 60, but I still think it is the best thing she has written.",
+   "live": "I want to dictate some thoughts about the book before I forget them. The first half is a fairly conventional memoir. Childhood. School. The move to the city. But the voice is so dry and funny that none of it drags. Then the middle section switches to the mother's letters and the whole thing opens up. You suddenly understand that every story in the first half was secondhand, and the letters quietly correct the record. The ending felt rushed to me, maybe 20 pages where it needed 6 But I still think it is the best thing she has written."
+  },
+  {
+   "id": "long-007",
+   "reference": "Status update on the settings redesign. The new layout is done in SwiftUI and it finally behaves at every window size, including the tiny one people use on laptops. The remaining problem is preview stability in Xcode, which crashes whenever the preview touches the real settings store. I have worked around it with an in memory store for previews, which is what we should have done from the start. Accessibility passes are next, keyboard navigation already works, and the labels are in review with the design team. I expect to open the pull request on Wednesday.",
+   "hard_terms": [
+    "SwiftUI",
+    "Xcode"
+   ],
+   "whole": "Status update on the settings redesign. The new layout is done in SwiftUI and it finally behaves at every window size, including the tiny one people use on laptops. The remaining problem is preview stability in Xcode, which crashes when the preview touches the real settings store. I have worked around it with an in-memory store for previews, which is what we should have done from the start. Accessibility passes are next, keyboard navigation already works, and the labels are in review with the design team. I expect to open the pull request on Wednesday.",
+   "live": "Status update on the settings redesign. The new layout is done in SwiftUI and it finally behaves at every window size, including the tiny one people use on laptops. The remaining problem is preview stability in Xcode, which crashes whenever the preview touches the real settings store. I have worked around it with an in-memory store for previews, which is what we should have done from the start. Accessibility passes are next, keyboard navigation already works, and the labels are in review with the design team. I expect to open the pull request on Wednesday."
+  },
+  {
+   "id": "long-008",
+   "reference": "Dear residents, this is a reminder about the water maintenance scheduled for Saturday morning. The supply will be off from 8 am until roughly noon while the contractors replace the main valve on the ground floor. Please store enough water for the morning and avoid running appliances that need a constant supply, like the dishwasher or the washing machine. The elevators are not affected. If the work runs long we will post updates in the lobby and in the building group. Thank you for your patience, and apologies for the short notice, the part arrived earlier than expected.",
+   "hard_terms": [],
+   "whole": "Dear residents, this is a reminder about the water maintenance scheduled for Saturday morning. The supply will be off from 8 a.m. until roughly noon while the contractors replace the main valve on the ground floor. Please store enough water for the morning and avoid running appliances that need a constant supply, like the dishwasher or the washing machine, the elevators are not affected. If the work runs long we will post updates in the lobby and in the building group. Thank you for your patience, and apologies for the short notice, the part arrived earlier than expected.",
+   "live": "Dear residents, this is a reminder about the water maintenance scheduled for Saturday morning. The supply will be off from 8 a.m. until roughly noon while the contractors replace the main valve on the ground floor. Please store enough water for the morning and avoid running appliances that need a constant supply, like the dishwasher or the washing machine. The elevators are not affected. If the work runs long we will post updates in the lobby and in the building group. Thank you for watching. your patience, and apologies for the short notice, the part arrived earlier than expected."
+  },
+  {
+   "id": "long-009",
+   "reference": "Meeting notes from the mentorship sync. Babatunde reported that twelve of the fifteen pairs met at least twice this month, which is the best rate we have had. Ngozi raised the problem of mentors going quiet after the first few sessions, and we agreed to send a gentle check in after two weeks of silence rather than waiting for the monthly report. Temitope will draft the message so it does not read like a warning. The next cohort applications open on the 1st, and we expect around 80 submissions based on last year.",
+   "hard_terms": [
+    "Babatunde",
+    "Ngozi",
+    "Temitope"
+   ],
+   "whole": "Meeting notes from the mentorship sync. Babatunde reported that 12 of the 15 pairs met at least twice this month, which is the best rate we have had. Ngozi raised the problem of mentors going quiet after the first few sessions, and we agreed to send a After two weeks of silence rather than waiting for the monthly report, Taimytope will draft the message so it does not read like a warning. The next cohort applications open on the 1st, and we expect around 80 submissions based on last week's report.",
+   "live": "Meeting notes from the mentorship sync. Babatunde reported that 12 of the 15 pairs met at least twice this month, which is the best rate we have had. Ngozi raised the problem of mentors going quiet after the first few sessions, and we agreed to send a gentle check-in after two weeks of silence rather than waiting for the monthly report. Taimitope will draft the message so it does not read like a warning. The next cohort applications open on the 1st, and we expect around 80 submissions based on last year."
+  },
+  {
+   "id": "long-010",
+   "reference": "Here is my honest review of the trip for the travel blog. The old town is genuinely beautiful, narrow streets, tiled courtyards, and the kind of bakeries that make you plan your day around bread. The catch is the crowds. By ten in the morning the main square is shoulder to shoulder, and the famous viewpoint has a queue like an airport. Go at sunrise or do not go at all. Food was cheaper than I expected, dinner for two came to about 40 euros with wine, and the seafood place by the harbor deserves every bit of its reputation.",
+   "hard_terms": [],
+   "whole": "Here is my honest review of the trip for the travel blog. The old town is genuinely beautiful. Narrow streets, tiled courtyards, and the kind of bakeries that make you plan your day around bread. The catch is the crowds. By 10 in the morning the main square is shoulder to shoulder and the famous viewpoint has a queue like an airport. Go at sunrise or do not go at all. Food was cheaper than I expected. Dinner for two came to about 40 euros with wine, and the seafood place by the harbor deserves every bit of its reputation.",
+   "live": "Here is my honest review of the trip for the travel blog. The old town is genuinely beautiful. Narrow streets, tiled courtyards, and the kind of bakeries that make you plan your day around bread. The catch is the crowds. By 10 in the morning the main square is shoulder to shoulder, and the famous viewpoint has a queue like an airport. Go at sunrise or do not go at all. Food was cheaper than I expected, dinner for two came to about 40 euros with wine. and the seafood place by the harbor deserves every bit of its reputation."
+  },
+  {
+   "id": "long-011",
+   "reference": "Release checklist walkthrough, please follow along. First, Oyinbooke signs the build and the notarization ticket gets stapled before anything is uploaded. Second, the appcast entry is generated with the new version number and the release notes, and Sparkle picks it up from the same feed we have always used. Do not hand edit the XML, the script exists for a reason. Third, we watch the crash dashboard for two hours after the rollout. If anything spikes we pull the appcast entry, which stops new updates without affecting anyone who already installed.",
+   "hard_terms": [
+    "Oyinbooke",
+    "Sparkle",
+    "appcast"
+   ],
+   "whole": "Release checklist walkthrough. Please follow along. First, OINbook signs the build and the notarization ticket gets stapled before anything is uploaded. Second, the app cast entry is generated with the new version number and the release notes. and Sparkle picks it up from the same feed we have always used. Do not hand edit the XML, the script exists for a reason. Third, we watch the crash dashboard for two hours after the rollout. If anything spikes we pull the app cast entry, which stops new updates without affecting anyone who already installed.",
+   "live": "Release checklist walkthrough. Please follow along. First, OINbook signs the build and the notarization ticket gets stapled before anything is uploaded. Second, the app cast entry is generated with the new version number and the release notes, and Sparkle picks it up from the same feed we have always used. Do not hand edit the XML, the script exists for a reason. Third, we watch the crash dashboard for two hours after the rollout. If anything spikes we pull the appcast entry, which stops new updates without affecting anyone who already installed."
+  },
+  {
+   "id": "long-012",
+   "reference": "Some notes for the garden this autumn. The tomatoes are done, pull them out and compost everything that is not diseased. The two plants with the curled leaves go in the bin, not the compost, just to be safe. Garlic goes in before the first frost, pointy end up, about a hand's width apart. Last year we planted too shallow and half of it heaved out of the ground by February. The roses get one last feed, then nothing until spring. And please label the beds this time, because by March nobody remembers what is where.",
+   "hard_terms": [],
+   "whole": "Some notes for the garden this autumn. The tomatoes are done. Pull them out and compost everything that is not diseased. The two plants with the curled leaves go in the bin, not the compost, just to be safe. Garlic goes in before the first frost. Pointy end up. about a hand's width apart. Last year we planted too shallow and half of it heaved out of the ground by February. The roses get one last feed, then nothing until spring, and please label the beds this time, because by March nobody remembers what is where.",
+   "live": "Some notes for the garden this autumn. The tomatoes are done, pull them out and compost everything that is not diseased. The two plants with the curled leaves go in the bin, not the compost, just to be safe. Garlic goes in before the first frost, pointy end up, about a hand's width apart. Last year we planted too shallow and half of it heaved out of the ground by February. The roses get one last feed, then nothing until spring, and please label the bed beds this time, because by March nobody remembers what is where."
+  },
+  {
+   "id": "long-013",
+   "reference": "Frontend migration update. We are about 70% of the way through converting the dashboard to TypeScript, and the strictness is already paying for itself. Last week the compiler caught a null flowing into the chart component that would have been a production crash. The npm workspace split also landed, so the design system builds independently and the main app no longer rebuilds the world on every change. Local build times dropped from four minutes to about 90 seconds. Remaining work is the settings pages and the test utilities, both scheduled for the next two sprints.",
+   "hard_terms": [
+    "TypeScript",
+    "npm"
+   ],
+   "whole": "Frontend migration update. We are about 70% of the way through converting the dashboard to TypeScript, and the strictness is already paying for itself. Last week the compiler caught a null flowing into the chart component that would have been a production crash. The NPM workspace split also landed, so the design system builds independently and the main app no longer rebuilds the world on every change. Local build times dropped from 4 minutes to about 90 seconds. Remaining work is the settings pages and the test utilities, both scheduled for the next two sprints.",
+   "live": "Frontend migration update. We are about 70% of the way through converting the dashboard to TypeScript, and the strictness is already paying for itself. Last week the compiler caught a null flowing into the chart component that would have been a production crash. The NPM workspace split also landed, so the design system builds independently and the main app no longer rebuilds the world on every change. Local build times dropped from 4 minutes to about 90 seconds. Remaining work is the settings pages and the test utilities, both scheduled for the next two sprints."
+  },
+  {
+   "id": "long-014",
+   "reference": "Notes for the reading group before Thursday. We are discussing the first ten chapters, so please stop there even if you cannot put it down. Pay attention to how Chimamanda handles the shifts in time, the flashbacks are never announced, you only notice them by the change in the narrator's confidence. There is a passage in chapter six about the market that I want to read aloud together. Bring one question each, and if you have opinions about the tea situation from last time, bring a better tea. We start at 7 pm sharp.",
+   "hard_terms": [
+    "Chimamanda"
+   ],
+   "whole": "Notes for the reading group before Thursday. We are discussing the first 10 chapters, so please stop there even if you cannot put it down. Pay attention to how Chimamanda handles the shifts in time. The flashbacks are never announced, you only notice them by the change in the narration. as confidence, there is a passage in chapter 6 about the market that I want to read aloud together. Bring one question each, and if you have opinions about the tea situation from last time, bring a better tea. We start at 7pm sharp.",
+   "live": "Notes for the reading group before Thursday. We are discussing the first 10 chapters, so please stop there even if you cannot put it down. Pay attention to how Chimamanda handles the shifts in time. The flashbacks are never announced. You only notice them by the change in the narrator's confidence. There is a passage in chapter 6 about the market that I want to read aloud together. Bring one question each, and if you have opinions about the tea situation from last time, bring a better tea. We start at 7pm sharp."
+  },
+  {
+   "id": "long-015",
+   "reference": "Let me summarize where the kitchen renovation stands. The cabinets arrived on Monday, two of the doors are the wrong shade, and the supplier has agreed to swap them within three weeks. The plumber comes on Thursday to move the water line for the island, which is the last thing blocking the countertop template. Once the template is done, the stone takes about ten days. Budget wise we are roughly 8% over, mostly because of the electrical surprises behind the old wall. If nothing else goes wrong, and I am knocking on wood, we cook in the new kitchen by Thanksgiving.",
+   "hard_terms": [],
+   "whole": "Let me summarize where the kitchen renovation stands. The cabinets arrived on Monday, two of the doors are the wrong shade, and the supplier has agreed to swap them within three weeks. The plumber comes on Thursday to move the water line for the island, which is the last thing blocking the countertop template once the template is done the stone takes about 10 days budget-wise we are roughly 8% over mostly because of the electrical surprises behind the old wall if nothing else goes wrong and I am knocking on wood, we cook in the new kitchen by Thanksgiving.",
+   "live": "Let me summarize where the kitchen renovation stands. The cabinets arrived on Monday, two of the doors are the wrong shade, and the supplier has agreed to swap them within three weeks. The plumber comes on Thursday to move the water line for the island, which is the last thing blocking the countertop template. Once the template is done, the stone takes about 10 days. Budget-wise we are roughly 8% over most because of the electrical surprises behind the old wall. If nothing else goes wrong, and I am knocking on wood, we cook in the new kitchen by Thanksgiving."
+  },
+  {
+   "id": "long-016",
+   "reference": "Here is the local model setup I recommend for the polish stage. Install Ollama for the daily driver because it starts fast and stays out of the way, and keep LM Studio around for experiments where you want to watch the token stream. The Qwen models are the sweet spot right now, the small one handles punctuation cleanup easily and fits in memory next to the transcription model. Whatever you pick, pin the exact version in the settings and write it in the runbook, because silent model upgrades have burned us twice already this quarter.",
+   "hard_terms": [
+    "Ollama",
+    "LM Studio",
+    "Qwen"
+   ],
+   "whole": "Here is the local model setup I recommend for the Polish stage. Install Olima for the daily driver because it starts fast and stays out of the way. And keep LM Studio around for experiments where you want to watch the token stream. The Qen models are the sweet spot right now. the small one handles punctuation cleanup easily and fits in memory next to the transcription model. Whatever you pick, pin the exact version in the settings and write it in the runbook, because silent model upgrades have burned us twice already this quarter.",
+   "live": "Here is the local model setup I recommend for the Polish stage. Install Olima for the daily driver because it starts fast and stays out of the way. And keep LM Studio around for experiments where you want to watch the token stream. The QN models are the sweet spot right now, the small one handles punctuation cleanup easily and fits in memory next to the transcription model. Whatever you pick, pin the exact version in the settings and write it in the runbook, because silent model upgrades have burned us twice already this quarter."
+  },
+  {
+   "id": "long-017",
+   "reference": "Board update draft, please review before I send it. Revenue is tracking 12% above plan, driven mostly by the annual tier that Yemisi repriced in the spring. Churn is flat, which given the price change is genuinely good news. On the product side, Oluwaseun's team shipped the payment integration rewrite and the failed charge rate dropped by a third in the first week. Hiring remains the bottleneck. We closed two of the five open roles, and the senior design position has been open for four months. Recommendations on the search firm question are welcome.",
+   "hard_terms": [
+    "Yemisi",
+    "Oluwaseun"
+   ],
+   "whole": "Board Update Draft. Please review before I send it. Revenue is tracking 12% above plan, driven mostly by the annual tier that Yemesee repriced in the spring. Churn is flat, which given the price change is genuinely good news. On the product side, Alou Wassoun's team shipped the payment integration rewrite and the failed charge rate dropped by a third in the first week. Hiring remains the bottleneck. We closed two of the five open roles, and the senior design position has been open for four months. Recommendations on the search firm question are welcome.",
+   "live": "Board update draft. Please review before I send it. Revenue is tracking 12% above plan, driven mostly by the annual tier that Yemesee repriced in the spring. Churn is flat, which given the price change is genuinely good news. On the product side, Alu Wasun's team shipped the payment integration rewrite and the failed charge rate dropped by a third in the first week. Hiring remains the bottleneck. We closed two of the five open roles, and the senior design position has been been open for four months. Recommendations on the search firm question are welcome."
+  },
+  {
+   "id": "long-018",
+   "reference": "Recording my practice talk, feedback welcome. The talk opens with a story about the first outage I ever caused, which gets a laugh and buys me goodwill for the dry middle section. The middle is three lessons about on call culture, each with one chart and one concrete change we made. I am worried the second lesson runs long, if you see people checking phones, that is where. The ending circles back to the outage story with the fix we eventually shipped, and lands on the line, the system is allowed to fail, the team is not. Total time should be 18 minutes.",
+   "hard_terms": [],
+   "whole": "Recording my practice talk. Feedback welcome. The talk opens with a story about the first outage I ever caused, which gets a laugh and buys me goodwill for the dry middle section. The middle is three lessons about on-call culture, each with one chart and one concrete change we made, I am worried the second lesson runs long, if you see people checking phones, that is where. The ending circles back to the outage story with the fix we eventually shipped, and lands on the line, the system is allowed to fail, the team is not, total time should be 18 minutes.",
+   "live": "Recording my practice talk. Feedback welcome. The talk opens with a story about the first outage I ever caused, which gets a laugh and buys me goodwill for the dry middle section. The middle is three lessons about on-call culture, each with one chart and one concrete change we made. I am worried the second lesson runs long. If you see people checking phones, that is where. The ending circles back to the outage story with the fix we eventually actually shit and lands on the line. The system is allowed to fail. The team is not. Total time should be 18 minutes."
+  },
+  {
+   "id": "long-019",
+   "reference": "Architecture note for the new contributor, welcome aboard. Persistence goes through GRDB and every table has a record struct next to it, please do not write raw SQL in view code, there is a manager for that. The transcription side is an actor, and the one invariant you must never break is that committedSampleCount only moves forward during a live session. Everything else, the clips, the speculative tail, the merge, hangs off that number. Read the tests before the implementation, they are shorter and they tell you what the code promises rather than how it keeps the promise.",
+   "hard_terms": [
+    "GRDB",
+    "committedSampleCount"
+   ],
+   "whole": "architecture note for the new contributor welcome aboard persistence goes through grdb and every table has a record struck next to it please do not write raw sql in view code there is a manager for that the transcription site is an actor, and the one invariant you must never break is that committed sample count only moves forward during a live session. Everything else, the clips, the speculative tale, the merge, hangs off that number. Read the tests before the implementation. they are shorter and they tell you what the code promises rather than how it keeps the promise",
+   "live": "Architecture note for the new contributor. Welcome aboard. Persistence goes through GRDB and every table has a record struck next to it. Please do not write raw SQL in view code. There is a manager for that. The transcription side is an actor, and the one invariant you must never break is that committed sample count only moves forward during a live session. Everything else, the clips, the speculative tale, the merge, hangs off that number. Read the tests before the implementation, they are shorter and they tell you what the code promises rather than how it keeps the promise."
+  },
+  {
+   "id": "long-020",
+   "reference": "Personal journal, Sunday evening. The week was a blur of small tasks and I want to change that. Starting Monday I am blocking the first two hours of the day for the one thing that actually matters, and email can wait until lunch. I also noticed I have not called my parents in three weeks, which is too long, so that goes on the calendar like a real appointment. The run this morning was the best part of the weekend, cold air, empty park, and for about forty minutes nothing to optimize. More of that, please.",
+   "hard_terms": [],
+   "whole": "personal journal, Sunday evening, the week was a blur of small tasks and I want to change that, starting Monday I am blocking the first two hours of the day for the one thing that actually matters, and email can wait until lunch, I also noticed I have not called my parents in three weeks, which is too long, so that goes on the calendar like a real appointment. The run this morning was the best part of the weekend. Cold air, empty park, and for about 40 minutes nothing to optimize. More of that, please.",
+   "live": "Personal journal, Sunday evening, the week was a blur of small tasks and I want to change that. Starting Monday I am blocking the first two hours of the day for the one thing that actually matters, and email can wait until lunch. I also noticed I have not called my parents in three weeks, which is too long, so that goes on the calendar like a real appointment. The run this morning was the best part of the weekend, cold air, empty park, and for about 40 minutes nothing to optimize more of that please"
+  },
+  {
+   "id": "long-021",
+   "reference": "Code review notes on the checkout branch. The useEffectCallback wrapper is doing too much, it fetches, it subscribes, and it writes analytics, and every one of those deserves its own effect with its own dependency list. Naming is drifting again, half the new helpers are in camelCase and the other half in snake case copied from the backend client. Pick one, the linter config is already in the repo. The state machine for the payment steps is genuinely nice work though, the impossible states are actually impossible now, and the tests read like documentation. Approve with comments.",
+   "hard_terms": [
+    "useEffectCallback",
+    "camelCase"
+   ],
+   "whole": "Code review notes on the checkout branch. The use effect callback wrapper is doing too much. It fetches, it subscribes, and it writes analytics. And every one of those deserves its own effect with its own dependency list. Naming is drifting again. half the new helpers are in camel case and the other half in snake case copied from the backend client, pick one, the linter config is already in the repo, the state machine for the payment steps is genuinely nice work though, the impossible states are actually impossible now, and the tests read like documentation. Approve with comments.",
+   "live": "Code review notes on the checkout branch. The use effect callback wrapper is doing too much. It fetches, it subscribes, and it writes analytics. And every one of those deserves its own effect with its own dependency list. Naming is drifting again. Half the new helpers are in camel case and the other half in snake case copied from the backend client. Pick one. The linter config is already in the repo. The state machine for the payment steps is genuinely nice work though. The impossible states are actually impossible now, and the tests read like documentation. Approve with comments."
+  },
+  {
+   "id": "long-022",
+   "reference": "Debug diary for the silence bug. A user reported that Orttaai swallowed the first word whenever they started speaking immediately after the hotkey. The trail led to the noSpeechThreshold interacting badly with the EnergyVAD framing, the first hundred milliseconds were being classified as silence and the decoder skipped the opening token. The fix pads the detected speech region on both sides instead of trusting the raw frame boundary, and the regression test synthesizes exactly this case, a word starting within the first frame. Shipped in the patch release, and the user confirmed the fix the same evening.",
+   "hard_terms": [
+    "Orttaai",
+    "noSpeechThreshold",
+    "EnergyVAD"
+   ],
+   "whole": "Debug diary for the silence bug. A user reported that Autoi swallowed the first word whenever they started speaking immediately after the hotkey. The trail led to the no speech threshold interacting badly with the energy VAD framing. The first 100 milliseconds were being classified as silence. and the decoder skipped the opening token. The fix pads the detected speech region on both sides instead of trusting the raw frame boundary, and the regression test synthesizes exactly this case, a word starting within the first frame, shipped in the patch release, and the user confirmed the fix the same evening.",
+   "live": "Debug diary for the silence bug. A user reported that Auti swallowed the first word whenever they started speaking immediately after the hotkey. The trail led to the no speech threshold interacting badly with the energy VAD framing. The first 100 milliseconds were being classified as silence and the decoder skipped the opening token. The fix pads the detected speech region on both sides instead of trusting the raw frame boundary, and the regression test synthesizes exactly this case, a word starting within the first frame, shipped in the patch release, and the user confirmed the fix the same evening."
+  },
+  {
+   "id": "adv-001",
+   "reference": "The first half of this note is about the budget review. The second half is about the hiring plan for next quarter.",
+   "hard_terms": [],
+   "whole": "The first half of this note is about the budget review. The second half is about the hiring plan for next quarter.",
+   "live": "The first half of this note is about the budget review. The second half is about the hiring plan for next quarter."
+  },
+  {
+   "id": "adv-002",
+   "reference": "Start the report with the revenue summary. Then add the customer quotes at the end, before the appendix.",
+   "hard_terms": [],
+   "whole": "Start the report with the revenue summary. Then add the customer quotes at the end, before the appendix.",
+   "live": "Start the report with the revenue summary. Then add the customer quotes at the end, before the appendix."
+  },
+  {
+   "id": "adv-003",
+   "reference": "Olanrewaju wants the summary by noon. Keep it to one page. Numbers first, narrative second.",
+   "hard_terms": [
+    "Olanrewaju"
+   ],
+   "whole": "Alan Ruiju wants the summary by noon. Keep it to one page. Numbers first, narrative second.",
+   "live": "Alan Ruiju wants the summary by noon. Keep it to one page. Numbers first. Narrative second."
+  },
+  {
+   "id": "adv-004",
+   "reference": "Remember to lock the side door tonight. And the porch light switch is the one on the left.",
+   "hard_terms": [],
+   "whole": "Remember to lock the side door tonight. And the porch light switch is the one on the left.",
+   "live": "Remember to lock the side door tonight. And the porch light switch is the one on the left."
+  },
+  {
+   "id": "adv-005",
+   "reference": "Send the updated slides to the whole committee before five.",
+   "hard_terms": [],
+   "whole": "Send the updated slides to the whole committee before 5.",
+   "live": "Send the updated slides to the whole committee before 5. Thank you."
+  },
+  {
+   "id": "adv-006",
+   "reference": "The WhisperKit upgrade is scheduled for the next maintenance window.",
+   "hard_terms": [
+    "WhisperKit"
+   ],
+   "whole": "The WhisperKit upgrade is scheduled for the next maintenance window.",
+   "live": "The Whisper Kit upgrade is scheduled for the next maintenance window. Thank you."
+  },
+  {
+   "id": "adv-007",
+   "reference": "I'll wait for your call after the doctor's appointment.",
+   "hard_terms": [],
+   "whole": "I'll wait for your call after the doctor's appointment.",
+   "live": "I'll wait for your call after the doctor's appointment. Thank you."
+  },
+  {
+   "id": "adv-008",
+   "reference": "No no no, that is not what I meant at all.",
+   "hard_terms": [],
+   "whole": "No no no, that is not what I meant at all.",
+   "live": "No no no, that is not what I meant at all."
+  },
+  {
+   "id": "adv-009",
+   "reference": "The demo was very very very slow yesterday afternoon.",
+   "hard_terms": [],
+   "whole": "The demo was very, very, very slow yesterday afternoon.",
+   "live": "The demo was very very very slow yesterday afternoon."
+  },
+  {
+   "id": "adv-010",
+   "reference": "We waited and waited and waited for the response, and it never came.",
+   "hard_terms": [],
+   "whole": "We waited and waited and waited for the response, and it never came.",
+   "live": "We waited and waited and waited for the response, and it never came."
+  }
+ ]
+}

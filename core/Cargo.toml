@@ -15,6 +15,9 @@ serde_json.workspace = true
 tracing.workspace = true
 directories.workspace = true
 rusqlite.workspace = true
+# Text pipeline: transcript cleanup patterns and the bundled (deflated) English word list.
+regex = "1"
+miniz_oxide = "0.8"
 
 # Real platform backends are optional so the default build stays fast and
 # OS-agnostic. whisper.cpp (via whisper-rs) is the first wired, in Phase 1.

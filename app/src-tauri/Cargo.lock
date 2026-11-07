@@ -95,6 +95,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "ureq",
 ]
 
 [[package]]
@@ -3086,6 +3087,8 @@ dependencies = [
  "enigo",
  "futures-util",
  "global-hotkey",
+ "miniz_oxide",
+ "regex",
  "rubato",
  "rusqlite",
  "serde",
