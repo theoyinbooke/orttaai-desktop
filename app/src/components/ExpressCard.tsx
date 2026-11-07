@@ -415,6 +415,24 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
   const [failure, setFailure] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ExpressModel | null>(null);
   const [boosted, setBoosted] = useState<number | null>(null);
+  const [boostModel, setBoostModel] = useState<{ installed: boolean; size_mb: number; downloading: boolean } | null>(null);
+  const [boostProgress, setBoostProgress] = useState<number | null>(null);
+  const refreshBoostModel = useCallback(() => {
+    call<{ installed: boolean; size_mb: number; downloading: boolean }>("word_boost_status")
+      .then(setBoostModel)
+      .catch(() => setBoostModel(null));
+  }, []);
+  useEffect(refreshBoostModel, [refreshBoostModel]);
+  useEvent<{ fraction: number }>("word-boost-progress", (e) => setBoostProgress(e.fraction));
+  useEvent("word-boost-done", () => {
+    setBoostProgress(null);
+    refreshBoostModel();
+  });
+  useEvent<{ error: string }>("word-boost-error", (e) => {
+    setBoostProgress(null);
+    toast(`Couldn't download Word Boost: ${e.error}`, "error");
+  });
+  useEvent("express-done", refreshBoostModel);
   // Turning Express on before its model is here: download first, then switch.
   const enableAfterDownload = useRef<string | null>(null);
 
@@ -510,8 +528,13 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
     save({ express_model: id });
   };
 
+  const needsBoostModel = !!boostModel && !boostModel.installed;
   const wordBoostStatus =
-    !usingExpress || !settings.express_word_boost || boosted === null
+    boostProgress !== null
+      ? `Downloading the Word Boost model… ${Math.round(boostProgress * 100)}%`
+      : usingExpress && settings.express_word_boost && needsBoostModel
+        ? `Needs its model, a one-time ${boostModel?.size_mb ?? 132} MB download.`
+        : !usingExpress || !settings.express_word_boost || boosted === null
       ? null
       : boosted === 0
         ? "Add words in Memory > Dictionary and Word Boost will listen for them."
@@ -575,8 +598,30 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
         title="Word Boost"
         info="Checks the words in your Memory dictionary against what Express heard, so names and terms come out spelled your way."
         detail={wordBoostStatus}
+        action={
+          usingExpress && settings.express_word_boost && needsBoostModel && boostProgress === null
+            ? {
+                label: "Download",
+                run: () => {
+                  setBoostProgress(0);
+                  call("word_boost_download").catch((e) => {
+                    setBoostProgress(null);
+                    toast(String(e), "error");
+                  });
+                },
+              }
+            : undefined
+        }
       >
         <MSwitch k="express_word_boost" title="Word Boost" disabled={!usingExpress} />
+      </DetailRow>
+      <MDivider />
+      <DetailRow
+        title="Decode while I speak"
+        info="Each stretch of speech is decoded at your pauses while you're still talking, so a long dictation finishes about as fast as a short one. Off by default while it's being tested."
+        detail="Long dictations finish sooner."
+      >
+        <MSwitch k="express_live_segments" title="Decode while I speak" disabled={!usingExpress} />
       </DetailRow>
       <MDivider />
       <DetailRow
@@ -600,7 +645,7 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
           />
         )}
         {usingExpress && selected && !selected.multilingual && settings.dictation_language !== "en" && (
-          <MNotice kind="info">This Express model is English only, so dictation runs in English while Express is on.</MNotice>
+          <MNotice kind="info">This Express model is English only, so dictation uses Whisper until the dictation language is English.</MNotice>
         )}
         {failure && (
           <MNotice kind="error" onDismiss={() => setFailure(null)}>

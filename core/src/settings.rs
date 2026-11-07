@@ -125,6 +125,10 @@ pub struct Settings {
     /// Bias decoding towards dictionary words (whisper initial prompt).
     pub vocabulary_bias: bool,
     pub express_word_boost: bool,
+    /// Express decodes each stretch of speech at your pauses while you talk
+    /// (Mac "Decode while I speak"; off by default while it's tested).
+    #[serde(default)]
+    pub express_live_segments: bool,
     /// Which Express (Parakeet) model to use when `engine` is `express`.
     pub express_model: String,
     pub low_latency: bool,
@@ -250,6 +254,7 @@ impl Default for Settings {
             advanced_decoding: AdvancedDecoding::default(),
             vocabulary_bias: true,
             express_word_boost: true,
+            express_live_segments: false,
             express_model: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8".to_string(),
             low_latency: false,
             warm_models: true,
@@ -265,7 +270,7 @@ impl Default for Settings {
             audio_device: None,
             sound_cues: true,
 
-            edit_commands_enabled: false,
+            edit_commands_enabled: true,
             edit_shortcut: HotkeyCombo {
                 key: "E".to_string(),
                 modifiers: vec![Modifier::Ctrl, Modifier::Shift],
@@ -280,8 +285,8 @@ impl Default for Settings {
             fuzzy_dictionary: true,
             snippets_enabled: true,
             disfluency_cleanup: true,
-            ai_suggestions: true,
-            learn_from_edits: false,
+            ai_suggestions: false,
+            learn_from_edits: true,
 
             injection_mode: InjectionMode::Auto,
             preserve_clipboard: true,
@@ -299,15 +304,15 @@ impl Default for Settings {
             chat_model: String::new(),
             chat_thinking: ThinkingDepth::Low,
             insights_enabled: false,
-            insights_model: String::new(),
+            insights_model: "gemma4:e2b".to_string(),
             insights_context_tokens: 16_384,
             insights_thinking: false,
-            semantic_enabled: false,
+            semantic_enabled: true,
             semantic_auto_index: true,
             semantic_keyword_fallback: true,
             semantic_embedding_model: "all-minilm".to_string(),
-            semantic_summary_enabled: false,
-            semantic_summary_model: String::new(),
+            semantic_summary_enabled: true,
+            semantic_summary_model: "gemma4:e2b".to_string(),
 
             coach_enabled: true,
             coach_first_run_done: false,
@@ -338,7 +343,42 @@ impl Default for Settings {
     }
 }
 
+/// Express models that dictate more than English (Parakeet v3).
+pub const MULTILINGUAL_EXPRESS_MODELS: &[&str] = &["sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"];
+
+/// The 25 languages Parakeet TDT v3 transcribes.
+pub const PARAKEET_V3_LANGUAGES: &[&str] = &[
+    "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt",
+    "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk",
+];
+
 impl Settings {
+    /// The language dictation runs in (Mac `effectiveDictationLanguage`):
+    /// Low Latency Mode turns "auto" into English.
+    pub fn effective_language(&self) -> String {
+        let lang = self.dictation_language.trim().to_lowercase();
+        if self.low_latency && lang == "auto" {
+            "en".to_string()
+        } else if lang.is_empty() {
+            "auto".to_string()
+        } else {
+            lang
+        }
+    }
+
+    /// Express runs only when it is chosen and can dictate the language: English,
+    /// or one of the multilingual model's languages (or auto). Anything else
+    /// dictates with the Whisper model (Mac `isExpressEngineActive`).
+    pub fn express_active(&self) -> bool {
+        if self.engine != SpeechEngine::Express {
+            return false;
+        }
+        let lang = self.effective_language();
+        lang == "en"
+            || (MULTILINGUAL_EXPRESS_MODELS.contains(&self.express_model.trim())
+                && (lang == "auto" || PARAKEET_V3_LANGUAGES.contains(&lang.as_str())))
+    }
+
     /// Cross-platform config-file path, or `None` if no home dir can be resolved.
     pub fn config_path() -> Option<PathBuf> {
         if let Some(dir) = std::env::var_os("ORTTAAI_CONFIG_DIR") {
@@ -434,6 +474,30 @@ pub fn merge_json(base: &mut serde_json::Value, patch: &serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn express_runs_only_for_english() {
+        let mut s = super::Settings {
+            engine: super::SpeechEngine::Express,
+            ..super::Settings::default()
+        };
+        assert!(s.express_active());
+        s.dictation_language = "fr".into();
+        assert!(!s.express_active(), "French dictates with Whisper");
+        s.dictation_language = "auto".into();
+        assert!(!s.express_active(), "auto may not be English");
+        s.low_latency = true;
+        assert!(s.express_active(), "Low Latency Mode makes auto English");
+        s.low_latency = false;
+        s.express_model = super::MULTILINGUAL_EXPRESS_MODELS[0].into();
+        assert!(s.express_active(), "the multilingual model handles auto");
+        s.dictation_language = "de".into();
+        assert!(s.express_active());
+        s.dictation_language = "ja".into();
+        assert!(!s.express_active(), "not one of Parakeet v3's languages");
+        s.engine = super::SpeechEngine::Whisper;
+        assert!(!s.express_active());
+    }
+
     use super::*;
 
     #[test]

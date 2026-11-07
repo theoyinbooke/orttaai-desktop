@@ -21,6 +21,7 @@ export type Settings = {
   };
   vocabulary_bias: boolean;
   express_word_boost: boolean;
+  express_live_segments: boolean;
   /** Express (Parakeet) model id, used when `engine` is "express". */
   express_model: string;
   low_latency: boolean;

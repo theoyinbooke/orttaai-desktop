@@ -256,6 +256,19 @@ fn vocabulary_terms(settings: &Settings) -> Vec<String> {
     terms.into_iter().map(|(_, t)| t).collect()
 }
 
+/// Word Boost's words: the Memory dictionary's targets with the spellings
+/// mapped to them, while Express and Word Boost are on (Mac
+/// `sessionWordBoostTerms`).
+fn word_boost_terms(settings: &Settings) -> Vec<orttaai_core::text::WordBoostTerm> {
+    if !settings.express_active() || !settings.express_word_boost {
+        return Vec::new();
+    }
+    Store::open_default()
+        .and_then(|s| s.text_processor(settings))
+        .map(|p| p.word_boost_terms())
+        .unwrap_or_default()
+}
+
 fn load_voice_detector() -> Option<SileroVad> {
     if !models::vad_installed() {
         return None;
@@ -275,7 +288,17 @@ fn load_voice_detector() -> Option<SileroVad> {
 fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), String> {
     let state = app.state::<EngineState>();
     let settings = Settings::load_or_default();
-    let (transcriber, model_id) = load_transcriber(&settings, model_path)?;
+    let ((transcriber, model_id), fallback) = load_transcriber(&settings, model_path)?;
+    // After a fallback the rest of the engine (pipeline, language) is Whisper's.
+    let settings = if let Some(why) = fallback {
+        let _ = app.emit("engine-warning", why);
+        Settings {
+            engine: SpeechEngine::Whisper,
+            ..settings
+        }
+    } else {
+        settings
+    };
 
     let injector = SystemTextInjector::new();
     let injector_name = injector.backend_name().to_string();
@@ -293,6 +316,7 @@ fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), Strin
     coord.set_config(CoordinatorConfig::from_settings(&settings));
     coord.set_rewriter(pipeline::build_rewriter(&settings));
     coord.set_vocabulary(vocabulary_terms(&settings));
+    coord.set_word_boost_terms(&word_boost_terms(&settings));
     let voice = load_voice_detector();
     let has_voice = voice.is_some();
     coord.set_voice_detector(voice.map(|v| Box::new(v) as _));
@@ -341,29 +365,56 @@ fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), Strin
     Ok(())
 }
 
+type LoadedTranscriber = (Box<dyn orttaai_core::transcription::Transcriber>, String);
+
 /// Load the speech engine the settings ask for: whisper.cpp (GGUF) or Express
-/// (Parakeet via sherpa-onnx). Returns the transcriber and the model id shown
-/// in the UI and recorded with each dictation.
+/// (Parakeet via sherpa-onnx). Returns the transcriber, the model id shown in
+/// the UI and recorded with each dictation, and, when Express was asked for but
+/// couldn't run, why dictation fell back to Whisper.
 fn load_transcriber(
     settings: &Settings,
     explicit: Option<String>,
-) -> Result<(Box<dyn orttaai_core::transcription::Transcriber>, String), String> {
-    if settings.engine == SpeechEngine::Express && explicit.is_none() {
-        use orttaai_core::transcription::express;
-        let id = settings.express_model.trim();
-        if !express::is_installed(id) {
-            return Err(format!(
-                "The Express model “{id}” isn't downloaded yet — download it in Models, or switch back to Whisper."
-            ));
+) -> Result<(LoadedTranscriber, Option<String>), String> {
+    // Express chosen but dictation isn't English: Whisper, as on the Mac.
+    if settings.express_active() && explicit.is_none() {
+        match load_express(settings) {
+            Ok(loaded) => return Ok((loaded, None)),
+            // A dictation never fails because of Express: use Whisper and say so.
+            Err(why) if models::is_downloaded(&settings.model_id) => {
+                eprintln!("orttaai: Express could not start ({why}); dictating with Whisper");
+                let whisper = load_whisper(settings, None)?;
+                return Ok((
+                    whisper,
+                    Some(format!(
+                        "Express couldn't start, so dictation uses Whisper. {why}"
+                    )),
+                ));
+            }
+            Err(why) => return Err(why),
         }
-        let dir = express::model_dir(id).map_err(|e| e.to_string())?;
-        let t = orttaai_core::transcription::ExpressTranscriber::from_dir(
-            &dir,
-            settings.decode.n_threads,
-        )
-        .map_err(|e| e.to_string())?;
-        return Ok((Box::new(t), id.to_string()));
     }
+    Ok((load_whisper(settings, explicit)?, None))
+}
+
+fn load_express(settings: &Settings) -> Result<LoadedTranscriber, String> {
+    use orttaai_core::transcription::express;
+    let id = settings.express_model.trim();
+    if !express::is_installed(id) {
+        return Err(format!(
+            "The Express model “{id}” isn't downloaded yet. Download it in Model, or switch back to Whisper."
+        ));
+    }
+    let dir = express::model_dir(id).map_err(|e| e.to_string())?;
+    let t =
+        orttaai_core::transcription::ExpressTranscriber::from_dir(&dir, settings.decode.n_threads)
+            .map_err(|e| e.to_string())?;
+    Ok((Box::new(t), id.to_string()))
+}
+
+fn load_whisper(
+    settings: &Settings,
+    explicit: Option<String>,
+) -> Result<LoadedTranscriber, String> {
     let path = resolve_model(settings, explicit)?;
     let t = WhisperTranscriber::from_path(&path).map_err(|e| e.to_string())?;
     Ok((Box::new(t), transcriber_id(&path)))
@@ -596,6 +647,8 @@ impl Worker {
                 self.coord
                     .set_pipeline(pipeline::build_pipeline(&self.settings));
                 self.coord.set_vocabulary(vocabulary_terms(&self.settings));
+                self.coord
+                    .set_word_boost_terms(&word_boost_terms(&self.settings));
             }
             Cmd::ResetAudio(reply) => {
                 let r = self
@@ -621,14 +674,20 @@ impl Worker {
     }
 
     fn reconfigure(&mut self, next: Settings) {
+        let mut next = next;
         let model_changed = next.model_id != self.settings.model_id
             || next.models_dir != self.settings.models_dir
             || next.engine != self.settings.engine
-            || next.express_model != self.settings.express_model;
+            || next.express_model != self.settings.express_model
+            || next.express_active() != self.settings.express_active();
         if model_changed && self.coord.state() == RecordingState::Idle {
             emit_state(&self.app, "loading");
             match load_transcriber(&next, None) {
-                Ok((t, id)) => {
+                Ok(((t, id), fallback)) => {
+                    if let Some(why) = fallback {
+                        let _ = self.app.emit("engine-warning", why);
+                        next.engine = SpeechEngine::Whisper;
+                    }
                     self.coord.replace_transcriber(t);
                     if next.warm_models {
                         let _ = self.coord.warm_up();
@@ -653,6 +712,7 @@ impl Worker {
         self.coord.set_pipeline(pipeline::build_pipeline(&next));
         self.coord.set_rewriter(pipeline::build_rewriter(&next));
         self.coord.set_vocabulary(vocabulary_terms(&next));
+        self.coord.set_word_boost_terms(&word_boost_terms(&next));
         self.settings = next;
     }
 
@@ -887,7 +947,12 @@ pub fn on_app_ready(app: &AppHandle) {
     }
     let _ = update_snapshot(app, |s| s.phase = "off".into());
     let settings = Settings::load_or_default();
-    if settings.start_engine_on_launch && models::is_downloaded(&settings.model_id) {
+    // Ready to run when the Whisper model is on disk, or Express is the engine
+    // and its model is (an Express-only install starts too).
+    let ready = models::is_downloaded(&settings.model_id)
+        || (settings.express_active()
+            && orttaai_core::transcription::express::is_installed(settings.express_model.trim()));
+    if settings.start_engine_on_launch && ready {
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(e) = start_dictation(app2.clone(), None).await {

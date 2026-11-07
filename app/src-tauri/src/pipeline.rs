@@ -12,7 +12,7 @@ use orttaai_core::coordinator::{EditRewriter, PipelineOutput, TranscriptPipeline
 use orttaai_core::llm::{client_from_settings, LlmClient};
 use orttaai_core::memory::MemoryService;
 use orttaai_core::polish::{PolishOptions, Polisher};
-use orttaai_core::settings::{Settings, SpeechEngine, StyleMode};
+use orttaai_core::settings::Settings;
 use orttaai_core::store::Store;
 use orttaai_core::text::{format_numbers, TextOptions, TextProcessor};
 use std::sync::Arc;
@@ -70,25 +70,11 @@ fn processor(settings: &Settings) -> TextProcessor {
 
 /// The transcript pipeline for these settings.
 pub fn build_pipeline(settings: &Settings) -> Box<dyn TranscriptPipeline> {
-    // Express Word Boost: Parakeet has no prompt to bias, so boost dictionary
-    // words by always running the fuzzy dictionary matcher on its output.
-    let boosted;
-    let text_settings = if settings.engine == SpeechEngine::Express && settings.express_word_boost {
-        boosted = Settings {
-            fuzzy_dictionary: true,
-            ..settings.clone()
-        };
-        &boosted
-    } else {
-        settings
-    };
-    let processor = processor(text_settings);
-    // Formal/Casual style modes are polish instructions, so they turn polish on.
-    let wants_polish = settings.polish_enabled
-        || matches!(settings.style_mode, StyleMode::Formal | StyleMode::Casual);
-    let polisher = wants_polish.then(|| {
-        let mut opts = PolishOptions::from_settings(settings);
-        opts.enabled = true;
+    let processor = processor(settings);
+    // Formal and Casual are written by Polish, so they apply only while Polish
+    // is on (Settings › Text says so); otherwise dictation reads as Clean.
+    let polisher = settings.polish_enabled.then(|| {
+        let opts = PolishOptions::from_settings(settings);
         let protected = processor.vocabulary_terms();
         Polisher::new(
             client_from_settings(settings),
@@ -98,7 +84,7 @@ pub fn build_pipeline(settings: &Settings) -> Box<dyn TranscriptPipeline> {
     Box::new(AppPipeline {
         processor,
         polisher,
-        express: settings.engine == SpeechEngine::Express,
+        express: settings.express_active(),
     })
 }
 

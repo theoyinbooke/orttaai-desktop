@@ -10,6 +10,10 @@ equivalent; behaviour, thresholds and copy follow the Mac.
 | Hands-free silence stop (`HandsFreeAutoStop`, `SileroVoiceDetector`) | `core/src/vad.rs` | Adapted: Silero via whisper.cpp VAD + adaptive-RMS fallback |
 | Audio capture + Bluetooth recovery (`AudioCaptureService`, `AudioDeviceManager`) | `core/src/audio/` | cpal; Mac retry schedule; keeps audio heard |
 | Whisper (WhisperKit/CoreML) | `core/src/transcription/whisper.rs` | Adapted: whisper.cpp (CPU / CUDA) |
+| Background decoding while speaking (`TranscriptionService` live session, Express "Decode while I speak") | `core/src/live.rs`, coordinator `poll_live` / `decode_recording` | Same clip, pause and segment rules; Whisper always, Express opt-in |
+| Express Word Boost (`ExpressTranscriber` Word Boost, FluidAudio `VocabularyRescorer`, `WordBoostGuard`, `WordBoostChunks`) | `core/src/wordboost/` | Parakeet CTC 110M as sherpa-onnx ONNX on sherpa's ONNX Runtime; NeMo mel front end in Rust; rescorer ported from FluidAudio (Apache-2.0) |
+| Express fallback (`isExpressEngineActive`, `ensureTranscriptionModelLoaded`) | `Settings::express_active`, `load_transcriber` in `engine.rs` | Express only for its languages; a failed Express load dictates with Whisper and says so |
+| Return to the target app before typing (`waitForReturn`) | `core/src/focus.rs` `WindowFocus`, coordinator `deliver_to_target` | X11 `_NET_ACTIVE_WINDOW`, Windows `SetForegroundWindow`; 8 s wait, else clipboard. Not on Wayland |
 | Express engine (Parakeet, CoreML) | `core/src/transcription/express.rs` | Adapted: Parakeet TDT 0.6B int8 via sherpa-onnx |
 | Model manager, tiers, hardware detection | `core/src/models/`, `core/src/hardware.rs`, `views/Models.tsx` | Tiers redefined for CPU / RAM / NVIDIA |
 | Text pipeline (`TextProcessor`, `DisfluencyCleaner`, `FuzzyDictionaryMatcher`, number formatter) | `core/src/text/`, `core/src/memory.rs` | Same step order; bundled word list |

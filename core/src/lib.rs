@@ -20,6 +20,7 @@ pub mod gesture;
 pub mod hardware;
 pub mod hotkey;
 pub mod injection;
+pub mod live;
 pub mod llm;
 pub mod memory;
 pub mod milestones;
@@ -34,6 +35,7 @@ pub mod transcription;
 pub mod types;
 pub mod vad;
 pub mod whatsnew;
+pub mod wordboost;
 pub mod writing;
 
 pub use coordinator::{DictationCoordinator, DictationOutcome};

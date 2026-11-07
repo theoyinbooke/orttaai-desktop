@@ -19,6 +19,8 @@ const CREDITS: { name: string; detail: string; icon: ReactNode }[] = [
   { name: "whisper.cpp", detail: "On-device speech recognition, MIT License", icon: icon("waveform") },
   { name: "Parakeet TDT 0.6B", detail: "Express speech model by NVIDIA, CC BY 4.0", icon: icon("bolt") },
   { name: "sherpa-onnx", detail: "Runs Express on this computer, Apache 2.0", icon: glyph("cpu") },
+  { name: "Parakeet CTC 110M", detail: "Word Boost model by NVIDIA, CC BY 4.0", icon: icon("textCheck") },
+  { name: "FluidAudio", detail: "Word Boost's rescoring, ported from FluidInference, Apache 2.0", icon: icon("textCheck") },
   { name: "Silero VAD", detail: "Hears when you stop talking in hands-free recordings, MIT License", icon: icon("waveform") },
   {
     name: "S1-mini",

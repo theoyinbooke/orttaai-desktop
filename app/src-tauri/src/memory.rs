@@ -6,7 +6,7 @@
 use crate::err;
 use orttaai_core::error::CoreError;
 use orttaai_core::llm::{policy, LlmClient};
-use orttaai_core::settings::{Settings, SpeechEngine};
+use orttaai_core::settings::Settings;
 use orttaai_core::store::{
     AiAnalyzer, DictionaryEntry, EditCheck, ImportSummary, LearningRunResult, LearningSuggestion,
     SnippetEntry, Store, STATUS_PENDING,
@@ -300,7 +300,7 @@ pub async fn preview_text_pipeline(
     tauri::async_runtime::spawn_blocking(move || {
         let settings = Settings::load_or_default();
         let processor = store()?.text_processor(&settings).map_err(err)?;
-        let input = if settings.engine == SpeechEngine::Express {
+        let input = if settings.express_active() {
             format_numbers(&text)
         } else {
             text

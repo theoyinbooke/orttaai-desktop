@@ -775,10 +775,14 @@ fn edit_needs_a_rewriter_and_the_setting() {
     assert_eq!(r.coord.state(), RecordingState::Error);
     assert!(r.coord.status().error.unwrap().contains("local AI model"));
 
-    let mut off = rig(
+    let mut no_edit = settings();
+    no_edit.edit_commands_enabled = false;
+    let mut off = rig_with(
         "x",
         MockTextInjector::new().with_selection("x"),
+        MockAudioCapture::new(1.0),
         MemoryService::new(),
+        &no_edit,
     );
     off.coord.set_rewriter(Some(Box::new(Shout)));
     off.coord.handle_edit_hotkey_down();
@@ -937,3 +941,157 @@ impl ClipNow for Arc<MockClipboard> {
 
 #[allow(dead_code)]
 fn _assert_send(_: &Mutex<DictationCoordinator>) {}
+
+// ---- Target window (Mac TextInjectionService waitForReturn) --------------------
+
+use orttaai_core::clipboard::Clipboard as _;
+use orttaai_core::focus::ScriptedWindowFocus;
+
+/// A rig whose dictation starts in window 1, then focus moves to window 2.
+fn moved_focus(
+    activation_works: bool,
+    returns_after: Option<usize>,
+) -> (Rig, Arc<ScriptedWindowFocus>) {
+    let mut r = rig("hello world", MockTextInjector::new(), MemoryService::new());
+    let mut windows = ScriptedWindowFocus::new(Some(1));
+    windows.activation_works = activation_works;
+    windows.returns_after = returns_after.map(|n| (1, n));
+    let windows = Arc::new(windows);
+    r.coord.set_window_focus(Box::new(windows.clone()));
+    r.coord.on_press().unwrap();
+    *windows.front.lock().unwrap() = Some(2);
+    (r, windows)
+}
+
+#[test]
+fn text_goes_back_to_the_window_dictation_started_in() {
+    let (mut r, windows) = moved_focus(true, None);
+    let outcome = r.coord.on_release().unwrap();
+    assert_eq!(outcome.result, InjectionResult::Success);
+    assert_eq!(r.log.last().as_deref(), Some("hello world"));
+    assert_eq!(
+        *windows.front.lock().unwrap(),
+        Some(1),
+        "brought back first"
+    );
+}
+
+#[test]
+fn waits_for_the_window_to_come_back() {
+    let (mut r, windows) = moved_focus(false, Some(20));
+    let outcome = r.coord.on_release().unwrap();
+    assert_eq!(outcome.result, InjectionResult::Success);
+    assert_eq!(r.log.last().as_deref(), Some("hello world"));
+    assert!(windows.waits.load(std::sync::atomic::Ordering::SeqCst) >= 20);
+}
+
+#[test]
+fn never_types_into_another_window() {
+    let (mut r, _windows) = moved_focus(false, None);
+    let outcome = r.coord.on_release().unwrap();
+    assert_eq!(outcome.result, InjectionResult::Failed);
+    assert!(
+        r.log.all().is_empty(),
+        "nothing typed into the wrong window"
+    );
+    assert_eq!(outcome.injection_method, Some(InjectionMethod::Clipboard));
+    assert_eq!(
+        r.clip.get_text().unwrap().as_deref(),
+        Some("hello world"),
+        "left on the clipboard"
+    );
+    assert_eq!(
+        outcome.transcript.as_deref(),
+        Some("hello world"),
+        "kept in History"
+    );
+    assert_eq!(
+        r.coord.status().error.as_deref(),
+        Some("Couldn't insert text. Press Ctrl+V to paste it.")
+    );
+}
+
+// ---- Decoding while speaking (Mac live session) ---------------------------------
+
+/// Records the length of every decode and names each result after its turn.
+struct PieceCounter(Arc<Mutex<Vec<usize>>>);
+
+impl orttaai_core::transcription::Transcriber for PieceCounter {
+    fn load_model(&mut self, _id: &str) -> orttaai_core::Result<()> {
+        Ok(())
+    }
+    fn loaded_model(&self) -> Option<&str> {
+        Some("pieces")
+    }
+    fn transcribe(&self, samples: &[f32], _o: &DecodeOptions) -> orttaai_core::Result<String> {
+        let mut calls = self.0.lock().unwrap();
+        calls.push(samples.len());
+        Ok(format!("part{}", calls.len()))
+    }
+    fn live_mode(&self) -> orttaai_core::live::LiveMode {
+        orttaai_core::live::LiveMode::Clips
+    }
+}
+
+fn live_rig(live: bool) -> (Rig, Arc<Mutex<Vec<usize>>>) {
+    let mut s = settings();
+    s.vocabulary_bias = false;
+    let mut r = rig_with(
+        "unused",
+        MockTextInjector::new(),
+        MockAudioCapture::new(1.0),
+        MemoryService::new(),
+        &s,
+    );
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    r.coord
+        .replace_transcriber(Box::new(PieceCounter(calls.clone())));
+    let mut config = CoordinatorConfig::from_settings(&s);
+    config.live_decoding = live;
+    r.coord.set_config(config);
+    (r, calls)
+}
+
+#[test]
+fn speech_before_a_pause_is_decoded_while_still_recording() {
+    let (mut r, calls) = live_rig(true);
+    r.coord.on_press().unwrap();
+    r.feed.push(&tone(3.0, 0.2));
+    r.feed.push(&silence(0.8));
+    r.advance(300);
+    // The first piece decodes on its own thread while recording goes on.
+    for _ in 0..200 {
+        if !calls.lock().unwrap().is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(calls.lock().unwrap().len(), 1, "decoded before release");
+    r.feed.push(&tone(2.0, 0.2));
+    let outcome = r.coord.on_release().unwrap();
+
+    assert_eq!(outcome.transcript.as_deref(), Some("part1 part2"));
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(
+        calls.len(),
+        2,
+        "the first piece plus the tail, never everything again"
+    );
+    let first = calls[0] as f32 / SR as f32;
+    let tail = calls[1] as f32 / SR as f32;
+    assert!((3.0..3.5).contains(&first), "first piece {first}s");
+    assert!((2.0..2.6).contains(&tail), "tail {tail}s");
+}
+
+#[test]
+fn live_decoding_off_decodes_the_whole_recording_once() {
+    let (mut r, calls) = live_rig(false);
+    r.coord.on_press().unwrap();
+    r.feed.push(&tone(3.0, 0.2));
+    r.feed.push(&silence(0.8));
+    r.advance(300);
+    r.feed.push(&tone(2.0, 0.2));
+    let outcome = r.coord.on_release().unwrap();
+    assert_eq!(outcome.transcript.as_deref(), Some("part1"));
+    assert_eq!(calls.lock().unwrap().len(), 1);
+}

@@ -23,7 +23,7 @@
 use crate::audio::AudioCapture;
 use crate::error::{CoreError, Result};
 use crate::gesture::{GestureInterpreter, ReleaseAction};
-use crate::injection::{InjectionConfig, InjectionService, SelectionCapture};
+use crate::injection::{Delivery, InjectionConfig, InjectionService, SelectionCapture};
 use crate::memory::MemoryService;
 use crate::settings::Settings;
 use crate::store::TranscriptionRecord;
@@ -154,6 +154,10 @@ pub struct CoordinatorConfig {
     pub edit_max_chars: usize,
     pub show_processing_estimate: bool,
     pub vocabulary_bias: bool,
+    /// Decode while the speaker talks (Whisper always; Express when
+    /// `express_live_segments`).
+    pub live_decoding: bool,
+    pub express_live_segments: bool,
     /// Preferred input device by persistent name; `None` = system default.
     pub audio_device: Option<String>,
     /// The selected model id (reported when the transcriber has none).
@@ -180,6 +184,8 @@ impl CoordinatorConfig {
             edit_max_chars: s.edit_max_chars,
             show_processing_estimate: s.show_processing_estimate,
             vocabulary_bias: s.vocabulary_bias,
+            live_decoding: true,
+            express_live_segments: s.express_live_segments,
             audio_device: s.audio_device.clone().filter(|d| !d.trim().is_empty()),
             model_id: s.model_id.clone(),
             injection: InjectionConfig {
@@ -212,6 +218,16 @@ pub const MIN_RECORDING: Duration = Duration::from_millis(500);
 pub const ERROR_DISMISS: Duration = Duration::from_secs(2);
 /// Hands-free silence monitor poll.
 const SILENCE_POLL: Duration = Duration::from_millis(250);
+/// Word Boost scores 15 s chunks with 2 s of overlap (Mac `WordBoostChunks`).
+const WORD_BOOST_CHUNK: usize = 240_000;
+const WORD_BOOST_STRIDE: usize = 208_000;
+/// How often the recording is checked for a piece to decode while it goes.
+const LIVE_POLL: Duration = Duration::from_millis(250);
+/// How long to wait for the dictation's window to come back (Mac 8 s), how
+/// often to look, and the pause once it has.
+const TARGET_RETURN_TIMEOUT_MS: u64 = 8_000;
+const TARGET_RETURN_POLL_MS: u64 = 50;
+const TARGET_SETTLE_MS: u64 = 120;
 /// Capture coverage that counts as complete.
 const MIN_COVERAGE: f64 = 0.90;
 /// A gap is worth keeping with ≥ half the audio and ≥ 3 s of it.
@@ -404,6 +420,8 @@ impl DictationOutcome {
 struct Session {
     started: Duration,
     app: Option<String>,
+    /// The window dictation started in; text goes back there.
+    window: Option<u64>,
     device: Option<String>,
     /// Edit sessions: the captured selection (read at the edit key's release).
     selection: Option<String>,
@@ -414,6 +432,7 @@ struct Pending {
     duration_ms: i64,
     kind: SessionKind,
     app: Option<String>,
+    window: Option<u64>,
     device: Option<String>,
     selection: Option<String>,
     lost_audio: bool,
@@ -422,7 +441,7 @@ struct Pending {
 pub type FocusedAppProvider = Box<dyn Fn() -> Option<String> + Send + Sync>;
 
 pub struct DictationCoordinator {
-    transcriber: Box<dyn Transcriber>,
+    transcriber: Arc<dyn Transcriber>,
     audio: Box<dyn AudioCapture>,
     injection: InjectionService,
     pipeline: Box<dyn TranscriptPipeline>,
@@ -430,6 +449,15 @@ pub struct DictationCoordinator {
     voice: Option<Box<dyn VoiceDetector>>,
     clock: Arc<dyn Clock>,
     focused_app: FocusedAppProvider,
+    windows: Box<dyn crate::focus::WindowFocus>,
+    /// The window the dictation being processed should be typed into.
+    target_window: Option<u64>,
+    /// Pieces of the current recording decoded while it's still going.
+    live: Option<crate::live::LiveSession>,
+    /// Word Boost scoring the recording's finished chunks while it goes.
+    preparing: Option<std::thread::JoinHandle<()>>,
+    prepared_samples: usize,
+    last_live_poll: Duration,
     config: CoordinatorConfig,
     options: DecodeOptions,
     vocabulary: Vec<String>,
@@ -463,7 +491,7 @@ impl DictationCoordinator {
         let mut injection = injection;
         injection.set_config(config.injection.clone());
         Self {
-            transcriber,
+            transcriber: Arc::from(transcriber),
             audio,
             injection,
             pipeline,
@@ -471,6 +499,12 @@ impl DictationCoordinator {
             voice: None,
             clock: Arc::new(SystemClock::new()),
             focused_app: Box::new(crate::focus::focused_app),
+            windows: Box::new(crate::focus::SystemWindowFocus),
+            target_window: None,
+            live: None,
+            preparing: None,
+            prepared_samples: 0,
+            last_live_poll: Duration::ZERO,
             config,
             options,
             vocabulary: Vec::new(),
@@ -514,6 +548,11 @@ impl DictationCoordinator {
         self
     }
 
+    /// Replace the OS window tracking (tests script it).
+    pub fn set_window_focus(&mut self, windows: Box<dyn crate::focus::WindowFocus>) {
+        self.windows = windows;
+    }
+
     pub fn set_focused_app_provider(&mut self, provider: FocusedAppProvider) {
         self.focused_app = provider;
     }
@@ -549,6 +588,11 @@ impl DictationCoordinator {
         self.vocabulary = terms;
     }
 
+    /// Word Boost's dictionary words (Express).
+    pub fn set_word_boost_terms(&mut self, terms: &[crate::text::WordBoostTerm]) {
+        self.transcriber.set_word_boost_terms(terms);
+    }
+
     pub fn set_pipeline(&mut self, pipeline: Box<dyn TranscriptPipeline>) {
         self.pipeline = pipeline;
     }
@@ -571,7 +615,7 @@ impl DictationCoordinator {
         if let Some(id) = transcriber.loaded_model() {
             self.processing_factor = initial_processing_factor(id);
         }
-        self.transcriber = transcriber;
+        self.transcriber = Arc::from(transcriber);
     }
 
     pub fn loaded_model(&self) -> Option<&str> {
@@ -819,6 +863,7 @@ impl DictationCoordinator {
         self.kind = kind;
         // Capture the target app NOW, before any overlay appears.
         let app = (self.focused_app)();
+        let window = self.windows.current();
         let device = self.config.audio_device.clone().map(DeviceId);
         match self.audio.start(device) {
             Ok(()) => {
@@ -826,11 +871,16 @@ impl DictationCoordinator {
                 self.session = Some(Session {
                     started: now,
                     app,
+                    window,
                     device: self.audio.active_device(),
                     selection: None,
                 });
                 self.policy = AutoStopPolicy::new();
                 self.last_silence_check = now;
+                self.last_live_poll = now;
+                self.live = self.live_mode_for(kind).map(crate::live::LiveSession::new);
+                self.prepared_samples = 0;
+                self.transcriber.discard_prepared_word_boost();
                 self.countdown = None;
                 if let Some(v) = self.voice.as_mut() {
                     v.reset();
@@ -893,6 +943,13 @@ impl DictationCoordinator {
                 {
                     self.last_silence_check = now;
                     self.evaluate_silence(elapsed);
+                    if self.state != RecordingState::Recording {
+                        return;
+                    }
+                }
+                if now.saturating_sub(self.last_live_poll) >= LIVE_POLL {
+                    self.last_live_poll = now;
+                    self.poll_live();
                 }
             }
             RecordingState::Error => {
@@ -1010,6 +1067,11 @@ impl DictationCoordinator {
 
     fn end_session(&mut self) {
         self.session = None;
+        self.live = None;
+        if let Some(handle) = self.preparing.take() {
+            let _ = handle.join();
+            self.transcriber.discard_prepared_word_boost();
+        }
         self.countdown = None;
         self.mode = RecordingMode::PushToTalk;
         self.kind = SessionKind::Dictation;
@@ -1098,6 +1160,7 @@ impl DictationCoordinator {
             duration_ms,
             kind: self.kind,
             app: session.app,
+            window: session.window,
             device: session.device,
             selection: session.selection,
             lost_audio,
@@ -1122,6 +1185,7 @@ impl DictationCoordinator {
         let started = Instant::now();
         let mut out = DictationOutcome::empty(p.kind, p.duration_ms, model_id);
         out.app = p.app.clone();
+        self.target_window = p.window;
         out.audio_device = p.device.clone();
         out.lost_audio = p.lost_audio;
 
@@ -1131,8 +1195,12 @@ impl DictationCoordinator {
         } else {
             None
         };
+        if let Some(handle) = self.preparing.take() {
+            let _ = handle.join();
+        }
         let t0 = Instant::now();
-        let raw = match self.transcriber.transcribe(&p.samples, &opts) {
+        let live = self.live.take();
+        let raw = match self.decode_recording(&p.samples, live, &opts) {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("transcription failed: {e}");
@@ -1218,7 +1286,7 @@ impl DictationCoordinator {
             self.fail(&mut out, "Can't dictate into password fields");
             return out;
         }
-        let delivery = self.injection.deliver(&text, out.app.as_deref());
+        let delivery = self.deliver_to_target(&text, out.app.as_deref());
         out.injection_ms = delivery.ms;
         out.injection_method = Some(delivery.method);
         out.result = delivery.result;
@@ -1296,7 +1364,7 @@ impl DictationCoordinator {
             self.fail(&mut out, "No changes needed");
             return out;
         }
-        let delivery = self.injection.deliver(&edited, out.app.as_deref());
+        let delivery = self.deliver_to_target(&edited, out.app.as_deref());
         out.injection_ms = delivery.ms;
         out.injection_method = Some(delivery.method);
         out.result = delivery.result;
@@ -1318,6 +1386,163 @@ impl DictationCoordinator {
             }
         }
         out
+    }
+
+    /// How the session about to start decodes while recording, if at all.
+    fn live_mode_for(&self, kind: SessionKind) -> Option<crate::live::LiveMode> {
+        use crate::live::LiveMode;
+        if kind != SessionKind::Dictation || !self.config.live_decoding {
+            return None;
+        }
+        match self.transcriber.live_mode() {
+            LiveMode::Clips => Some(LiveMode::Clips),
+            // While Word Boost has words to check, Express decodes the whole
+            // recording at the end so no dictionary word is missed (Mac).
+            LiveMode::Segments
+                if self.config.express_live_segments && !self.transcriber.word_boost_active() =>
+            {
+                Some(LiveMode::Segments)
+            }
+            _ => None,
+        }
+    }
+
+    /// Start decoding the next finished piece of the recording, if one is due,
+    /// and let Word Boost score each finished 15 s chunk.
+    fn poll_live(&mut self) {
+        self.poll_word_boost();
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        live.collect(false);
+        if live.busy() {
+            return;
+        }
+        let (_, covered) = live.committed();
+        if self.audio.captured_samples() < covered + live.min_pending() {
+            return;
+        }
+        let pending = self.audio.samples_from(covered);
+        let vocabulary: &[String] = if self.config.vocabulary_bias {
+            &self.vocabulary
+        } else {
+            &[]
+        };
+        live.start_next(&pending, &self.transcriber, &self.options, vocabulary);
+    }
+
+    fn poll_word_boost(&mut self) {
+        if self.kind != SessionKind::Dictation || !self.transcriber.word_boost_active() {
+            return;
+        }
+        if self.preparing.as_ref().is_some_and(|h| !h.is_finished()) {
+            return;
+        }
+        self.preparing = None;
+        // A new chunk is complete every 13 s after the first 15 s.
+        let captured = self.audio.captured_samples();
+        let next = if self.prepared_samples == 0 {
+            WORD_BOOST_CHUNK
+        } else {
+            self.prepared_samples + WORD_BOOST_STRIDE
+        };
+        if captured < next {
+            return;
+        }
+        self.prepared_samples = next;
+        let prefix = self.audio.samples_from(0);
+        let transcriber = Arc::clone(&self.transcriber);
+        self.preparing = std::thread::Builder::new()
+            .name("orttaai-word-boost".into())
+            .spawn(move || transcriber.prepare_word_boost(&prefix))
+            .ok();
+    }
+
+    /// The whole recording's transcript: the pieces committed while it was
+    /// recorded plus the tail after them, or one decode of everything.
+    fn decode_recording(
+        &self,
+        samples: &[f32],
+        live: Option<crate::live::LiveSession>,
+        opts: &DecodeOptions,
+    ) -> Result<String> {
+        if let Some(live) = live {
+            let (mut texts, covered) = live.finish();
+            if covered > 0 && covered <= samples.len() {
+                let tail = &samples[covered..];
+                tracing::info!(
+                    "decoded {} piece(s) while recording; {:.1}s tail left",
+                    texts.len(),
+                    tail.len() as f32 / TARGET_SAMPLE_RATE as f32
+                );
+                if tail.len() >= TARGET_SAMPLE_RATE as usize / 4
+                    && crate::live::has_speech(tail, crate::live::FAINT_ENERGY_FLOOR)
+                {
+                    let vocabulary: &[String] = if self.config.vocabulary_bias {
+                        &self.vocabulary
+                    } else {
+                        &[]
+                    };
+                    let mut o = opts.clone();
+                    o.initial_prompt = crate::live::piece_prompt(vocabulary, tail, &texts);
+                    let text =
+                        strip_nonspeech_markers(self.transcriber.transcribe(tail, &o)?.trim());
+                    if !text.is_empty() {
+                        texts.push(text);
+                    }
+                }
+                return Ok(texts.join(" "));
+            }
+        }
+        self.transcriber.transcribe(samples, opts)
+    }
+
+    /// Type `text` into the window the session started in. If focus moved while
+    /// it was processed, that window is asked to come back, and Orttaai waits up
+    /// to 8 s for it (Mac `waitForReturn`). If it never does, nothing is typed
+    /// anywhere else: the text is left on the clipboard instead.
+    fn deliver_to_target(&mut self, text: &str, app: Option<&str>) -> Delivery {
+        if let Some(target) = self.target_window {
+            if !self.bring_back(target) {
+                tracing::warn!(
+                    "target window {target:#x} didn't come back; text left on clipboard"
+                );
+                let method = if self.injection.leave_on_clipboard(text) {
+                    InjectionMethod::Clipboard
+                } else {
+                    InjectionMethod::Failed
+                };
+                return Delivery {
+                    result: InjectionResult::Failed,
+                    method,
+                    error: Some("The app you dictated into isn't in front any more.".into()),
+                    ms: 0,
+                };
+            }
+        }
+        self.injection.deliver(text, app)
+    }
+
+    /// Whether `target` is (or comes back to) the front.
+    fn bring_back(&self, target: u64) -> bool {
+        match self.windows.current() {
+            // Unknown (no window system to ask): nothing to compare.
+            None => return true,
+            Some(front) if front == target => return true,
+            Some(_) => {}
+        }
+        self.windows.activate(target);
+        let mut waited = 0;
+        while waited < TARGET_RETURN_TIMEOUT_MS {
+            self.windows.wait(TARGET_RETURN_POLL_MS);
+            waited += TARGET_RETURN_POLL_MS;
+            if self.windows.current() == Some(target) {
+                // Let the window manager finish moving keyboard focus.
+                self.windows.wait(TARGET_SETTLE_MS);
+                return true;
+            }
+        }
+        false
     }
 
     fn fail(&mut self, out: &mut DictationOutcome, message: &str) {

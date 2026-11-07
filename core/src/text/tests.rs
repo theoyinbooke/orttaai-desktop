@@ -48,9 +48,11 @@ fn options_follow_settings_and_effective_language() {
     s.low_latency = true;
     assert_eq!(TextOptions::from_settings(&s).language, "en");
     s.low_latency = false;
-    s.engine = SpeechEngine::Express;
-    assert_eq!(TextOptions::from_settings(&s).language, "en");
-    s.engine = SpeechEngine::Whisper;
+    // Express doesn't force English: with "auto" it isn't active and Whisper
+    // dictates in whatever language is spoken (Mac isExpressEngineActive).
+    s.engine = crate::settings::SpeechEngine::Express;
+    assert_eq!(TextOptions::from_settings(&s).language, "auto");
+    s.engine = crate::settings::SpeechEngine::Whisper;
     s.dictation_language = "es".into();
     s.fuzzy_dictionary = false;
     let o = TextOptions::from_settings(&s);

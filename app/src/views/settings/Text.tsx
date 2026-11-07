@@ -30,7 +30,9 @@ export default function TextSettings() {
   const save = usePatch();
   if (!settings) return null;
   const raw = settings.style_mode === "raw";
-  const needsPolish = (settings.style_mode === "formal" || settings.style_mode === "casual") && !settings.polish_enabled;
+  const styled = settings.style_mode === "formal" || settings.style_mode === "casual";
+  const needsPolish = styled && !settings.polish_enabled;
+  const styledByLocalModel = styled && settings.polish_enabled && settings.polish_engine === "s1_mini";
   const rawHint = "Off in the Raw style.";
 
   return (
@@ -103,7 +105,9 @@ export default function TextSettings() {
           hint={
             needsPolish
               ? `${STYLE_HINT[settings.style_mode]} Turn on Polish in Model › AI Features to apply it; until then dictation reads as Clean.`
-              : STYLE_HINT[settings.style_mode]
+              : styledByLocalModel
+                ? `${STYLE_HINT[settings.style_mode]} S1-mini only cleans up, so this style is written by your polish model (${settings.polish_model || "gemma4:e2b"}).`
+                : STYLE_HINT[settings.style_mode]
           }
         >
           <Segmented<StyleMode>

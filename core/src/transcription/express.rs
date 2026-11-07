@@ -47,7 +47,8 @@ pub fn catalog() -> Vec<ExpressModelSpec> {
             id: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
             name: "Express · English (Parakeet v2)",
             description: "Fastest on CPU. English only, with punctuation and casing.",
-            approx_size_mb: 631,
+            // With Word Boost's model (WORD_BOOST_MB), which comes with it.
+            approx_size_mb: 763,
             multilingual: false,
             archive_bytes: 482_440_461,
         },
@@ -55,11 +56,26 @@ pub fn catalog() -> Vec<ExpressModelSpec> {
             id: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
             name: "Express · Multilingual (Parakeet v3)",
             description: "Fast on CPU. 25 European languages, auto-detected.",
-            approx_size_mb: 640,
+            approx_size_mb: 772,
             multilingual: true,
             archive_bytes: 487_170_055,
         },
     ]
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    #[test]
+    fn multilingual_flags_match_the_settings_list() {
+        for spec in super::catalog() {
+            assert_eq!(
+                spec.multilingual,
+                crate::settings::MULTILINGUAL_EXPRESS_MODELS.contains(&spec.id),
+                "{}",
+                spec.id
+            );
+        }
+    }
 }
 
 pub fn spec(id: &str) -> Option<ExpressModelSpec> {
@@ -117,70 +133,69 @@ pub fn delete(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Download + unpack an Express model, reporting progress in `0.0..=1.0`.
-/// Set `cancel` to abort; a cancelled or failed download leaves nothing behind.
-pub fn download(
-    id: &str,
+/// Word Boost's model (Mac: Parakeet CTC 110M): the CTC branch of
+/// `nvidia/parakeet-tdt_ctc-110m`, downloaded with every Express model.
+pub const WORD_BOOST_ID: &str = "sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8";
+const WORD_BOOST_ARCHIVE_BYTES: u64 = 104_337_827;
+/// The model's SentencePiece tokenizer, to spell dictionary words in its tokens
+/// (the same file the Mac's Word Boost loads).
+const WORD_BOOST_TOKENIZER_URL: &str =
+    "https://huggingface.co/FluidInference/parakeet-ctc-110m-coreml/resolve/main/tokenizer.json";
+/// On disk, for size estimates.
+pub const WORD_BOOST_MB: u32 = 132;
+
+pub fn word_boost_dir() -> Result<PathBuf> {
+    Ok(express_dir()?.join(WORD_BOOST_ID))
+}
+
+fn word_boost_files(dir: &Path) -> [PathBuf; 3] {
+    [
+        dir.join("model.int8.onnx"),
+        dir.join("tokens.txt"),
+        dir.join("tokenizer.json"),
+    ]
+}
+
+pub fn word_boost_installed() -> bool {
+    word_boost_dir()
+        .map(|d| word_boost_files(&d).iter().all(|f| f.is_file()))
+        .unwrap_or(false)
+}
+
+/// Download Word Boost's model and tokenizer, reporting progress in `0.0..=1.0`.
+pub fn download_word_boost(
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(f32),
 ) -> Result<PathBuf> {
-    let spec = spec(id)
-        .ok_or_else(|| CoreError::Transcription(format!("unknown Express model '{id}'")))?;
     let root = express_dir()?;
-    let final_dir = root.join(spec.id);
-    if is_installed(spec.id) {
+    let final_dir = root.join(WORD_BOOST_ID);
+    if word_boost_installed() {
         return Ok(final_dir);
     }
-    let staging = root.join(format!("{}.part", spec.id));
+    let staging = root.join(format!("{WORD_BOOST_ID}.part"));
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging)?;
-
     let result = (|| -> Result<()> {
-        let url = format!("{RELEASE_BASE}/{}.tar.bz2", spec.id);
-        let resp = ureq::get(&url)
+        fetch_archive(
+            &format!("{RELEASE_BASE}/{WORD_BOOST_ID}.tar.bz2"),
+            WORD_BOOST_ARCHIVE_BYTES,
+            &["model.int8.onnx", "tokens.txt"],
+            &staging,
+            cancel,
+            &mut |f| on_progress(f * 0.97),
+        )?;
+        let resp = ureq::get(WORD_BOOST_TOKENIZER_URL)
             .call()
             .map_err(|e| CoreError::Transcription(format!("download failed: {e}")))?;
-        let total = resp
-            .headers()
-            .get("content-length")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(spec.archive_bytes);
-        let reader = ProgressReader {
-            inner: resp.into_body().into_reader(),
-            read: 0,
-            total,
-            cancel,
-            on_progress: &mut on_progress,
-        };
-        let decoder = bzip2::read::BzDecoder::new(reader);
-        let mut archive = tar::Archive::new(decoder);
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-            let path = entry.path()?.into_owned();
-            // Archive layout: `<id>/<file>`; keep only the model files we need.
-            let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
-                continue;
-            };
-            let wanted = matches!(
-                name.as_str(),
-                "encoder.int8.onnx" | "decoder.int8.onnx" | "joiner.int8.onnx" | "tokens.txt"
-            );
-            if wanted && path.components().count() <= 2 {
-                entry.unpack(staging.join(&name))?;
-            } else {
-                // Drain skipped entries (test wavs etc.) to keep the stream moving.
-                std::io::copy(&mut entry, &mut std::io::sink())?;
-            }
-        }
-        if !model_files(&staging).iter().all(|f| f.is_file()) {
+        let mut file = std::fs::File::create(staging.join("tokenizer.json"))?;
+        std::io::copy(&mut resp.into_body().into_reader(), &mut file)?;
+        if !word_boost_files(&staging).iter().all(|f| f.is_file()) {
             return Err(CoreError::Transcription(
-                "downloaded archive is missing model files".into(),
+                "downloaded Word Boost files are incomplete".into(),
             ));
         }
         Ok(())
     })();
-
     match result {
         Ok(()) => {
             let _ = std::fs::remove_dir_all(&final_dir);
@@ -195,15 +210,117 @@ pub fn download(
     }
 }
 
-struct ProgressReader<'a, R: Read, F: FnMut(f32)> {
+/// Stream a `.tar.bz2` and keep the top-level `wanted` files in `dir`.
+fn fetch_archive(
+    url: &str,
+    size_hint: u64,
+    wanted: &[&str],
+    dir: &Path,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(f32),
+) -> Result<()> {
+    let resp = ureq::get(url)
+        .call()
+        .map_err(|e| CoreError::Transcription(format!("download failed: {e}")))?;
+    let total = resp
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(size_hint);
+    let reader = ProgressReader {
+        inner: resp.into_body().into_reader(),
+        read: 0,
+        total,
+        cancel,
+        on_progress,
+    };
+    let decoder = bzip2::read::BzDecoder::new(reader);
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        // Archive layout: `<id>/<file>`; keep only the model files we need.
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
+            continue;
+        };
+        if wanted.contains(&name.as_str()) && path.components().count() <= 2 {
+            entry.unpack(dir.join(&name))?;
+        } else {
+            // Drain skipped entries (test wavs etc.) to keep the stream moving.
+            std::io::copy(&mut entry, &mut std::io::sink())?;
+        }
+    }
+    Ok(())
+}
+
+/// Download + unpack an Express model, then Word Boost's model when it isn't
+/// there yet (the Mac's Express package holds both), reporting progress in
+/// `0.0..=1.0`. Set `cancel` to abort; a cancelled or failed download leaves
+/// nothing behind.
+pub fn download(
+    id: &str,
+    cancel: &AtomicBool,
+    mut on_progress: impl FnMut(f32),
+) -> Result<PathBuf> {
+    let spec = spec(id)
+        .ok_or_else(|| CoreError::Transcription(format!("unknown Express model '{id}'")))?;
+    let boost_share = if word_boost_installed() { 0.0 } else { 0.15 };
+    let root = express_dir()?;
+    let final_dir = root.join(spec.id);
+    if !is_installed(spec.id) {
+        let staging = root.join(format!("{}.part", spec.id));
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging)?;
+        let result = fetch_archive(
+            &format!("{RELEASE_BASE}/{}.tar.bz2", spec.id),
+            spec.archive_bytes,
+            &[
+                "encoder.int8.onnx",
+                "decoder.int8.onnx",
+                "joiner.int8.onnx",
+                "tokens.txt",
+            ],
+            &staging,
+            cancel,
+            &mut |f| on_progress(f * (1.0 - boost_share)),
+        )
+        .and_then(|()| {
+            if model_files(&staging).iter().all(|f| f.is_file()) {
+                Ok(())
+            } else {
+                Err(CoreError::Transcription(
+                    "downloaded archive is missing model files".into(),
+                ))
+            }
+        });
+        match result {
+            Ok(()) => {
+                let _ = std::fs::remove_dir_all(&final_dir);
+                std::fs::rename(&staging, &final_dir)?;
+            }
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(e);
+            }
+        }
+    }
+    if boost_share > 0.0 {
+        download_word_boost(cancel, |f| on_progress(1.0 - boost_share + f * boost_share))?;
+    }
+    on_progress(1.0);
+    Ok(final_dir)
+}
+
+struct ProgressReader<'a, R: Read> {
     inner: R,
     read: u64,
     total: u64,
     cancel: &'a AtomicBool,
-    on_progress: &'a mut F,
+    on_progress: &'a mut dyn FnMut(f32),
 }
 
-impl<R: Read, F: FnMut(f32)> Read for ProgressReader<'_, R, F> {
+impl<R: Read> Read for ProgressReader<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(std::io::Error::new(
@@ -227,6 +344,8 @@ pub struct ExpressTranscriber {
     recognizer: Mutex<Option<OfflineRecognizer>>,
     model: Option<String>,
     threads: i32,
+    /// Word Boost, loaded when its model is on disk and there are words to boost.
+    word_boost: Mutex<Option<std::sync::Arc<crate::wordboost::WordBoost>>>,
 }
 
 // SAFETY: the sherpa-onnx recognizer is only touched behind the Mutex, one
@@ -240,6 +359,7 @@ impl ExpressTranscriber {
             recognizer: Mutex::new(None),
             model: None,
             threads: default_threads(),
+            word_boost: Mutex::new(None),
         }
     }
 
@@ -300,9 +420,11 @@ impl Transcriber for ExpressTranscriber {
         self.model.as_deref()
     }
 
+    fn live_mode(&self) -> crate::live::LiveMode {
+        crate::live::LiveMode::Segments
+    }
+
     fn transcribe(&self, samples: &[f32], _opts: &DecodeOptions) -> Result<String> {
-        let guard = self.recognizer.lock().unwrap();
-        let recognizer = guard.as_ref().ok_or(CoreError::ModelNotLoaded)?;
         if samples.is_empty() {
             return Ok(String::new());
         }
@@ -314,11 +436,129 @@ impl Transcriber for ExpressTranscriber {
             0.0f32,
             (TARGET_SAMPLE_RATE as usize * 2) / 5,
         ));
-        let stream = recognizer.create_stream();
-        stream.accept_waveform(TARGET_SAMPLE_RATE as i32, &padded);
-        recognizer.decode(&stream);
-        let text = stream.get_result().map(|r| r.text).unwrap_or_default();
+        let boost = self
+            .word_boost
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|w| w.active());
+        // Word Boost scores the same audio while Parakeet decodes it, so both
+        // share one clock and the boost costs little extra time.
+        let (result, log_probs) = std::thread::scope(|scope| {
+            let scorer = boost.as_ref().map(|w| {
+                let audio = &padded;
+                scope.spawn(move || w.log_probs(audio))
+            });
+            let result = {
+                let guard = self.recognizer.lock().unwrap();
+                guard
+                    .as_ref()
+                    .ok_or(CoreError::ModelNotLoaded)
+                    .map(|recognizer| {
+                        let stream = recognizer.create_stream();
+                        stream.accept_waveform(TARGET_SAMPLE_RATE as i32, &padded);
+                        recognizer.decode(&stream);
+                        stream.get_result()
+                    })
+            };
+            let log_probs = scorer.and_then(|h| match h.join() {
+                Ok(Ok(lp)) => Some(lp),
+                Ok(Err(e)) => {
+                    tracing::warn!("Word Boost skipped: {e}");
+                    None
+                }
+                Err(_) => None,
+            });
+            (result, log_probs)
+        });
+        let Some(result) = result? else {
+            return Ok(String::new());
+        };
+        let mut text = result.text.clone();
+        if let (Some(w), Some(log_probs), Some(starts)) =
+            (boost.as_ref(), log_probs, result.timestamps.as_ref())
+        {
+            let timings = crate::wordboost::rescore::TokenTiming::from_starts_and_durations(
+                &result.tokens,
+                starts,
+                result.durations.as_deref().unwrap_or(&[]),
+            );
+            if let Some(out) = w.boost(&text, &timings, &log_probs) {
+                let applied = out.proposals.iter().filter(|p| p.applied).count();
+                for p in &out.proposals {
+                    if std::env::var_os("ORTTAAI_WORD_BOOST_DEBUG").is_some() {
+                        eprintln!("word boost proposal: {p:?}");
+                    }
+                    tracing::info!(
+                        "Word Boost {}: -> {} [margin {:.2}, spelling {:.2}]",
+                        if p.applied { "applied" } else { "rejected" },
+                        p.term,
+                        p.margin,
+                        p.similarity
+                    );
+                }
+                tracing::info!(
+                    "Word Boost: {applied} of {} proposals applied",
+                    out.proposals.len()
+                );
+                text = out.text;
+            }
+        }
+        // A finished recording's scores are used once.
+        if let Some(w) = boost.as_ref() {
+            w.clear();
+        }
         Ok(normalize_spacing(&text))
+    }
+
+    fn set_word_boost_terms(&self, terms: &[crate::text::WordBoostTerm]) {
+        let mut slot = self.word_boost.lock().unwrap();
+        if slot.is_none() && !terms.is_empty() {
+            if let Some(dir) = std::env::var_os("ORTTAAI_WORD_BOOST_DIR") {
+                // Tests point at a model folder outside the data dir.
+                if let Ok(w) = crate::wordboost::WordBoost::load(Path::new(&dir), self.threads) {
+                    *slot = Some(std::sync::Arc::new(w));
+                }
+            }
+        }
+        if terms.is_empty() {
+            if let Some(w) = slot.as_ref() {
+                w.set_terms(&[]);
+            }
+            return;
+        }
+        if slot.is_none() && word_boost_installed() {
+            match word_boost_dir().and_then(|d| crate::wordboost::WordBoost::load(&d, self.threads))
+            {
+                Ok(w) => *slot = Some(std::sync::Arc::new(w)),
+                Err(e) => tracing::warn!("Word Boost model failed to load: {e}"),
+            }
+        }
+        if let Some(w) = slot.as_ref() {
+            let n = w.set_terms(terms);
+            tracing::info!("Word Boost listening for {n} dictionary words");
+        }
+    }
+
+    fn word_boost_active(&self) -> bool {
+        self.word_boost
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|w| w.active())
+    }
+
+    fn prepare_word_boost(&self, prefix: &[f32]) {
+        let boost = self.word_boost.lock().unwrap().clone();
+        if let Some(w) = boost.filter(|w| w.active()) {
+            w.prepare(prefix);
+        }
+    }
+
+    fn discard_prepared_word_boost(&self) {
+        if let Some(w) = self.word_boost.lock().unwrap().as_ref() {
+            w.clear();
+        }
     }
 }
 
@@ -392,5 +632,50 @@ mod tests {
         let t = ExpressTranscriber::from_dir(Path::new(&dir), 4).unwrap();
         let text = t.transcribe(&samples, &DecodeOptions::default()).unwrap();
         assert!(text.to_lowercase().contains("quarterly report"), "{text}");
+    }
+
+    /// Word Boost end to end: `ORTTAAI_WORD_BOOST_DIR` holds model.int8.onnx and
+    /// tokenizer.json, and `ORTTAAI_WORD_BOOST_WAV` is the clip made on a Mac with
+    /// `say -v Samantha -o word-boost.wav --data-format=LEI16@16000 "Temitope
+    /// moved the orders from Supabase to Postgres this morning."`. Parakeet alone
+    /// hears "Tami Tope ... Superbase to Postgers". The other terms must stay out.
+    #[test]
+    #[ignore]
+    fn word_boost_spells_a_dictionary_name() {
+        let dir = std::env::var("ORTTAAI_EXPRESS_MODEL_DIR").expect("ORTTAAI_EXPRESS_MODEL_DIR");
+        std::env::var("ORTTAAI_WORD_BOOST_DIR").expect("ORTTAAI_WORD_BOOST_DIR");
+        // Its own clip (see above), so suites that set ORTTAAI_TEST_WAV for
+        // the other real-audio tests can run this one too.
+        let wav = std::env::var("ORTTAAI_WORD_BOOST_WAV").expect("ORTTAAI_WORD_BOOST_WAV");
+        let mut reader = hound::WavReader::open(wav).unwrap();
+        let samples: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / i16::MAX as f32)
+            .collect();
+        let t = ExpressTranscriber::from_dir(Path::new(&dir), 4).unwrap();
+        let plain = t.transcribe(&samples, &DecodeOptions::default()).unwrap();
+        let term = |text: &str| crate::text::WordBoostTerm {
+            text: text.into(),
+            aliases: Vec::new(),
+        };
+        let names = ["Temitope", "Supabase", "Postgres"];
+        let distractors = ["Kubernetes", "Orttaai", "Xcode"];
+        let terms: Vec<_> = names.iter().chain(&distractors).map(|n| term(n)).collect();
+        t.set_word_boost_terms(&terms);
+        assert!(t.word_boost_active());
+        let started = std::time::Instant::now();
+        let boosted = t.transcribe(&samples, &DecodeOptions::default()).unwrap();
+        eprintln!(
+            "plain:   {plain}\nboosted: {boosted}\n({:?})",
+            started.elapsed()
+        );
+        for name in names {
+            assert!(!plain.contains(name), "{plain}");
+            assert!(boosted.contains(name), "{boosted}");
+        }
+        for name in distractors {
+            assert!(!boosted.contains(name), "{boosted}");
+        }
+        assert!(boosted.contains("moved the orders from"), "{boosted}");
     }
 }

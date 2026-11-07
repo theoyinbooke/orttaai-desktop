@@ -63,6 +63,55 @@ pub fn express_download(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether Word Boost's model is on disk (it comes with every Express download;
+/// installs from before it existed fetch it here).
+#[tauri::command]
+pub fn word_boost_status() -> serde_json::Value {
+    serde_json::json!({
+        "installed": express::word_boost_installed(),
+        "size_mb": express::WORD_BOOST_MB,
+        "downloading": downloads().lock().unwrap().contains_key(express::WORD_BOOST_ID),
+    })
+}
+
+/// Download Word Boost's model in the background. Events: `word-boost-progress`
+/// `{fraction}`, `word-boost-done`, `word-boost-error` `{error}`.
+#[tauri::command]
+pub fn word_boost_download(app: AppHandle) -> Result<(), String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut map = downloads().lock().unwrap();
+        if map.contains_key(express::WORD_BOOST_ID) {
+            return Ok(());
+        }
+        map.insert(express::WORD_BOOST_ID.to_string(), cancel.clone());
+    }
+    std::thread::spawn(move || {
+        let progress_app = app.clone();
+        let result = express::download_word_boost(&cancel, move |fraction| {
+            let _ = progress_app.emit(
+                "word-boost-progress",
+                serde_json::json!({ "fraction": fraction }),
+            );
+        });
+        downloads().lock().unwrap().remove(express::WORD_BOOST_ID);
+        match result {
+            Ok(_) => {
+                let _ = app.emit("word-boost-done", ());
+                // A running Express engine picks the model up.
+                let _ = app.emit("memory-changed", ());
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "word-boost-error",
+                    serde_json::json!({ "error": e.to_string() }),
+                );
+            }
+        }
+    });
+    Ok(())
+}
+
 #[tauri::command]
 pub fn express_cancel(id: String) {
     if let Some(flag) = downloads().lock().unwrap().get(&id) {

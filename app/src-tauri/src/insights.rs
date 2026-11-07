@@ -13,7 +13,7 @@ use orttaai_core::analytics::{
     self, AnalyticsSnapshot, Clock, DashboardPayload, GithubPromptDecision, TimeRange,
 };
 use orttaai_core::milestones::{self, BadgeView, Overview};
-use orttaai_core::settings::{Settings, SpeechEngine};
+use orttaai_core::settings::Settings;
 use orttaai_core::store::{now_unix, HistoryPage, HistoryQuery, Store, TranscriptionRecord};
 use orttaai_core::whatsnew::{self, Decision, Release};
 use serde::Serialize;
@@ -53,9 +53,10 @@ fn clock(store: &Store) -> Result<Clock, String> {
 
 /// The model the Performance card names, and whether it is Express.
 fn current_model(settings: &Settings) -> (Option<String>, bool) {
-    match settings.engine {
-        SpeechEngine::Express => (Some("Express (Parakeet TDT)".to_string()), true),
-        SpeechEngine::Whisper => (Some(settings.model_id.clone()), false),
+    if settings.express_active() {
+        (Some("Express (Parakeet TDT)".to_string()), true)
+    } else {
+        (Some(settings.model_id.clone()), false)
     }
 }
 

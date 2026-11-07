@@ -86,7 +86,7 @@ fn wire_learn_from_edits(app: &AppHandle) {
                 (Watched::Edited, Some(before), Some(after)) => {
                     let settings = Settings::load_or_default();
                     let english = settings.dictation_language.eq_ignore_ascii_case("en")
-                        || settings.engine == orttaai_core::settings::SpeechEngine::Express;
+                        || settings.express_active();
                     store
                         .learn_from_edit(
                             &Learn {
@@ -365,6 +365,8 @@ pub fn run() {
             engine::vad_status,
             express_cmds::express_models,
             express_cmds::express_download,
+            express_cmds::word_boost_status,
+            express_cmds::word_boost_download,
             express_cmds::express_cancel,
             express_cmds::express_delete,
             // == memory ==

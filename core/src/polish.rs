@@ -758,7 +758,14 @@ impl Polisher {
                 "Polish is paused after the local AI server failed; retrying shortly.".into(),
             ));
         }
+        // S1-mini only normalizes (it was trained on one fixed styling), so a
+        // Formal or Casual style is written by the general polish model, with
+        // S1-mini's clean-up as the fallback when that model can't answer.
+        let styled = matches!(self.opts.style, StyleMode::Formal | StyleMode::Casual);
         let result = match self.opts.engine {
+            PolishEngine::S1Mini if styled => self
+                .polish_local(input, app)
+                .or_else(|_| self.polish_s1(input, started)),
             PolishEngine::S1Mini => self.polish_s1(input, started),
             PolishEngine::LocalLlm => self.polish_local(input, app),
         };
@@ -1277,6 +1284,48 @@ mod tests {
             "So the first part is done.\n\nThe second part needs review."
         );
         assert_eq!(mock.call_count(), 2);
+    }
+
+    #[test]
+    fn s1_mini_hands_formal_and_casual_to_the_general_model() {
+        let mock = Arc::new(MockLlm::with(|msgs, o| {
+            let prompt = &msgs[msgs.len() - 1].content;
+            assert!(!prompt.starts_with("<|im_start|>"), "not S1-mini's prompt");
+            assert_eq!(o.model, "gemma4:e2b");
+            assert!(prompt.contains("Style: formal."));
+            Ok("I will send the report tomorrow.".into())
+        }));
+        let p = Polisher::new(
+            mock.clone(),
+            PolishOptions {
+                style: StyleMode::Formal,
+                ..opts(PolishEngine::S1Mini)
+            },
+        );
+        let out = p.polish("ill send the report tomorrow", None);
+        assert!(out.polished, "{out:?}");
+        assert_eq!(out.text, "I will send the report tomorrow.");
+    }
+
+    #[test]
+    fn s1_mini_cleans_up_when_the_styled_model_fails() {
+        let mock = Arc::new(MockLlm::with(|msgs, o| {
+            if o.model == "gemma4:e2b" {
+                return Err(CoreError::Llm("model not found".into()));
+            }
+            assert!(msgs[0].content.starts_with("<|im_start|>system"));
+            Ok("I'll send the report tomorrow.".into())
+        }));
+        let p = Polisher::new(
+            mock,
+            PolishOptions {
+                style: StyleMode::Casual,
+                ..opts(PolishEngine::S1Mini)
+            },
+        );
+        let out = p.polish("ill send the report tomorrow", None);
+        assert!(out.polished, "{out:?}");
+        assert_eq!(out.text, "I'll send the report tomorrow.");
     }
 
     #[test]

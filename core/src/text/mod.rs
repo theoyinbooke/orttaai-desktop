@@ -20,7 +20,7 @@ mod numbers;
 pub use numbers::format_numbers;
 
 use crate::memory::{CompiledDictionary, MemoryService};
-use crate::settings::{Settings, SpeechEngine, StyleMode};
+use crate::settings::{Settings, StyleMode};
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
@@ -49,14 +49,8 @@ impl TextOptions {
     /// Mirrors the Mac's `effectiveDictationLanguage`: low-latency mode forces
     /// English for "auto", and Express (Parakeet) is English-only.
     pub fn from_settings(s: &Settings) -> Self {
-        let lang = s.dictation_language.trim().to_lowercase();
-        let language = if s.engine == SpeechEngine::Express || (s.low_latency && lang == "auto") {
-            "en".to_string()
-        } else if lang.is_empty() {
-            "auto".to_string()
-        } else {
-            lang
-        };
+        // Express (Parakeet) is English-only and runs only for English.
+        let language = s.effective_language();
         Self {
             style_mode: s.style_mode,
             spoken_formatting: s.spoken_formatting,

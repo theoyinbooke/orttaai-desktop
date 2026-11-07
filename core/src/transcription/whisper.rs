@@ -146,6 +146,10 @@ impl Transcriber for WhisperTranscriber {
         self.model_id.as_deref()
     }
 
+    fn live_mode(&self) -> crate::live::LiveMode {
+        crate::live::LiveMode::Clips
+    }
+
     fn transcribe(&self, samples: &[f32], opts: &DecodeOptions) -> Result<String> {
         let ctx = self.ctx.as_ref().ok_or(CoreError::ModelNotLoaded)?;
         let mut state = ctx

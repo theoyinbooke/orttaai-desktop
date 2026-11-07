@@ -31,6 +31,10 @@ global-hotkey = { version = "0.8.0", optional = true }
 ureq = { version = "3.2.1", features = ["json"], optional = true }
 # Express engine (Parakeet via sherpa-onnx; ONNX Runtime statically linked).
 sherpa-onnx = { version = "2.0.1", optional = true }
+# Word Boost runs the CTC model on the ONNX Runtime sherpa-onnx already links:
+# bindings only, nothing linked or downloaded by this crate.
+ort-sys = { version = "=2.0.0-rc.15", default-features = false, features = ["disable-linking", "api-22"], optional = true }
+rustfft = { version = "6", optional = true }
 bzip2 = { version = "0.4", optional = true }
 tar = { version = "0.4", optional = true }
 # Model download verification (pure Rust).
@@ -48,7 +52,7 @@ hotkey = ["dep:global-hotkey", "dep:windows-sys"]
 models = ["dep:ureq", "dep:sha2"]
 # Parakeet TDT via sherpa-onnx (the Mac "Express" engine). Downloads prebuilt
 # sherpa-onnx static libs at build time.
-express = ["dep:sherpa-onnx", "dep:bzip2", "dep:tar", "models"]
+express = ["dep:sherpa-onnx", "dep:ort-sys", "dep:rustfft", "dep:bzip2", "dep:tar", "models"]
 ollama = ["dep:ureq"]
 # Native GNOME/Wayland typing via the XDG RemoteDesktop portal (Linux only).
 # Kept out of `full` so Windows builds never pull in ashpd; the desktop app

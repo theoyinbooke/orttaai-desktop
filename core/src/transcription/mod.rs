@@ -18,6 +18,27 @@ pub trait Transcriber: Send + Sync {
 
     /// Transcribe 16 kHz mono `f32` samples to text.
     fn transcribe(&self, samples: &[f32], opts: &DecodeOptions) -> Result<String>;
+
+    /// How this engine decodes while the speaker is still talking.
+    fn live_mode(&self) -> crate::live::LiveMode {
+        crate::live::LiveMode::Off
+    }
+
+    /// Word Boost (Express): the dictionary words to listen for, snapshotted
+    /// per dictation. Engines without Word Boost ignore them.
+    fn set_word_boost_terms(&self, _terms: &[crate::text::WordBoostTerm]) {}
+
+    /// Whether Word Boost has words to check in the next dictation.
+    fn word_boost_active(&self) -> bool {
+        false
+    }
+
+    /// Score the finished 15 s chunks of a recording that is still going, so
+    /// Word Boost has little left to do at release (Mac `prepareWordBoost`).
+    fn prepare_word_boost(&self, _prefix: &[f32]) {}
+
+    /// Forget chunks scored for a recording that won't be transcribed.
+    fn discard_prepared_word_boost(&self) {}
 }
 
 /// Run a silent warm-up decode so the first real dictation doesn't pay the

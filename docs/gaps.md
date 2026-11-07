@@ -39,6 +39,15 @@ The Mac's Silero runs as a 256 ms streaming Core ML model. Here Silero v5 runs t
 ## Window chrome
 The main window draws its own title strip, as the Mac's does (an undecorated window with minimize, maximize and close at the top right; the strip and sidebar header drag the window). Setup uses a normal decorated window, like the Mac's "Orttaai Setup" window.
 
+## Word Boost
+Ported in full. As on the Mac, a second model (Parakeet CTC 110M, from `nvidia/parakeet-tdt_ctc-110m`) checks the Memory dictionary's words against the audio, and FluidAudio's rescorer plus the Mac's guard decide which replacements to keep. The model is the sherpa-onnx int8 ONNX export of the same checkpoint. It runs on the ONNX Runtime that sherpa-onnx already links, with NeMo's mel front end ported to Rust, and it downloads (104 MB) with every Express model. Long recordings are scored in the Mac's 15 s chunks while you speak. Word Boost is English only, like the Mac's.
+
+## Formal and Casual styles
+The Mac has no writing-style setting; this is a desktop addition. Formal and Casual are written by Polish, so they apply only while Polish is on. S1-mini only cleans up, so with S1-mini these styles are written by the general polish model, with S1-mini as the fallback.
+
+## Target window on Wayland
+If focus moves while a dictation is processed, Orttaai brings the original window back (X11, Windows) or waits up to 8 s for it, and otherwise leaves the text on the clipboard. Wayland tells clients nothing about windows, so there the text goes wherever focus is.
+
 ## Lesser deltas
 - Tray needs a user-installed extension on GNOME.
 - No model migration from macOS (`.mlmodelc` → GGUF re-download; model IDs stay stable).
