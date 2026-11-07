@@ -39,4 +39,5 @@ fn after_save(_store: &Store, _id: i64) {
     // == milestones: evaluate unlocks ==
     crate::insights::after_save(_store, _id);
     // == coach: record metrics ==
+    orttaai_core::coach::after_save(_store, _id);
 }

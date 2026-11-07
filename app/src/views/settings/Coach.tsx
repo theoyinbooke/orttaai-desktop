@@ -1,4 +1,146 @@
-// Settings → Coach. Owned by the coach area.
+// Settings → Coach (Mac CoachSettingsView): Coach on or off, the coach, which
+// way of talking each app counts as, the models, and setup. (Coach area.)
+import { useCallback, useEffect, useState } from "react";
+import "../../styles/coach.css";
+import { Button, Select } from "../../ui";
+import { Row, Section, ToggleRow, usePatch } from "../../components/SettingsRows";
+import { useSettings } from "../../lib/settings";
+import { useEvent } from "../../lib/api";
+import { coachApi, useCatalog, type AppRow, type PersonaId, type Rule } from "../../lib/coach";
+import { JobPickers, useModelsInfo, VoiceRow } from "../coach/Cast";
+import { ModelSetupList } from "../coach/ModelSetup";
+
+const RULES: { value: Rule; label: string }[] = [
+  { value: "ai", label: "Talking to AI" },
+  { value: "people", label: "Talking to people" },
+  { value: "writing", label: "Thinking and writing" },
+  { value: "elsewhere", label: "Elsewhere" },
+  { value: "off", label: "Off" },
+];
+
 export default function CoachSettings() {
-  return <p className="muted">Coming together…</p>;
+  const { settings } = useSettings();
+  const save = usePatch();
+  const catalog = useCatalog();
+  const [apps, setApps] = useState<AppRow[] | null>(null);
+  const [newApp, setNewApp] = useState("");
+  const [newRule, setNewRule] = useState<Rule>("ai");
+  const { info } = useModelsInfo();
+
+  const loadApps = useCallback(() => {
+    coachApi
+      .snapshot()
+      .then((s) => setApps(s?.apps.filter((a) => a.key) ?? []))
+      .catch(() => setApps([]));
+  }, []);
+  useEffect(loadApps, [loadApps]);
+  useEvent("coach-changed", loadApps);
+
+  if (!settings) return null;
+  const enabled = settings.coach_enabled;
+  const listedKeys = new Set((apps ?? []).map((a) => a.key));
+  // Choices made by hand for apps Coach hasn't seen yet.
+  const extra = Object.entries(settings.coach_app_overrides).filter(([key]) => !listedKeys.has(key));
+
+  const addApp = () => {
+    const name = newApp.trim();
+    if (!name) return;
+    coachApi.setAppRule({ key: "", app_id: null, app_name: name }, newRule).then(() => {
+      setNewApp("");
+      loadApps();
+    });
+  };
+
+  return (
+    <div className="coach-settings-pane">
+      <Section title="Coach">
+        <ToggleRow
+          k="coach_enabled"
+          label="Coach"
+          hint="Counts fillers, pace and sentence length in your dictations, on this computer, and checks whether habits you start stick. It stores numbers only."
+        />
+        <Row label="Setup" hint="Shows Coach's first-run steps again the next time you open it." disabled={!settings.coach_first_run_done}>
+          <Button size="sm" disabled={!settings.coach_first_run_done} onClick={() => save({ coach_first_run_done: false })}>
+            Run Again
+          </Button>
+        </Row>
+        <Row label="Your coach" hint="Words your feedback in its own way; it never changes the score. Pick one per way of talking in Coach › Cast." disabled={!enabled}>
+          <Select
+            ariaLabel="Coach"
+            value={(settings.coach_persona || "mentor") as PersonaId}
+            options={(catalog?.personas ?? []).map((p) => ({ value: p.id, label: `${p.name} · ${p.trait}` }))}
+            onChange={(v) => coachApi.setPersona(v, null)}
+          />
+        </Row>
+        <ToggleRow k="coach_read_aloud" label="Read the note aloud" hint="Uses this computer's own voice, after each rep." disabled={!enabled} />
+        <ToggleRow
+          k="coach_hands_free"
+          label="Hands-free scenes"
+          hint="In a spoken scene your turn starts when the partner stops and ends when you pause."
+          disabled={!enabled}
+        />
+      </Section>
+
+      <Section
+        title="Apps"
+        desc="Coach groups your dictations by the app they went to. Move an app to another way of talking, or switch it off so Coach never reads it."
+      >
+        {apps === null ? (
+          <p className="muted small">Looking at your apps…</p>
+        ) : apps.length === 0 && extra.length === 0 ? (
+          <p className="muted small">Apps appear here after your first dictations.</p>
+        ) : (
+          <>
+            {apps.map((a) => (
+              <Row key={a.key} label={a.display_name} hint={`${a.dictations.toLocaleString()} dictations`} disabled={!enabled}>
+                <Select ariaLabel={a.display_name} value={a.rule} options={RULES} onChange={(rule) => coachApi.setAppRule(a, rule).then(loadApps)} />
+              </Row>
+            ))}
+            {extra.map(([key, rule]) => (
+              <Row key={key} label={key.startsWith("name:") ? key.slice(5) : key} hint="Added by hand" disabled={!enabled}>
+                <div className="coach-row" style={{ gap: 8 }}>
+                  <Select
+                    ariaLabel={key}
+                    value={rule as Rule}
+                    options={RULES}
+                    onChange={(r) => coachApi.setAppRule({ key, app_id: null, app_name: key.startsWith("name:") ? key.slice(5) : null }, r)}
+                  />
+                  <Button size="sm" variant="ghost" onClick={() => coachApi.removeAppRule(key)}>
+                    Remove
+                  </Button>
+                </div>
+              </Row>
+            ))}
+          </>
+        )}
+        <Row label="Add an app" hint="Its name or program, such as firefox, slack or Code.exe." disabled={!enabled}>
+          <div className="coach-row" style={{ gap: 8 }}>
+            <input
+              className="text-input"
+              value={newApp}
+              placeholder="App name"
+              aria-label="App name"
+              onChange={(e) => setNewApp(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addApp()}
+              style={{ width: 160 }}
+            />
+            <Select ariaLabel="Way of talking" value={newRule} options={RULES} onChange={setNewRule} />
+            <Button size="sm" disabled={!newApp.trim()} onClick={addApp}>
+              Add
+            </Button>
+          </div>
+        </Row>
+      </Section>
+
+      <Section title="Models" desc="Coach's jobs run on your own local server (Ollama or LM Studio). Without one, reps are scored on the counted checks and your coach uses its own lines.">
+        <div className="coach coach-settings">
+          {info ? <JobPickers info={info} catalog={catalog} /> : <p className="muted small">Checking your models…</p>}
+          <div className="coach-surface coach-jobs">
+            <VoiceRow />
+          </div>
+          <ModelSetupList />
+        </div>
+      </Section>
+    </div>
+  );
 }

@@ -16,8 +16,10 @@ tracing.workspace = true
 directories.workspace = true
 rusqlite.workspace = true
 # Text pipeline: transcript cleanup patterns and the bundled (deflated) English word list.
+# Coach: counting rules (pure-Rust regex) and local calendar days/weeks/months.
 regex = "1"
 miniz_oxide = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # Real platform backends are optional so the default build stays fast and
 # OS-agnostic. whisper.cpp (via whisper-rs) is the first wired, in Phase 1.
@@ -73,6 +75,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", 
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Com",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Accessibility",
     "Win32_UI_WindowsAndMessaging",

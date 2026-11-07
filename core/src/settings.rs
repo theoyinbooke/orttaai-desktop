@@ -197,11 +197,29 @@ pub struct Settings {
     // ---- Coach -------------------------------------------------------------
     pub coach_enabled: bool,
     pub coach_first_run_done: bool,
+    /// The coach for every way of talking without its own pick in `coach_personas`.
     pub coach_persona: String,
-    /// Per-app "way of talking" override: app name → `ai|people|writing|elsewhere|off`.
+    /// Per-app "way of talking" override, keyed like the Mac's `CoachAppCatalog.key`
+    /// (the lowercased app id, else `name:` + the lowercased app name) →
+    /// `ai|people|writing|elsewhere|off`.
     pub coach_app_overrides: BTreeMap<String, String>,
+    /// Plays the scene partners; empty = the coach model.
     pub coach_partner_model: String,
+    /// Answers the judged checks; empty = automatic (the best model that passed
+    /// the judge check, else the one recommended for this machine's memory).
     pub coach_judge_model: String,
+    /// Writes the note after each rep; empty = automatic, as for the judge.
+    pub coach_model: String,
+    /// The coach per way of talking (`ai|people|writing|elsewhere` → persona id).
+    pub coach_personas: BTreeMap<String, String>,
+    /// Read the coach's note aloud after each rep.
+    pub coach_read_aloud: bool,
+    /// Spoken scenes: your turn starts when the partner stops and ends on a pause.
+    pub coach_hands_free: bool,
+    /// Model setup was finished or put off, so it doesn't open by itself again.
+    pub coach_model_setup_seen: bool,
+    /// Preferred system voice for Coach (WebView speech synthesis); empty = automatic.
+    pub coach_voice: String,
 
     // ---- General -----------------------------------------------------------
     pub appearance: Appearance,
@@ -288,12 +306,18 @@ impl Default for Settings {
             semantic_summary_enabled: false,
             semantic_summary_model: String::new(),
 
-            coach_enabled: false,
+            coach_enabled: true,
             coach_first_run_done: false,
             coach_persona: "mentor".to_string(),
             coach_app_overrides: BTreeMap::new(),
             coach_partner_model: "nemotron-3.5-bolt:e4b".to_string(),
-            coach_judge_model: "gemma4:e2b".to_string(),
+            coach_judge_model: String::new(),
+            coach_model: String::new(),
+            coach_personas: BTreeMap::new(),
+            coach_read_aloud: false,
+            coach_hands_free: true,
+            coach_model_setup_seen: false,
+            coach_voice: String::new(),
 
             appearance: Appearance::System,
             launch_at_login: false,
