@@ -717,12 +717,14 @@ rect.heat.on {
 .home-mini-value {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex-shrink: 0;
 }
 .home-mini-label {
   color: var(--faint);
   font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .express-chip {
   font-size: 11px;

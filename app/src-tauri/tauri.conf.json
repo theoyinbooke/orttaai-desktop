@@ -14,11 +14,10 @@
     "windows": [
       {
         "title": "Orttaai",
-        "width": 1040,
-        "height": 720,
-        "minWidth": 820,
-        "minHeight": 560,
-        "theme": "Dark"
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 620
       },
       {
         "label": "panel",
@@ -67,7 +66,10 @@
           "libssl3",
           "libayatana-appindicator3-1"
         ],
-        "recommends": ["wtype", "wl-clipboard"]
+        "recommends": [
+          "wtype",
+          "wl-clipboard"
+        ]
       },
       "rpm": {
         "depends": [
@@ -78,7 +80,10 @@
           "openssl",
           "libayatana-appindicator-gtk3"
         ],
-        "recommends": ["wtype", "wl-clipboard"]
+        "recommends": [
+          "wtype",
+          "wl-clipboard"
+        ]
       }
     }
   },

@@ -240,20 +240,41 @@ impl Store {
     }
 
     fn migrate(&self) -> Result<()> {
-        let version: i64 = self
-            .conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        for (i, sql) in schema::MIGRATIONS.iter().enumerate() {
-            let target = i as i64 + 1;
-            if version >= target {
-                continue;
-            }
-            let tx = self.conn.unchecked_transaction()?;
-            tx.execute_batch(sql)?;
-            tx.execute_batch(&format!("PRAGMA user_version = {target}"))?;
-            tx.commit()?;
+        let latest = schema::MIGRATIONS.len() as i64;
+        let current = |c: &Connection| -> Result<i64> {
+            Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+        };
+        if current(&self.conn)? >= latest {
+            return Ok(());
         }
-        Ok(())
+        // Several commands open the database at once on first launch. Take the
+        // write lock *before* reading the version (BEGIN IMMEDIATE waits out the
+        // busy timeout), so exactly one connection migrates and the others then
+        // see the new version instead of re-running CREATE TABLE.
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> Result<()> {
+            let version = current(&self.conn)?;
+            for (i, sql) in schema::MIGRATIONS.iter().enumerate() {
+                let target = i as i64 + 1;
+                if version >= target {
+                    continue;
+                }
+                self.conn.execute_batch(sql)?;
+                self.conn
+                    .execute_batch(&format!("PRAGMA user_version = {target}"))?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     /// Schema version after migrations (for diagnostics/tests).
@@ -684,6 +705,23 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_first_opens_migrate_once() {
+        let dir = std::env::temp_dir().join(format!("orttaai-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("history.db");
+        let handles: Vec<_> = (0..12)
+            .map(|_| {
+                let p = path.clone();
+                std::thread::spawn(move || Store::open(&p).map(|s| s.count().unwrap()))
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap().expect("open must not race"), 0);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn migrates_fresh_db_to_latest() {
