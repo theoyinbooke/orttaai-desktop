@@ -325,6 +325,8 @@ pub struct DictationOutcome {
     pub raw_text: Option<String>,
     /// How long the user spoke, in ms.
     pub duration_ms: i64,
+    /// The take went to a Coach practice rep: nothing was typed or saved.
+    pub practice: bool,
     /// Set when a transcript was produced but delivery failed.
     pub inject_error: Option<String>,
     pub kind: SessionKind,
@@ -355,6 +357,7 @@ impl DictationOutcome {
             transcript: None,
             raw_text: None,
             duration_ms,
+            practice: false,
             inject_error: None,
             kind,
             edit_instruction: None,
@@ -1175,6 +1178,19 @@ impl DictationCoordinator {
         out.snippet_hits = processed.snippet_hits;
         let text = processed.text.trim().to_string();
         if text.is_empty() {
+            self.state = RecordingState::Idle;
+            return out;
+        }
+        // A Coach practice rep is armed: hand the take to Coach instead of
+        // typing or saving it.
+        if crate::coach::practice_armed()
+            && crate::coach::take_practice(crate::coach::PracticeCapture {
+                raw: cleaned.to_string(),
+                text: text.clone(),
+                duration_ms: out.duration_ms,
+            })
+        {
+            out.practice = true;
             self.state = RecordingState::Idle;
             return out;
         }

@@ -13,6 +13,7 @@
 mod ai;
 mod coach;
 mod engine;
+mod express_cmds;
 mod insights;
 mod memory;
 mod persist;
@@ -42,6 +43,81 @@ pub(crate) fn on_settings_changed(app: &AppHandle, old: &Settings, new: &Setting
     // == semantic: index on enable / embedding-model change ==
     semantic::on_settings_changed(app, old, new);
     // == general: launch at login ==
+    if old.launch_at_login != new.launch_at_login {
+        sync_launch_at_login(app, new);
+    }
+}
+
+/// Make the OS autostart entry match `launch_at_login`.
+fn sync_launch_at_login(app: &AppHandle, settings: &Settings) {
+    use tauri_plugin_autostart::ManagerExt;
+    let launcher = app.autolaunch();
+    let enabled = launcher.is_enabled().unwrap_or(false);
+    let result = match (settings.launch_at_login, enabled) {
+        (true, false) => launcher.enable(),
+        (false, true) => launcher.disable(),
+        _ => Ok(()),
+    };
+    if let Err(e) = result {
+        use tauri::Emitter;
+        let _ = app.emit(
+            "engine-warning",
+            format!("Couldn't change Launch at Login: {e}"),
+        );
+    }
+}
+
+/// Learn from my edits: when the engine's watch ends, turn the user's fixes
+/// into dictionary suggestions (text-pipeline area's learner).
+fn wire_learn_from_edits(app: &AppHandle) {
+    use orttaai_core::injection::edit_watch::{EditCheckOutcome as Watched, EditObservation};
+    use orttaai_core::store::{EditObservation as Learn, Store};
+    use orttaai_core::text::learning::EditCheckOutcome as Outcome;
+    use tauri::Emitter;
+    let handle = app.clone();
+    engine::set_edit_observer(
+        app,
+        std::sync::Arc::new(move |obs: EditObservation| {
+            let Ok(store) = Store::open_default() else {
+                return;
+            };
+            let at = orttaai_core::store::now_unix();
+            let logged = match (obs.outcome, obs.before, obs.after) {
+                (Watched::Edited, Some(before), Some(after)) => {
+                    let settings = Settings::load_or_default();
+                    let english = settings.dictation_language.eq_ignore_ascii_case("en")
+                        || settings.engine == orttaai_core::settings::SpeechEngine::Express;
+                    store
+                        .learn_from_edit(
+                            &Learn {
+                                inserted: obs.inserted,
+                                before,
+                                caret_utf16: None,
+                                after,
+                                app_name: obs.app.clone(),
+                            },
+                            english,
+                        )
+                        .map(|(_, learned)| learned > 0)
+                        .unwrap_or(false)
+                }
+                (watched, _, _) => {
+                    let outcome = match watched {
+                        Watched::NoChange => Outcome::NoChange,
+                        Watched::TextNotFound => Outcome::TextNotFound,
+                        Watched::SecureField => Outcome::SecureField,
+                        Watched::Edited | Watched::Unreadable => Outcome::Unreadable,
+                    };
+                    let _ = store.insert_edit_check(outcome, obs.app.as_deref(), 0, at);
+                    false
+                }
+            };
+            if logged {
+                let _ = handle.emit("memory-changed", ());
+            }
+            let _ = handle.emit("edit-checks-changed", ());
+        }),
+    );
 }
 
 #[derive(Serialize)]
@@ -168,6 +244,8 @@ pub fn run() {
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
             build_tray(app)?;
             engine::position_panel(app);
+            wire_learn_from_edits(app.handle());
+            sync_launch_at_login(app.handle(), &Settings::load_or_default());
             engine::on_app_ready(app.handle());
             // Launched at login → stay in the tray.
             if std::env::args().any(|a| a == "--minimized") {
@@ -218,6 +296,10 @@ pub fn run() {
             engine::use_model,
             engine::verify_model,
             engine::vad_status,
+            express_cmds::express_models,
+            express_cmds::express_download,
+            express_cmds::express_cancel,
+            express_cmds::express_delete,
             // == memory ==
             memory::list_dictionary,
             memory::save_dictionary,

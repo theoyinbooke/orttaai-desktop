@@ -125,13 +125,15 @@ pub trait LlmClient: Send + Sync {
     /// Embed each input with `model`.
     fn embed(&self, model: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>>;
 
-    /// Download `model` onto the server (Ollama `/api/pull`), reporting the
-    /// fraction done, 0 to 1. Servers that can't install models keep the default.
+    /// Download `model` onto the server, reporting the fraction done, 0 to 1.
+    /// A thin adapter over [`pull_model`](Self::pull_model) for callers that
+    /// only need a progress fraction (Coach model setup).
     fn pull(&self, model: &str, on_progress: &mut dyn FnMut(f32)) -> Result<()> {
-        let _ = (model, on_progress);
-        Err(CoreError::NotImplemented(
-            "downloading models from this server",
-        ))
+        self.pull_model(model, &mut |p: PullProgress| {
+            if let Some(f) = p.fraction() {
+                on_progress(f as f32);
+            }
+        })
     }
 
     /// One-shot helper: system + user prompt → reply text.

@@ -5,13 +5,10 @@
 //! the UI thread and broadcasts `semantic-progress` / `semantic-updated`. A
 //! second worker reads working sessions with a local model for the Activity
 //! tab (`semantic-activity`). Everything talks to a local LLM server through
-//! the core `LlmClient` trait ([`LocalLlm`], local endpoints only).
+//! the shared core `LlmClient` (local endpoints only).
 
 use crate::err;
-use orttaai_core::error::{CoreError, Result as CoreResult};
-use orttaai_core::llm::{
-    policy, ChatDelta, ChatMessage, ChatOptions, ChatReply, LlmClient, LlmModel, Role,
-};
+use orttaai_core::llm::LlmClient;
 use orttaai_core::semantic::activity::{self, ActivityReport};
 use orttaai_core::semantic::concept_graph::{ConceptGraph, ConceptTimeRange};
 use orttaai_core::semantic::findings::RankedFinding;
@@ -22,7 +19,7 @@ use orttaai_core::semantic::report::{InsightReport, OverlayConfig};
 use orttaai_core::semantic::service::{self, ConceptDetail, SignalsOverview, StoredReport};
 use orttaai_core::semantic::util::Clock;
 use orttaai_core::semantic::{self, SemanticHit, SemanticOptions};
-use orttaai_core::settings::{LlmProvider, Settings};
+use orttaai_core::settings::Settings;
 use orttaai_core::store::{now_unix, InsightFinding, Store};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,292 +30,10 @@ use tauri::{AppHandle, Emitter, Listener};
 
 // ---- Local LLM client ---------------------------------------------------------
 
-/// Ollama / LM Studio over HTTP, refusing non-local endpoints and cloud models.
-pub struct LocalLlm {
-    provider: LlmProvider,
-    endpoint: String,
-}
-
-impl LocalLlm {
-    pub fn from_settings(s: &Settings) -> Self {
-        Self {
-            provider: s.llm_provider,
-            endpoint: s.llm_endpoint().trim_end_matches('/').to_string(),
-        }
-    }
-
-    fn check(&self, model: Option<&str>) -> CoreResult<()> {
-        if !policy::is_local_endpoint(&self.endpoint) {
-            return Err(CoreError::Llm(format!(
-                "{} is not a local address. Orttaai only talks to models on this computer or your local network.",
-                self.endpoint
-            )));
-        }
-        if let Some(m) = model {
-            if policy::is_cloud_model(m) {
-                return Err(CoreError::Llm(format!(
-                    "{m} runs in the cloud; pick a local model."
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    fn get(&self, path: &str, timeout_ms: u64) -> CoreResult<serde_json::Value> {
-        let url = format!("{}{path}", self.endpoint);
-        ureq::get(&url)
-            .config()
-            .timeout_global(Some(Duration::from_millis(timeout_ms)))
-            .build()
-            .call()
-            .map_err(|e| self.unreachable(e))?
-            .into_body()
-            .read_json()
-            .map_err(|e| CoreError::Llm(format!("bad response from {}: {e}", self.name())))
-    }
-
-    fn post(
-        &self,
-        path: &str,
-        body: serde_json::Value,
-        timeout_ms: u64,
-    ) -> CoreResult<serde_json::Value> {
-        let url = format!("{}{path}", self.endpoint);
-        ureq::post(&url)
-            .config()
-            .timeout_global(Some(Duration::from_millis(timeout_ms)))
-            .build()
-            .send_json(body)
-            .map_err(|e| self.unreachable(e))?
-            .into_body()
-            .read_json()
-            .map_err(|e| CoreError::Llm(format!("bad response from {}: {e}", self.name())))
-    }
-
-    fn unreachable(&self, e: ureq::Error) -> CoreError {
-        match e {
-            ureq::Error::StatusCode(code) => {
-                CoreError::Llm(format!("{} answered HTTP {code}", self.name()))
-            }
-            other => CoreError::Llm(format!(
-                "{} isn't reachable at {}: {other}",
-                self.name(),
-                self.endpoint
-            )),
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        match self.provider {
-            LlmProvider::Ollama => "Ollama",
-            LlmProvider::LmStudio => "LM Studio",
-        }
-    }
-}
-
-fn is_embedding_name(name: &str) -> bool {
-    let n = name.to_lowercase();
-    [
-        "embed",
-        "minilm",
-        "bge-",
-        "e5-",
-        "gte-",
-        "nomic-bert",
-        "arctic-embed",
-    ]
-    .iter()
-    .any(|k| n.contains(k))
-}
-
-fn role(r: Role) -> &'static str {
-    match r {
-        Role::System => "system",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-    }
-}
-
-impl LlmClient for LocalLlm {
-    fn provider_name(&self) -> &str {
-        self.name()
-    }
-
-    fn list_models(&self) -> CoreResult<Vec<LlmModel>> {
-        self.check(None)?;
-        match self.provider {
-            LlmProvider::Ollama => {
-                let v = self.get("/api/tags", 4000)?;
-                Ok(v["models"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|m| {
-                                let name = m["name"].as_str()?.to_string();
-                                let family = m["details"]["family"].as_str().unwrap_or("");
-                                Some(LlmModel {
-                                    embedding: is_embedding_name(&name) || family.contains("bert"),
-                                    size: m["size"].as_u64(),
-                                    name,
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default())
-            }
-            LlmProvider::LmStudio => {
-                let v = self.get("/v1/models", 4000)?;
-                Ok(v["data"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|m| {
-                                let name = m["id"].as_str()?.to_string();
-                                Some(LlmModel {
-                                    embedding: is_embedding_name(&name)
-                                        || m["type"].as_str() == Some("embeddings"),
-                                    size: None,
-                                    name,
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default())
-            }
-        }
-    }
-
-    fn chat(
-        &self,
-        messages: &[ChatMessage],
-        opts: &ChatOptions,
-        on_delta: Option<&mut dyn FnMut(ChatDelta)>,
-    ) -> CoreResult<ChatReply> {
-        self.check(Some(&opts.model))?;
-        let msgs: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|m| serde_json::json!({"role": role(m.role), "content": m.content}))
-            .collect();
-        let timeout = opts.timeout_ms.unwrap_or(120_000);
-        let reply = match self.provider {
-            LlmProvider::Ollama => {
-                let mut options = serde_json::Map::new();
-                if let Some(t) = opts.temperature {
-                    options.insert("temperature".into(), t.into());
-                }
-                if let Some(n) = opts.max_tokens {
-                    options.insert("num_predict".into(), n.into());
-                }
-                if let Some(c) = opts.num_ctx {
-                    options.insert("num_ctx".into(), c.into());
-                }
-                let mut body = serde_json::json!({
-                    "model": opts.model, "messages": msgs, "stream": false,
-                    "options": options, "keep_alive": "5m"
-                });
-                if let Some(schema) = &opts.json_schema {
-                    body["format"] = schema.clone();
-                }
-                if let Some(think) = opts.think {
-                    body["think"] = think.into();
-                }
-                let v = self.post("/api/chat", body, timeout)?;
-                ChatReply {
-                    content: v["message"]["content"].as_str().unwrap_or("").to_string(),
-                    reasoning: v["message"]["thinking"].as_str().map(String::from),
-                }
-            }
-            LlmProvider::LmStudio => {
-                let mut body =
-                    serde_json::json!({"model": opts.model, "messages": msgs, "stream": false});
-                if let Some(t) = opts.temperature {
-                    body["temperature"] = t.into();
-                }
-                if let Some(n) = opts.max_tokens {
-                    body["max_tokens"] = n.into();
-                }
-                if let Some(schema) = &opts.json_schema {
-                    body["response_format"] = serde_json::json!({
-                        "type": "json_schema",
-                        "json_schema": {"name": "response", "strict": true, "schema": schema}
-                    });
-                }
-                let v = self.post("/v1/chat/completions", body, timeout)?;
-                let msg = &v["choices"][0]["message"];
-                ChatReply {
-                    content: msg["content"].as_str().unwrap_or("").to_string(),
-                    reasoning: msg["reasoning_content"].as_str().map(String::from),
-                }
-            }
-        };
-        if let Some(cb) = on_delta {
-            if let Some(r) = &reply.reasoning {
-                cb(ChatDelta::Reasoning(r.clone()));
-            }
-            cb(ChatDelta::Content(reply.content.clone()));
-        }
-        Ok(reply)
-    }
-
-    fn embed(&self, model: &str, inputs: &[String]) -> CoreResult<Vec<Vec<f32>>> {
-        self.check(Some(model))?;
-        if inputs.is_empty() {
-            return Ok(Vec::new());
-        }
-        let parse = |v: &serde_json::Value| -> Vec<f32> {
-            v.as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_f64())
-                        .map(|x| x as f32)
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        match self.provider {
-            LlmProvider::Ollama => {
-                let v = self.post(
-                    "/api/embed",
-                    serde_json::json!({"model": model, "input": inputs, "truncate": true, "keep_alive": "15m"}),
-                    120_000,
-                )?;
-                if let Some(e) = v["error"].as_str() {
-                    return Err(CoreError::Llm(e.to_string()));
-                }
-                Ok(v["embeddings"]
-                    .as_array()
-                    .map(|a| a.iter().map(parse).collect())
-                    .unwrap_or_default())
-            }
-            LlmProvider::LmStudio => {
-                let v = self.post(
-                    "/v1/embeddings",
-                    serde_json::json!({"model": model, "input": inputs}),
-                    120_000,
-                )?;
-                let mut rows: Vec<(i64, Vec<f32>)> = v["data"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .enumerate()
-                            .map(|(i, d)| {
-                                (
-                                    d["index"].as_i64().unwrap_or(i as i64),
-                                    parse(&d["embedding"]),
-                                )
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                rows.sort_by_key(|r| r.0);
-                Ok(rows.into_iter().map(|r| r.1).collect())
-            }
-        }
-    }
-}
-
-fn client(settings: &Settings) -> LocalLlm {
-    LocalLlm::from_settings(settings)
+/// The shared local LLM client (Ollama / LM Studio; non-local endpoints and
+/// cloud models are refused inside the client).
+fn client(settings: &Settings) -> std::sync::Arc<dyn LlmClient> {
+    orttaai_core::llm::client_from_settings(settings)
 }
 
 // ---- Shared state --------------------------------------------------------------
@@ -475,8 +190,8 @@ fn run_index(rebuild: bool) -> std::result::Result<(), String> {
     let mut total = IndexRunResult::default();
     loop {
         wait_while_dictating();
-        let r =
-            index::process_queue(&store, &llm, &cfg, clock, 200, &mut on_progress).map_err(err)?;
+        let r = index::process_queue(&store, llm.as_ref(), &cfg, clock, 200, &mut on_progress)
+            .map_err(err)?;
         let progressed = r.source_count > 0;
         total.source_count += r.source_count;
         total.chunk_count += r.chunk_count;
@@ -587,19 +302,20 @@ fn read_sessions(horizon_days: Option<i64>) {
             ..Default::default()
         })
     };
-    let model = match index::pick_installed(&llm, &service::local_model_candidates(&settings)) {
-        Err(_) => {
-            return unavailable(format!(
-                "{provider} isn't running. Open it to read sessions with local AI."
-            ))
-        }
-        Ok(None) => {
-            return unavailable(format!(
+    let model =
+        match index::pick_installed(llm.as_ref(), &service::local_model_candidates(&settings)) {
+            Err(_) => {
+                return unavailable(format!(
+                    "{provider} isn't running. Open it to read sessions with local AI."
+                ))
+            }
+            Ok(None) => {
+                return unavailable(format!(
                 "No suitable model is installed in {provider}. Install one in Models › AI Features."
             ))
-        }
-        Ok(Some(m)) => m,
-    };
+            }
+            Ok(Some(m)) => m,
+        };
     let Ok(store) = Store::open_default() else {
         return unavailable("The history database is unavailable.".into());
     };
@@ -635,7 +351,7 @@ fn read_sessions(horizon_days: Option<i64>) {
             model: Some(model.clone()),
             message: None,
         });
-        match activity::analyze_with_model(&llm, &model, session) {
+        match activity::analyze_with_model(llm.as_ref(), &model, session) {
             Ok(Some(a)) => {
                 failures = 0;
                 let _ = service::save_session_reading(&store, session, &a);
@@ -712,7 +428,7 @@ pub async fn semantic_llm_status(app: AppHandle) -> Result<LlmStatus, String> {
     blocking(|| {
         let settings = Settings::load_or_default();
         Ok(index::llm_status(
-            &client(&settings),
+            client(&settings).as_ref(),
             &IndexConfig::from_settings(&settings),
         ))
     })
@@ -731,7 +447,7 @@ pub async fn semantic_search(
         let store = open_store()?;
         semantic::search(
             &store,
-            &client(&settings),
+            client(&settings).as_ref(),
             &SemanticOptions::from_settings(&settings),
             &query,
             limit.unwrap_or(8).clamp(1, 50),
@@ -838,7 +554,7 @@ pub async fn semantic_concept_brief(
         let clock = clock_for(&store, tz_offset);
         service::concept_brief(
             &store,
-            &client(&settings),
+            client(&settings).as_ref(),
             &service::local_model_candidates(&settings),
             ConceptTimeRange::parse(&range),
             &id,
@@ -923,7 +639,7 @@ pub async fn semantic_generate_insights(tz_offset: Option<i64>) -> Result<Insigh
         };
         let report = service::generate_report(
             &store,
-            &client(&settings),
+            client(&settings).as_ref(),
             &IndexConfig::from_settings(&settings),
             &overlay,
             clock,

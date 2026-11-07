@@ -14,6 +14,7 @@ import {
   type ModelInfo,
 } from "../lib/engine";
 import { Row, Section, SliderRow, ToggleRow, usePatch } from "../components/SettingsRows";
+import ExpressCard from "../components/ExpressCard";
 import "../styles/engine.css";
 
 type Storage = { dir: string; default_dir: string; custom: boolean; used_bytes: number; free_gb: number };
@@ -220,6 +221,8 @@ export default function Models() {
       />
 
       <HardwareCard hw={hw} />
+
+      <ExpressCard />
 
       <Section
         title="Speech Models"

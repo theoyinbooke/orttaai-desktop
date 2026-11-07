@@ -24,7 +24,7 @@ use orttaai_core::hotkey::{default_manager, HotkeyBinding, HotkeyCallback, Hotke
 use orttaai_core::injection::edit_watch::{EditObserver, EditWatcher, SystemFieldReader};
 use orttaai_core::injection::{InjectionService, SystemTextInjector, TextInjector};
 use orttaai_core::models;
-use orttaai_core::settings::Settings;
+use orttaai_core::settings::{Settings, SpeechEngine};
 use orttaai_core::store::{now_unix, Store};
 use orttaai_core::transcription::{decode_options_from_settings, WhisperTranscriber};
 use orttaai_core::types::{AudioDevice, HotkeyCombo, RecordingMode, RecordingState, SessionKind};
@@ -142,7 +142,6 @@ impl EngineState {
 /// the field text before and after the user's fixes (see
 /// `orttaai_core::injection::edit_watch`). Only active when
 /// `Settings::learn_from_edits` is on.
-#[allow(dead_code)] // wired by the text area's integration
 pub fn set_edit_observer(app: &AppHandle, observer: EditObserver) {
     *app.state::<EngineState>().edit_observer.lock().unwrap() = Some(observer);
 }
@@ -276,9 +275,7 @@ fn load_voice_detector() -> Option<SileroVad> {
 fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), String> {
     let state = app.state::<EngineState>();
     let settings = Settings::load_or_default();
-    let path = resolve_model(&settings, model_path)?;
-    let transcriber = WhisperTranscriber::from_path(&path).map_err(|e| e.to_string())?;
-    let model_id = transcriber_id(&path);
+    let (transcriber, model_id) = load_transcriber(&settings, model_path)?;
 
     let injector = SystemTextInjector::new();
     let injector_name = injector.backend_name().to_string();
@@ -287,7 +284,7 @@ fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), Strin
     let injection = InjectionService::new(Box::new(injector), Box::new(clipboard));
 
     let mut coord = DictationCoordinator::new(
-        Box::new(transcriber),
+        transcriber,
         Box::new(CpalAudioCapture::new()),
         injection,
         pipeline::build_pipeline(&settings),
@@ -342,6 +339,34 @@ fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), Strin
     }
     emit_state(app, "idle");
     Ok(())
+}
+
+/// Load the speech engine the settings ask for: whisper.cpp (GGUF) or Express
+/// (Parakeet via sherpa-onnx). Returns the transcriber and the model id shown
+/// in the UI and recorded with each dictation.
+fn load_transcriber(
+    settings: &Settings,
+    explicit: Option<String>,
+) -> Result<(Box<dyn orttaai_core::transcription::Transcriber>, String), String> {
+    if settings.engine == SpeechEngine::Express && explicit.is_none() {
+        use orttaai_core::transcription::express;
+        let id = settings.express_model.trim();
+        if !express::is_installed(id) {
+            return Err(format!(
+                "The Express model “{id}” isn't downloaded yet — download it in Models, or switch back to Whisper."
+            ));
+        }
+        let dir = express::model_dir(id).map_err(|e| e.to_string())?;
+        let t = orttaai_core::transcription::ExpressTranscriber::from_dir(
+            &dir,
+            settings.decode.n_threads,
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok((Box::new(t), id.to_string()));
+    }
+    let path = resolve_model(settings, explicit)?;
+    let t = WhisperTranscriber::from_path(&path).map_err(|e| e.to_string())?;
+    Ok((Box::new(t), transcriber_id(&path)))
 }
 
 fn transcriber_id(path: &std::path::Path) -> String {
@@ -596,19 +621,19 @@ impl Worker {
     }
 
     fn reconfigure(&mut self, next: Settings) {
-        let model_changed =
-            next.model_id != self.settings.model_id || next.models_dir != self.settings.models_dir;
+        let model_changed = next.model_id != self.settings.model_id
+            || next.models_dir != self.settings.models_dir
+            || next.engine != self.settings.engine
+            || next.express_model != self.settings.express_model;
         if model_changed && self.coord.state() == RecordingState::Idle {
             emit_state(&self.app, "loading");
-            match resolve_model(&next, None)
-                .and_then(|p| WhisperTranscriber::from_path(&p).map_err(|e| e.to_string()))
-            {
-                Ok(t) => {
-                    self.coord.replace_transcriber(Box::new(t));
+            match load_transcriber(&next, None) {
+                Ok((t, id)) => {
+                    self.coord.replace_transcriber(t);
                     if next.warm_models {
                         let _ = self.coord.warm_up();
                     }
-                    publish_snapshot(&self.app, |s| s.model_id = Some(next.model_id.clone()));
+                    publish_snapshot(&self.app, |s| s.model_id = Some(id));
                 }
                 Err(e) => {
                     let _ = self.app.emit(

@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { emit } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button, ConfirmDialog, CopyButton, Icon, IconButton, Modal, Spinner, useToast } from "../ui";
-import { useEvent } from "../lib/api";
+import { takePendingChatPrefill, useEvent } from "../lib/api";
 import { useSettings } from "../lib/settings";
 import {
   chat,
@@ -475,6 +475,20 @@ export default function ChatAI() {
     refreshList();
   });
   useEvent("ai-models-changed", () => refreshModels());
+  // Questions handed over from other pages (Memory Graph "Ask Chat AI").
+  const applyPrefill = (q: string | null) => {
+    if (!q) return;
+    setSelected(null);
+    setMessages([]);
+    setDraft(q);
+    window.setTimeout(() => inputRef.current?.focus(), 0);
+  };
+  useEffect(() => applyPrefill(takePendingChatPrefill()), []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEvent<string>("chat-prefill", (q) => {
+    applyPrefill(q);
+    // The shell buffered it too; drop that copy once both listeners ran.
+    window.setTimeout(() => takePendingChatPrefill(), 0);
+  });
 
   const modelInfo = models?.find((m) => m.name === model);
   const isOllama = settings?.llm_provider !== "lm_studio";

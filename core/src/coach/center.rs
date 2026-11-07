@@ -31,9 +31,9 @@ static ON_CHANGE: Mutex<Option<ChangeListener>> = Mutex::new(None);
 type CheckListener = Box<dyn Fn(&CoachJudgeState) + Send + Sync>;
 static ON_CHECK: Mutex<Option<CheckListener>> = Mutex::new(None);
 
-/// How Coach reaches the local model server. The desktop shell registers
-/// the AI area's client constructor here; until then Coach uses the legacy
-/// Ollama helpers (Ollama only, no streaming or model downloads).
+/// How Coach reaches the local model server. Tests (and the shell, if it
+/// wants a custom client) register a constructor here; otherwise Coach uses
+/// the shared [`crate::llm::client_from_settings`] client.
 pub fn set_llm_factory(
     f: impl Fn(&Settings) -> Option<Arc<dyn LlmClient>> + Send + Sync + 'static,
 ) {
@@ -48,108 +48,13 @@ pub fn llm_client(settings: &Settings) -> Option<Arc<dyn LlmClient>> {
     fallback_client(settings)
 }
 
-#[cfg(feature = "ollama")]
+/// Without a registered factory, use the shared local client (Ollama or LM
+/// Studio, local endpoints only).
 fn fallback_client(settings: &Settings) -> Option<Arc<dyn LlmClient>> {
-    if settings.llm_provider != crate::settings::LlmProvider::Ollama
-        || !crate::llm::policy::is_local_endpoint(&settings.ollama_endpoint)
-    {
+    if !crate::llm::policy::is_local_endpoint(settings.llm_endpoint()) {
         return None;
     }
-    Some(Arc::new(legacy::LegacyOllama {
-        endpoint: settings.ollama_endpoint.clone(),
-    }))
-}
-
-#[cfg(not(feature = "ollama"))]
-fn fallback_client(_settings: &Settings) -> Option<Arc<dyn LlmClient>> {
-    None
-}
-
-#[cfg(feature = "ollama")]
-mod legacy {
-    use crate::error::{CoreError, Result};
-    use crate::llm::{ChatDelta, ChatMessage, ChatOptions, ChatReply, LlmClient, LlmModel, Role};
-
-    /// Coach over the legacy one-shot Ollama helpers.
-    pub struct LegacyOllama {
-        pub endpoint: String,
-    }
-
-    /// The messages as one prompt; a lone question goes through unchanged.
-    pub fn flatten(messages: &[ChatMessage]) -> String {
-        let system: Vec<&str> = messages
-            .iter()
-            .filter(|m| m.role == Role::System)
-            .map(|m| m.content.as_str())
-            .collect();
-        let rest: Vec<&ChatMessage> = messages.iter().filter(|m| m.role != Role::System).collect();
-        let mut out = system.join("\n");
-        if rest.len() == 1 && rest[0].role == Role::User {
-            if !out.is_empty() {
-                out.push_str("\n\n");
-            }
-            out.push_str(&rest[0].content);
-            return out;
-        }
-        if !out.is_empty() {
-            out.push_str("\n\n");
-        }
-        for m in rest {
-            let who = if m.role == Role::Assistant {
-                "Assistant"
-            } else {
-                "User"
-            };
-            out.push_str(&format!("{who}: {}\n", m.content));
-        }
-        out.push_str("Assistant:");
-        out
-    }
-
-    impl LlmClient for LegacyOllama {
-        fn provider_name(&self) -> &str {
-            "ollama"
-        }
-
-        fn list_models(&self) -> Result<Vec<LlmModel>> {
-            Ok(crate::llm::list_models(&self.endpoint)?
-                .into_iter()
-                .map(|name| LlmModel {
-                    embedding: name.to_lowercase().contains("embed"),
-                    name,
-                    size: None,
-                })
-                .collect())
-        }
-
-        fn chat(
-            &self,
-            messages: &[ChatMessage],
-            opts: &ChatOptions,
-            on_delta: Option<&mut dyn FnMut(ChatDelta)>,
-        ) -> Result<ChatReply> {
-            if crate::llm::policy::is_cloud_model(&opts.model) {
-                return Err(CoreError::Llm(format!(
-                    "{} runs in the cloud, not on this machine",
-                    opts.model
-                )));
-            }
-            let text = crate::llm::generate(&self.endpoint, &opts.model, &flatten(messages))?;
-            if let Some(cb) = on_delta {
-                cb(ChatDelta::Content(text.clone()));
-            }
-            Ok(ChatReply {
-                content: text,
-                reasoning: None,
-            })
-        }
-
-        fn embed(&self, _model: &str, _inputs: &[String]) -> Result<Vec<Vec<f32>>> {
-            Err(CoreError::NotImplemented(
-                "embeddings through the legacy Ollama helpers",
-            ))
-        }
-    }
+    Some(crate::llm::client_from_settings(settings))
 }
 
 /// Called whenever background work changes what Coach shows.
@@ -951,22 +856,5 @@ mod tests {
         assert_eq!(steps.last(), Some(&SetupStep::Done));
         assert_eq!(patch["coach_partner_model"], models::STARTER_PARTNER);
         assert!(models::judge_grade(&models::judge_grades(&store), judge).is_some());
-    }
-
-    #[cfg(feature = "ollama")]
-    #[test]
-    fn legacy_prompts_flatten_chats() {
-        use crate::llm::ChatMessage;
-        assert_eq!(legacy::flatten(&[ChatMessage::user("Q?")]), "Q?");
-        let chat = legacy::flatten(&[
-            ChatMessage::system("Be Ola."),
-            ChatMessage::user("Hi"),
-            ChatMessage::assistant("Hello"),
-            ChatMessage::user("Deal?"),
-        ]);
-        assert_eq!(
-            chat,
-            "Be Ola.\n\nUser: Hi\nAssistant: Hello\nUser: Deal?\nAssistant:"
-        );
     }
 }

@@ -125,6 +125,8 @@ pub struct Settings {
     /// Bias decoding towards dictionary words (whisper initial prompt).
     pub vocabulary_bias: bool,
     pub express_word_boost: bool,
+    /// Which Express (Parakeet) model to use when `engine` is `express`.
+    pub express_model: String,
     pub low_latency: bool,
     /// Keep the model resident and run a silent warm-up decode at start.
     pub warm_models: bool,
@@ -248,6 +250,7 @@ impl Default for Settings {
             advanced_decoding: AdvancedDecoding::default(),
             vocabulary_bias: true,
             express_word_boost: true,
+            express_model: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8".to_string(),
             low_latency: false,
             warm_models: true,
             models_dir: None,

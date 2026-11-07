@@ -21,6 +21,8 @@ export type Settings = {
   };
   vocabulary_bias: boolean;
   express_word_boost: boolean;
+  /** Express (Parakeet) model id, used when `engine` is "express". */
+  express_model: string;
   low_latency: boolean;
   warm_models: boolean;
   /** Custom speech-model folder; null = the default data folder. */

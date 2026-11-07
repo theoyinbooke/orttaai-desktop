@@ -3,7 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import "./App.css";
 import { Icon, ThemeProvider, ToastProvider, useTheme, useToast } from "./ui";
 import { TABS, type AppInfo, type Tab } from "./types";
-import { call, useEvent } from "./lib/api";
+import { call, setPendingChatPrefill, useEvent } from "./lib/api";
 import { SettingsProvider, useSettings } from "./lib/settings";
 import { EngineProvider, STATE_LABEL, useEngine } from "./lib/engine";
 import { phaseLabel, useUpdater } from "./lib/updater";
@@ -119,6 +119,7 @@ function AppShell() {
     if (settings && !settings.has_completed_setup) setSetupOpen(true);
   }, [settings?.has_completed_setup]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEvent<string>("chat-prefill", (q) => setPendingChatPrefill(q));
   useEvent<string>("engine-error", (m) => toast(m, "error"));
   useEvent<string>("engine-warning", (m) => toast(m, "warn"));
   useEvent<string>("navigate", (route) => {

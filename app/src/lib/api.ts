@@ -39,3 +39,17 @@ export function formatWhen(unix: number): string {
 }
 
 export const fmtInt = (n: number) => Math.round(n).toLocaleString();
+
+// ---- Chat prefill hand-off ----------------------------------------------------
+// Other pages (Memory Graph "Ask Chat AI") emit `chat-prefill` and then switch
+// to Chat AI, which may not be mounted yet — so the shell buffers the question
+// here and Chat AI takes it on mount (or live, if it is already open).
+let pendingPrefill: string | null = null;
+export function setPendingChatPrefill(q: string) {
+  pendingPrefill = q;
+}
+export function takePendingChatPrefill(): string | null {
+  const q = pendingPrefill;
+  pendingPrefill = null;
+  return q;
+}
