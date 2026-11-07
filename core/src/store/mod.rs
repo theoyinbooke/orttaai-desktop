@@ -36,6 +36,14 @@ pub fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// SQLITE_BUSY / SQLITE_LOCKED — another connection holds the lock.
+fn is_busy(e: &rusqlite::Error) -> bool {
+    matches!(
+        e.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
 /// Lowercased, trimmed, inner-whitespace-collapsed key used for matching.
 pub fn normalize_key(s: &str) -> String {
     s.split_whitespace()
@@ -221,12 +229,27 @@ impl Store {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let store = Self {
-            conn: Connection::open(path)?,
-        };
-        store.configure()?;
-        store.migrate()?;
-        Ok(store)
+        // First launch opens the database from several commands at once; WAL
+        // setup and migrations can briefly report "database is locked" (SQLite
+        // doesn't always run the busy handler for those), so retry for up to ~5 s.
+        let mut attempt = 0;
+        loop {
+            let opened = (|| -> Result<Self> {
+                let store = Self {
+                    conn: Connection::open(path)?,
+                };
+                store.configure()?;
+                store.migrate()?;
+                Ok(store)
+            })();
+            match opened {
+                Err(crate::error::CoreError::Db(ref e)) if is_busy(e) && attempt < 50 => {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                other => return other,
+            }
+        }
     }
 
     fn configure(&self) -> Result<()> {
@@ -718,7 +741,9 @@ mod tests {
             })
             .collect();
         for h in handles {
-            assert_eq!(h.join().unwrap().expect("open must not race"), 0);
+            let r = h.join().unwrap();
+            assert!(r.is_ok(), "open must not race: {:?}", r.err());
+            assert_eq!(r.unwrap(), 0);
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
