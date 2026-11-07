@@ -13,6 +13,7 @@ import type {
   Snapshot,
 } from "../../lib/coach";
 import { statusTitle } from "../../lib/coach";
+import { Icon } from "../../ui";
 import type { Settings } from "../../lib/settings";
 
 export type CoachTab = "today" | "path" | "studio" | "proof" | "cast";
@@ -130,7 +131,7 @@ export function InfoButton({ title, text }: { title: string; text: string }) {
   useLayoutEffect(() => {
     if (!open || !ref.current) return;
     const r = ref.current.getBoundingClientRect();
-    const left = Math.min(Math.max(12, r.left - 140), window.innerWidth - 312);
+    const left = Math.min(Math.max(12, r.left + r.width / 2 - 146), window.innerWidth - 304);
     const below = r.bottom + 8;
     setPos({ top: below + 160 > window.innerHeight ? Math.max(12, r.top - 168) : below, left });
   }, [open]);
@@ -156,13 +157,12 @@ export function InfoButton({ title, text }: { title: string; text: string }) {
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
-        i
+        <Icon name="infoCircle" size={13} />
       </button>
       {open &&
         pos &&
         createPortal(
           <div className="coach-pop" role="dialog" aria-label={title} style={{ top: pos.top, left: pos.left }}>
-            <strong>{title}</strong>
             {text}
           </div>,
           document.body,

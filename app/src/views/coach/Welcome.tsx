@@ -2,6 +2,7 @@
 // which apps it may read, who coaches you, its models, and your first shape.
 import { useEffect, useState } from "react";
 import { Icon } from "../../ui";
+import { useSettings } from "../../lib/settings";
 import { coachApi, MODES, modeTitle, modeShort, percent, personaFor, monthYear, type AppRow, type Mode } from "../../lib/coach";
 import { ModelSetupList } from "./ModelSetup";
 import PersonaGlyph from "./PersonaGlyph";
@@ -123,7 +124,7 @@ function Found() {
 function BigStat({ value, label }: { value: string; label: string }) {
   return (
     <div className="coach-col" style={{ gap: 6 }}>
-      <span className="coach-display" style={{ fontSize: 60, lineHeight: 1 }}>
+      <span className="coach-display" style={{ fontSize: 60 }}>
         {value}
       </span>
       <span style={{ fontSize: 14, color: "var(--c-ink-3)" }}>{label}</span>
@@ -143,7 +144,7 @@ function Apps() {
           Choose what Coach may read.
         </h1>
         <span className="coach-row" style={{ gap: 6, fontSize: 15, color: "var(--c-body)" }}>
-          <Icon name="shield" size={16} />
+          <Icon name="lock" size={16} />
           Stays on this computer
         </span>
       </div>
@@ -205,6 +206,9 @@ function PickCoach() {
 }
 
 function Models() {
+  const { patch } = useSettings();
+  // Seen here, so it doesn't pop up again the moment the welcome ends.
+  useEffect(() => () => void patch({ coach_model_setup_seen: true }), []); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="coach-col" style={{ gap: 26, width: "100%" }}>
       <div className="coach-row coach-wrap" style={{ alignItems: "flex-end" }}>
@@ -229,7 +233,7 @@ function FirstShape() {
   const room = snapshot.focus?.measure ?? weakest;
   const to = mode === "ai" ? "AI" : mode === "people" ? "people" : "the page";
   return (
-    <div className="coach-welcome-found">
+    <div className="coach-welcome-found first-shape">
       <div className="coach-col" style={{ gap: 26, flex: 1, minWidth: 280 }}>
         <h1 className="coach-display coach-welcome-title" style={{ fontSize: 50 }}>
           {entries.length === 0 ? "Your shape starts with your next dictation." : `Here's how you talk to ${to}.`}
@@ -250,9 +254,7 @@ function FirstShape() {
           {shape.is_complete ? "It sharpens as you keep dictating." : "Keep dictating as usual; the rest fills in on its own."}
         </p>
       </div>
-      <div style={{ width: 440, maxWidth: "100%" }}>
-        <VoiceShape shape={shape} showThen={false} />
-      </div>
+      <VoiceShape shape={shape} showThen={false} width={440} height={440} />
     </div>
   );
 }

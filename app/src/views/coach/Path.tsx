@@ -1,13 +1,13 @@
 // Each track as a row of steps (Mac CoachPathView): mastered skills lit, the
 // current one glowing, reviews flagged, and the reps for whichever skill you pick.
 import { useState } from "react";
-import { Icon } from "../../ui";
+import { CoachIcon } from "./icons";
 import type { RepKind, SkillInfo, SkillProgress, TrackId } from "../../lib/coach";
 import { Btn, CoachPage, kindTitle, skillOf, trackOf, useCoach } from "./parts";
 
 const EMPTY: SkillProgress = { reps: 0, strong_reps: 0, last_at: null, usual: null, mastered: false, review_due: false };
 const PRACTICE: RepKind[] = ["redo", "drill", "timed"];
-const KIND_ICON: Record<RepKind, string> = { redo: "restart", drill: "edit", timed: "flame", scene: "assistant" };
+const KIND_ICON: Record<RepKind, string> = { redo: "arrowCcw", drill: "squareText", timed: "timer", scene: "bubbles" };
 
 export default function PathView() {
   const { snapshot, catalog } = useCoach();
@@ -114,7 +114,7 @@ function Journey({
               title={p.review_due ? `${skill.title} · due for a review` : skill.title}
               aria-label={label}
             >
-              {p.mastered && !isCurrent ? <Icon name="check" size={16} /> : i + 1}
+              {p.mastered && !isCurrent ? <CoachIcon name="checkmark" size={16} weight={2.6} /> : i + 1}
               {p.review_due && <span className="due" />}
             </button>
             <span className={`title ${isCurrent || p.mastered ? "strong" : ""}`}>{skill.title}</span>
@@ -153,7 +153,7 @@ function RepsCard({ skill, progress }: { skill: SkillInfo; progress: SkillProgre
         {PRACTICE.map((kind) => (
           <div key={kind} className="coach-rep-row">
             <span className="icon">
-              <Icon name={KIND_ICON[kind]} size={18} />
+              <CoachIcon name={KIND_ICON[kind]} size={20} />
             </span>
             <div className="coach-col" style={{ gap: 2, flex: 1, minWidth: 0 }}>
               <strong style={{ fontSize: 15 }}>{kindTitle(catalog, kind)}</strong>

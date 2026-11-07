@@ -42,12 +42,15 @@ export default function ShortcutRecorder({
   onChange,
   other,
   disabled,
+  plain,
 }: {
   value: HotkeyCombo;
   onChange: (c: HotkeyCombo) => void;
   /** The app's other shortcut, which this one must not collide with. */
   other?: HotkeyCombo | null;
   disabled?: boolean;
+  /** The compact settings-row field: the chord as text, Escape or a click away cancels. */
+  plain?: boolean;
 }) {
   const [listening, setListening] = useState(false);
   const [live, setLive] = useState<string>("");
@@ -96,7 +99,7 @@ export default function ShortcutRecorder({
       <button
         ref={ref}
         type="button"
-        className={`sr-field ${listening ? "listening" : ""}`}
+        className={`sr-field ${plain ? "sr-plain" : ""} ${listening ? "listening" : ""}`}
         onClick={() => {
           setError(null);
           setListening((l) => !l);
@@ -106,12 +109,14 @@ export default function ShortcutRecorder({
         aria-label={listening ? "Press the new shortcut" : `Shortcut ${comboToString(value)}. Click to change.`}
       >
         {listening ? (
-          <span className="sr-prompt">{live ? `${live}+…` : "Press a shortcut…"}</span>
+          <span className="sr-prompt">{live ? `${live}+…` : plain ? "Press Shortcut" : "Press a shortcut…"}</span>
+        ) : plain ? (
+          comboToString(value)
         ) : (
           <Kbd combo={comboToString(value)} />
         )}
       </button>
-      {listening && (
+      {listening && !plain && (
         <Button size="sm" variant="ghost" onMouseDown={(e) => e.preventDefault()} onClick={() => setListening(false)}>
           Cancel
         </Button>

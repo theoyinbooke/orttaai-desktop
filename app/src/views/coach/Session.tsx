@@ -22,6 +22,7 @@ import {
   type RepPlan,
   type RepResult,
 } from "../../lib/coach";
+import { CoachIcon } from "./icons";
 import { Btn, Spinner, kindLimit, kindTitle, skillOf, useCoach } from "./parts";
 import Reveal from "./Reveal";
 
@@ -328,7 +329,7 @@ export default function RepSession({ plan, onPlan, onExit }: { plan: RepPlan; on
                 <span className="coach-rep-halo outer" aria-hidden="true" />
                 <span className="coach-rep-halo inner" aria-hidden="true" />
                 <span className="coach-rep-core" aria-hidden="true">
-                  <Icon name={recording ? "stop" : "mic"} size={40} />
+                  <CoachIcon name={recording ? "stopFill" : "micFill"} size={44} />
                 </span>
               </button>
               <p className="coach-rep-time">
@@ -343,12 +344,7 @@ export default function RepSession({ plan, onPlan, onExit }: { plan: RepPlan; on
                     </Btn>
                   </>
                 ) : (
-                  <div className="coach-col" style={{ alignItems: "center", gap: 4 }}>
-                    <span className="coach-label">Coach stays quiet until you finish.</span>
-                    <span className="coach-rep-hint">
-                      Once you've started, your dictation shortcut stops it too. Nothing is typed into other apps.
-                    </span>
-                  </div>
+                  <span className="coach-label">Coach stays quiet until you finish.</span>
                 )}
               </div>
             </div>

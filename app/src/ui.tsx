@@ -76,6 +76,109 @@ export const useTheme = () => useContext(ThemeCtx);
 
 const P = (d: string) => <path d={d} />;
 const ICONS: Record<string, ReactNode> = {
+  // Sidebar set, drawn after the Mac's SF Symbols.
+  house: P("M3.5 11.2 12 4l8.5 7.2M6 9.6V20h4.2v-5.5h3.6V20H18V9.6"),
+  chatBubbles: P("M3 5.5h11.5v8H8l-3 2.6v-2.6H3v-8ZM6 8.2h5.5M6 10.8h3.5M17 9h4v8h-1.8v2.4L16.4 17H11v-1.6"),
+  connected: (
+    <>
+      <circle cx="5.5" cy="6" r="2.2" />
+      <circle cx="18.5" cy="6" r="2.2" />
+      <circle cx="12" cy="18" r="2.2" />
+      <path strokeDasharray="1.6 2.2" d="M7.7 6h8.6M6.6 8l4.2 7.9M17.4 8l-4.2 7.9" />
+    </>
+  ),
+  barsAxis: P("M3.5 20.5h17M6 17.5v-6M10 17.5V5.5M14 17.5v-9M18 17.5v-4"),
+  rosette: (
+    <>
+      <circle cx="12" cy="9" r="5.5" />
+      <path d="M8.6 13.4 7.5 21l4.5-2.4 4.5 2.4-1.1-7.6" />
+    </>
+  ),
+  scope: (
+    <>
+      <circle cx="12" cy="12" r="7.5" />
+      <path d="M12 2.5v5M12 16.5v5M2.5 12h5M16.5 12h5" />
+    </>
+  ),
+  book: P("M6.5 3.5H18a1 1 0 0 1 1 1V20.5H6.5A2.5 2.5 0 0 1 4 18V6a2.5 2.5 0 0 1 2.5-2.5ZM4 18a2.5 2.5 0 0 1 2.5-2.5H19M8.5 7.5h6M8.5 10.5h6"),
+  cpu: (
+    <>
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+      <rect x="9.5" y="9.5" width="5" height="5" rx="0.8" />
+      <path d="M9.5 2.8V6M14.5 2.8V6M9.5 18v3.2M14.5 18v3.2M2.8 9.5H6M2.8 14.5H6M18 9.5h3.2M18 14.5h3.2" />
+    </>
+  ),
+  gear: (
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M10.3 2.8h3.4l.5 2.6 1.5.6 2.2-1.5 2.4 2.4-1.5 2.2.6 1.5 2.6.5v3.4l-2.6.5-.6 1.5 1.5 2.2-2.4 2.4-2.2-1.5-1.5.6-.5 2.6h-3.4l-.5-2.6-1.5-.6-2.2 1.5-2.4-2.4 1.5-2.2-.6-1.5-2.6-.5v-3.4l2.6-.5.6-1.5-1.5-2.2 2.4-2.4 2.2 1.5 1.5-.6.5-2.6Z" />
+    </>
+  ),
+  infoCircle: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5.5M12 7.6v.2M10.2 16.8h3.6" />
+    </>
+  ),
+  sliders: (
+    <>
+      <path d="M3 7h9M16 7h5M3 12h3M10 12h11M3 17h11M18 17h3" />
+      <circle cx="14" cy="7" r="2" />
+      <circle cx="8" cy="12" r="2" />
+      <circle cx="16" cy="17" r="2" />
+    </>
+  ),
+  sidebarLeft: (
+    <>
+      <rect x="3" y="4.5" width="18" height="15" rx="2.5" />
+      <path d="M9.5 4.5v15M5.5 8h1.6M5.5 11h1.6M5.5 14h1.6" />
+    </>
+  ),
+  clockArrow: (
+    <>
+      <path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.4" />
+      <path d="M3.5 4v4.4h4.4M12 7.5V12l3.2 2" />
+    </>
+  ),
+  waveSearch: (
+    <>
+      <path d="M3 10.5v3M6.2 7.5v9M9.4 4.5v15M12.6 8v5" />
+      <circle cx="16.5" cy="14.5" r="3.6" />
+      <path d="m19.2 17.2 2.3 2.3" />
+    </>
+  ),
+  pulse: P("M2.5 12.5h4.2l2.2-6 3.4 12 2.8-9 1.5 3h5.4"),
+  waveform: P("M4 10.5v3M8 7v10M12 3.5v17M16 7.5v9M20 10.5v3"),
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7v5l3.4 2" />
+    </>
+  ),
+  speedometer: (
+    <>
+      <path d="M4.2 18.5a9 9 0 1 1 15.6 0" />
+      <path d="m12 14 3.6-4.6M12 14v0" />
+      <circle cx="12" cy="14" r="1.4" />
+    </>
+  ),
+  lock: P("M7.5 11V8a4.5 4.5 0 0 1 9 0v3M5.5 11h13v9.5h-13z"),
+  cursorRays: P("M10.5 10.5 20 14l-4 1.8L14.2 20l-3.7-9.5ZM10.5 3v2.2M4.6 5.1l1.6 1.6M3 10.5h2.2M4.6 15.9l1.6-1.6M16.4 5.1l-1.6 1.6"),
+  shieldLock: P("M12 3 4.5 6v5.5c0 4.5 3.2 8.2 7.5 9.5 4.3-1.3 7.5-5 7.5-9.5V6L12 3ZM9.5 11V9.5a2.5 2.5 0 0 1 5 0V11M8.8 11h6.4v4.5H8.8z"),
+  textCheck: P("M4 6.5h13M4 11h9M4 15.5h6M13 16.5l2.6 2.6L21 13.7"),
+  drive: (
+    <>
+      <rect x="3" y="7" width="18" height="10" rx="2.5" />
+      <path d="M15 12h.2M18 12h.2" />
+    </>
+  ),
+  chip: P("M6 6h12v12H6zM9.5 2.8V6M14.5 2.8V6M9.5 18v3.2M14.5 18v3.2M2.8 9.5H6M2.8 14.5H6M18 9.5h3.2M18 14.5h3.2"),
+  memoryChip: P("M3 8h18v8H3zM7 8v8M12 8v8M17 8v8M6 16v3M18 16v3"),
+  minimize: P("M6 12h12"),
+  maximize: <rect x="6.5" y="6.5" width="11" height="11" rx="1.2" />,
+  close: P("M7 7l10 10M17 7 7 17"),
+  codeBrackets: P("M8.5 7 4 12l4.5 5M15.5 7 20 12l-4.5 5M13.5 5l-3 14"),
+  external: P("M13.5 4H20v6.5M20 4l-9 9M9 5.5H5A1.5 1.5 0 0 0 3.5 7v12A1.5 1.5 0 0 0 5 20.5h12a1.5 1.5 0 0 0 1.5-1.5v-4"),
   home: P("M3 11.5 12 4l9 7.5M5.5 9.8V20h13V9.8M10 20v-5h4v5"),
   graph: (
     <>
@@ -320,21 +423,40 @@ export function Card({ children, className = "", ...rest }: { children: ReactNod
   );
 }
 
+/** The window chrome the page header needs: the sidebar toggle. Empty in a
+ * window without a sidebar. */
+export const ShellContext = createContext<{ toggleSidebar?: () => void }>({});
+
+/**
+ * The page's title strip (Mac `workspaceHeader`): sidebar toggle, title, optional
+ * controls beside it, actions at the trailing edge. It doubles as the window's
+ * drag region and stays put while the page scrolls.
+ */
 export function PageHeader({
   title,
-  desc,
+  leading,
   actions,
 }: {
   title: string;
-  desc?: ReactNode;
+  leading?: ReactNode;
   actions?: ReactNode;
 }) {
+  const { toggleSidebar } = useContext(ShellContext);
   return (
-    <header className="page-head">
-      <div className="page-head-text">
-        <h1>{title}</h1>
-        {desc && <p>{desc}</p>}
-      </div>
+    <header className="page-head" data-tauri-drag-region>
+      {toggleSidebar && (
+        <button
+          className="page-head-toggle"
+          onClick={toggleSidebar}
+          title="Show or hide the sidebar"
+          aria-label="Toggle sidebar"
+        >
+          <Icon name="sidebarLeft" size={17} />
+        </button>
+      )}
+      <h1 data-tauri-drag-region>{title}</h1>
+      {leading}
+      <div className="page-head-fill" data-tauri-drag-region />
       {actions && <div className="page-head-actions">{actions}</div>}
     </header>
   );

@@ -1,11 +1,11 @@
 // Milestones (Mac MilestonesView): the next goal with progress, three summary
-// tiles, filters and the badge wall in its five groups. Unlocked badges open
-// the share sheet. Owned by the analytics/home area.
+// tiles, filters and the badge grid. Unlocked badges open the share sheet.
+// Owned by the analytics/home area.
 import { useCallback, useEffect, useState } from "react";
 import "../styles/analytics.css";
 import { Button, EmptyState, PageHeader, Spinner, useToast } from "../ui";
 import { call, useEvent } from "../lib/api";
-import { TIER_TITLE, durationText, type BadgeView, type MilestonesOverview } from "../lib/analytics";
+import { durationText, type BadgeView, type MilestonesOverview } from "../lib/analytics";
 import { MilestoneBadge } from "../components/ShareCardBadge";
 import ShareCardSheet from "../components/ShareCardSheet";
 
@@ -64,7 +64,6 @@ export default function Milestones() {
     <div className="view ms-view">
       <PageHeader
         title="Milestones"
-        desc="Badges you earn by talking instead of typing. Once earned, they stay yours."
         actions={
           <Button
             variant="ghost"
@@ -90,13 +89,13 @@ export default function Milestones() {
                 <div className="ms-bar" role="progressbar" aria-label={`Progress to ${goal.name}`} aria-valuenow={Math.round(goal.fraction * 100)} aria-valuemin={0} aria-valuemax={100}>
                   <span style={{ width: `${goal.fraction * 100}%` }} />
                 </div>
-                <p className="muted">{overview.next_up_detail}</p>
+                <p className="ms-next-detail">{overview.next_up_detail}</p>
               </div>
             </>
           ) : (
             <div className="ms-next-text">
               <h2>Every badge earned</h2>
-              <p className="muted">All {overview.total} milestones are yours. Share the set.</p>
+              <p className="ms-next-detail">All {overview.total} milestones are yours. Share the set.</p>
             </div>
           )}
         </div>
@@ -121,27 +120,11 @@ export default function Milestones() {
         ))}
       </div>
 
-      {shown.length === 0 ? (
-        <p className="muted ms-none">Nothing here yet.</p>
-      ) : (
-        overview.families.map((fam) => {
-          const badges = shown.filter((b) => b.family === fam.id);
-          if (badges.length === 0) return null;
-          return (
-            <section key={fam.id} className="ms-group">
-              <header className="ms-group-head">
-                <h3>{fam.title}</h3>
-                <span className="muted small">{fam.note}</span>
-              </header>
-              <div className="ms-grid">
-                {badges.map((b) => (
-                  <BadgeCell key={b.id} badge={b} onShare={() => setShare(b.id)} />
-                ))}
-              </div>
-            </section>
-          );
-        })
-      )}
+      <div className="ms-grid">
+        {shown.map((b) => (
+          <BadgeCell key={b.id} badge={b} onShare={() => setShare(b.id)} />
+        ))}
+      </div>
 
       {share && <ShareCardSheet overview={overview} subjectId={share} onClose={() => setShare(null)} />}
     </div>
@@ -178,7 +161,7 @@ function BadgeCell({ badge, onShare }: { badge: BadgeView; onShare: () => void }
       className={`ms-cell ms-${badge.state.kind}`}
       onClick={onShare}
       disabled={!unlocked}
-      title={unlocked ? `Share a card for ${badge.name}` : `${TIER_TITLE[badge.tier]} · ${badge.rule}`}
+      title={unlocked ? `Share a card for ${badge.name}` : badge.rule}
       aria-label={`${badge.name}, ${statusText(badge)}`}
     >
       <MilestoneBadge badge={badge} size={72} />

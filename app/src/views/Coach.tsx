@@ -6,6 +6,7 @@ import "../styles/coach.css";
 import { Icon, useToast } from "../ui";
 import { useSettings } from "../lib/settings";
 import { coachApi, useCatalog, useCoachData, type RepKind, type RepPlan } from "../lib/coach";
+import { CoachIcon } from "./coach/icons";
 import { Btn, CoachCtx, Eyebrow, Loading, type CoachContextValue, type CoachTab } from "./coach/parts";
 import Welcome from "./coach/Welcome";
 import Today from "./coach/Today";
@@ -20,11 +21,11 @@ import { WeekShareSheet } from "./coach/Cards";
 import { SetupHost, useSetupOffer } from "./coach/ModelSetup";
 
 const TABS: { id: CoachTab; title: string; icon: string }[] = [
-  { id: "today", title: "Today", icon: "sun" },
-  { id: "path", title: "Path", icon: "target" },
+  { id: "today", title: "Today", icon: "sunMax" },
+  { id: "path", title: "Path", icon: "curvePath" },
   { id: "studio", title: "Studio", icon: "mic" },
-  { id: "proof", title: "Proof", icon: "insights" },
-  { id: "cast", title: "Cast", icon: "assistant" },
+  { id: "proof", title: "Proof", icon: "chartUp" },
+  { id: "cast", title: "Cast", icon: "person2" },
 ];
 
 type Active = { kind: "rep"; plan: RepPlan } | { kind: "scene"; sceneId: string; key: number } | null;
@@ -76,7 +77,7 @@ export default function Coach() {
 
   let body;
   if (!settings || !catalog) {
-    body = <Loading text="Opening Coach…" />;
+    body = <Loading />;
   } else if (!enabled) {
     body = (
       <div className="coach-loading">
@@ -105,7 +106,7 @@ export default function Coach() {
   } else if (!firstRunDone) {
     body = (
       <CoachCtx.Provider value={value}>
-        <Welcome onDone={() => patch({ coach_first_run_done: true, coach_model_setup_seen: true })} />
+        <Welcome onDone={() => patch({ coach_first_run_done: true })} />
       </CoachCtx.Provider>
     );
   } else if (active?.kind === "rep") {
@@ -135,7 +136,7 @@ export default function Coach() {
           <div className="coach-tabbar-inner" role="tablist">
             {TABS.map((t) => (
               <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} onClick={() => setTab(t.id)}>
-                <Icon name={t.icon} size={17} />
+                {t.icon === "mic" ? <Icon name="mic" size={17} /> : <CoachIcon name={t.icon} size={17} />}
                 {t.title}
               </button>
             ))}
@@ -148,6 +149,9 @@ export default function Coach() {
 
   return (
     <div className="coach coach-root">
+      <div className="coach-drag" aria-hidden="true">
+        <div data-tauri-drag-region />
+      </div>
       {body}
       {value && setup.open && (
         <CoachCtx.Provider value={value}>

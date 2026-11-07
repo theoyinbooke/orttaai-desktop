@@ -318,7 +318,8 @@ export async function askChat(question: string) {
   await emit("navigate", "chat");
 }
 
-export const openSettings = () => emit("navigate", "settings");
+/** Model › AI Features, where semantic memory and the insight model live (as on the Mac). */
+export const openSettings = () => emit("navigate", "ai-settings");
 
 /* ------------------------------------------------------------------ hooks -- */
 

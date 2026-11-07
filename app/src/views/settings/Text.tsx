@@ -1,12 +1,13 @@
-// Settings → Text (Mac TextSettingsView): what happens to the words after
-// they are transcribed, with a live before/after preview. Owned by the
-// text-pipeline area.
+// Settings → Text (Mac TextSettingsView): what happens to the words after they
+// are transcribed, plus the desktop's writing style and live before/after
+// preview. Owned by the text-pipeline area.
 import { useEffect, useRef, useState } from "react";
-import { Badge, Segmented, Spinner } from "../../ui";
+import { Segmented, Spinner } from "../../ui";
 import { Row, Section, ToggleRow, usePatch } from "../../components/SettingsRows";
+import ShortcutRecorder from "../../components/ShortcutRecorder";
 import { useEvent } from "../../lib/api";
 import { useSettings, type Settings } from "../../lib/settings";
-import { memoryApi, usePlatform, type PipelinePreview } from "../../lib/memory";
+import { memoryApi, type PipelinePreview } from "../../lib/memory";
 import "../../styles/memory.css";
 
 type StyleMode = Settings["style_mode"];
@@ -27,37 +28,13 @@ const SAMPLES: { label: string; text: string }[] = [
 export default function TextSettings() {
   const { settings } = useSettings();
   const save = usePatch();
-  const platform = usePlatform();
   if (!settings) return null;
   const raw = settings.style_mode === "raw";
   const needsPolish = (settings.style_mode === "formal" || settings.style_mode === "casual") && !settings.polish_enabled;
   const rawHint = "Off in the Raw style.";
-  const editsSupported = platform === "windows";
 
   return (
     <>
-      <Section title="Style" desc="How much Orttaai tidies what you say before it types it.">
-        <Row
-          label="Writing style"
-          hint={
-            needsPolish
-              ? `${STYLE_HINT[settings.style_mode]} Turn on Polish in AI Features to apply it; until then dictation reads as Clean.`
-              : STYLE_HINT[settings.style_mode]
-          }
-        >
-          <Segmented<StyleMode>
-            value={settings.style_mode}
-            options={[
-              { value: "raw", label: "Raw" },
-              { value: "clean", label: "Clean" },
-              { value: "formal", label: "Formal" },
-              { value: "casual", label: "Casual" },
-            ]}
-            onChange={(v) => save({ style_mode: v })}
-          />
-        </Row>
-      </Section>
-
       <Section title="Cleanup">
         <ToggleRow
           k="spoken_formatting"
@@ -85,7 +62,7 @@ export default function TextSettings() {
           label="Fuzzy Dictionary Matching"
           hint={
             settings.dictionary_enabled
-              ? "Corrects near-miss spellings of your dictionary words, like Tematope for Temitope. English only."
+              ? "Corrects near-miss spellings of your dictionary words, like Tematope for Temitope."
               : "Needs Dictionary Replacements."
           }
         />
@@ -101,28 +78,45 @@ export default function TextSettings() {
         />
       </Section>
 
-      <Section title="Personal Memory" desc="Add and edit entries on the Memory page.">
-        <ToggleRow k="dictionary_enabled" label="Dictionary Replacements" hint="Replaces what you said with how you want it written, as you dictate." />
-        <ToggleRow k="snippets_enabled" label="Snippet Expansions" hint="Say a trigger phrase and Orttaai types its full text." />
+      <Section title="Voice Editing">
         <ToggleRow
-          k="ai_suggestions"
-          label="Prefer Local AI for Suggestions"
-          hint="Analyze History asks your local model for dictionary words and snippets, and falls back to the built-in analyzer."
+          k="edit_commands_enabled"
+          label="Edit Selection with Voice"
+          hint="Select text, press the edit shortcut, and say how to change it, like “make this more formal”. Uses the polish model set in Model › AI Features."
         />
-        <ToggleRow
-          k="learn_from_edits"
-          disabled={!editsSupported}
-          label={
-            <>
-              Learn from My Edits <Badge tone="neutral">Windows only</Badge>
-            </>
-          }
+        {settings.edit_commands_enabled && (
+          <Row label="Edit Shortcut">
+            <ShortcutRecorder
+              plain
+              value={settings.edit_shortcut}
+              other={settings.push_to_talk}
+              onChange={(c) => save({ edit_shortcut: c })}
+            />
+          </Row>
+        )}
+      </Section>
+
+      {/* Desktop only: the Mac has no writing style or preview. */}
+      <Section title="Style" desc="How much Orttaai tidies what you say before it types it.">
+        <Row
+          label="Writing Style"
           hint={
-            editsSupported
-              ? "When you fix a misheard name right after dictating it, Orttaai suggests it as a dictionary word. Only the word pair is kept; password fields are never read."
-              : "Needs Windows UI Automation to read the text box you dictated into."
+            needsPolish
+              ? `${STYLE_HINT[settings.style_mode]} Turn on Polish in Model › AI Features to apply it; until then dictation reads as Clean.`
+              : STYLE_HINT[settings.style_mode]
           }
-        />
+        >
+          <Segmented<StyleMode>
+            value={settings.style_mode}
+            options={[
+              { value: "raw", label: "Raw" },
+              { value: "clean", label: "Clean" },
+              { value: "formal", label: "Formal" },
+              { value: "casual", label: "Casual" },
+            ]}
+            onChange={(v) => save({ style_mode: v })}
+          />
+        </Row>
       </Section>
 
       <Section title="Try It" desc="Type what you might say. The right side shows what Orttaai would type with these settings and your memory.">
@@ -205,7 +199,7 @@ function TryIt({ settings }: { settings: Settings }) {
         <div className="tp-note">
           {settings.polish_enabled
             ? "Polish then rewrites this in the chosen style; the preview shows the text before Polish."
-            : "Formal and Casual are applied by Polish, which is off. Turn it on in AI Features."}
+            : "Formal and Casual are applied by Polish, which is off. Turn it on in Model › AI Features."}
         </div>
       )}
     </>

@@ -5,7 +5,7 @@ These are realities of the underlying operating systems, isolated behind the `Te
 ## 1. Secure / password-field detection — solved on Windows, not on Linux
 **Windows:** detected via UI Automation (`IUIAutomationElement::CurrentIsPassword` on the focused element), so `is_secure_field_focused()` returns `Secure`/`NotSecure`; the coordinator blocks password fields automatically, and voice edit never reads a password field's selection.
 **Linux:** no reliable system-level equivalent (AT-SPI2 `ROLE_PASSWORD` is unreliable and unavailable to sandboxed apps; nothing at all on Wayland), so the trait returns `SecureFieldStatus::Unknown`.
-**Product handling:** "Never type into password fields" (`strict_secure`) makes the coordinator refuse to type — and voice edit refuse to read a selection — whenever the field can't be confirmed safe. It's off by default (on Linux every field is `Unknown`, so enabling it blocks all typing; transcripts are still saved and left on the clipboard).
+**Product handling:** "Never type into password fields" (`strict_secure`) makes the coordinator refuse to type — and voice edit refuse to read a selection — whenever the field can't be confirmed safe. It's off by default (on Linux every field is `Unknown`, so enabling it blocks all typing; those dictations are still saved to History and left on the clipboard). A field known to be a password keeps nothing, where the Mac still saves it to History.
 
 ## 2. Wayland global shortcuts — brittle
 The XDG GlobalShortcuts portal is patchy; some compositors (Sway, custom Hyprland) don't implement it, and GNOME often ignores the preferred trigger so the user assigns the key in Settings › Keyboard. Both Orttaai shortcuts (push-to-talk and edit-selection) are bound in one portal session; changing a shortcut re-binds, which may show the desktop's dialog again. Windows (`RegisterHotKey`) and X11 (`XGrabKey`) are solid.
@@ -16,7 +16,7 @@ GNOME/Mutter does not reliably keep an always-on-top `focusable:false` window ou
 
 ## 4. Typing, pasting and the clipboard
 - **Wayland typing** goes through the RemoteDesktop portal (GNOME/KDE; the user approves once, a restore token avoids re-prompts) or `wtype` (wlroots). GNOME has no virtual-keyboard protocol, so `wtype` alone can't type there.
-- **Paste mode** stages the text, sends Ctrl+V (Shift+Insert for terminals, where Ctrl+V is "literal next"), then restores the clipboard after 250 ms (150 ms in Low Latency Mode). The Mac verifies the paste through Accessibility before restoring after 90 ms; desktop platforms have no such read-back, so the delay is longer to let apps that fetch the selection asynchronously read it.
+- **Paste mode** stages the text, sends Ctrl+V (Shift+Insert for terminals, where Ctrl+V is "literal next"; on Linux, Shift+Insert pastes the PRIMARY selection, so that is staged and restored too), then restores the clipboard after 250 ms (150 ms in Low Latency Mode). The Mac verifies the paste through Accessibility before restoring after 90 ms; desktop platforms have no such read-back, so the delay is longer to let apps that fetch the selection asynchronously read it.
 - **Rich clipboard loss:** only plain text is saved and restored (images/files on the clipboard are cleared by a paste). On native Wayland the clipboard goes through `wl-copy`/`wl-paste` (`wl-clipboard`); without it, XWayland's clipboard is used, which native Wayland apps may not share.
 - Some X11 apps reject synthetic events (`XKeyEvent.synthetic`); apps running as Administrator on Windows ignore input from non-elevated apps.
 
@@ -35,6 +35,9 @@ macOS uses the Apple Neural Engine via Core ML. CPU-only transcription is ~2–4
 
 ## 9. Voice activity detection
 The Mac's Silero runs as a 256 ms streaming Core ML model. Here Silero v5 runs through whisper.cpp (`ggml-silero-v5.1.2.bin`, downloaded on first use and checksum-verified), which scores 32 ms windows and resets its state per call; Orttaai feeds ~1 s of context and calls a 256 ms chunk speech when ≥ 64 ms of it is voiced. Until the model is present (or if it fails mid-recording), hands-free auto-stop uses the Mac's adaptive-loudness policy.
+
+## Window chrome
+The main window draws its own title strip, as the Mac's does (an undecorated window with minimize, maximize and close at the top right; the strip and sidebar header drag the window). Setup uses a normal decorated window, like the Mac's "Orttaai Setup" window.
 
 ## Lesser deltas
 - Tray needs a user-installed extension on GNOME.

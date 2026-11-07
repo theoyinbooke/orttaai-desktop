@@ -1,8 +1,8 @@
 // Memory Graph (Mac SemanticMemoryView): Activity · Map · Insights over the
 // user's own dictations. Owned by the semantic area.
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as RMouseEvent, type PointerEvent as RPointerEvent, type ReactNode } from "react";
 import "../styles/semantic.css";
-import { Button, ConfirmDialog, Icon, IconButton, PageHeader, Segmented, Spinner, Tabs, useToast } from "../ui";
+import { Button, ConfirmDialog, Icon, PageHeader, Spinner, useToast } from "../ui";
 import { useSettings, type Settings } from "../lib/settings";
 import { useEvent } from "../lib/api";
 import {
@@ -44,8 +44,17 @@ import {
 
 /* ---------------------------------------------------------------- helpers -- */
 
+/** SF Symbol stand-ins the shared glyph set doesn't have. */
+const PAGE_GLYPHS: Record<string, string> = {
+  chatPair: "M3 4h11v7H7l-3 3v-3H3V4ZM17 8h4v8h-1v3l-3-3h-6v-2",
+  bubble: "M4 5h16v11H9l-5 4V5Z",
+  alignLeft: "M4 6h16M4 10h10M4 14h16M4 18h10",
+  alertCircle: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 7.5v5.5M12 16.5h.01",
+  staleCycle: "M4 12a8 8 0 0 1 14-5.3M20 4v5h-5M20 12a8 8 0 0 1-14 5.3M4 20v-5h5M12 8.5v4M12 15.5h.01",
+};
+
 export function Glyph({ name, size = 16, className }: { name: string; size?: number; className?: string }) {
-  const d = GLYPHS[name];
+  const d = PAGE_GLYPHS[name] ?? GLYPHS[name];
   if (!d) return <Icon name={name} size={size} className={className} />;
   return (
     <svg
@@ -91,7 +100,7 @@ function useStored<T extends string>(key: string, initial: T, allowed: readonly 
 function Hint({ text }: { text: string }) {
   return (
     <span className="sm-hint" tabIndex={0} data-tip={text} aria-label={text}>
-      <Icon name="info" size={13} />
+      <Icon name="infoCircle" size={11} />
     </span>
   );
 }
@@ -116,7 +125,7 @@ const ACTIVITY_COLOR: Record<WorkActivity, string> = {
   communicating: "var(--sm-pink)",
   setup: "var(--sm-gray)",
   reviewing: "var(--sm-mint)",
-  other: "var(--faint)",
+  other: "var(--sm-tertiary)",
 };
 const ACTIVITY_GLYPH: Record<WorkActivity, string> = {
   building: "hammer",
@@ -159,115 +168,134 @@ const HIGHLIGHT_GLYPH: Record<HighlightKind, string> = {
 };
 
 function themeColor(themeId: string | null, graph: ConceptGraph) {
-  if (!themeId) return "var(--faint)";
+  if (!themeId) return "var(--sm-tertiary)";
   const i = graph.themes.findIndex((t) => t.id === themeId);
-  return i < 0 ? "var(--faint)" : THEME_PALETTE[i % THEME_PALETTE.length];
+  return i < 0 ? "var(--sm-tertiary)" : THEME_PALETTE[i % THEME_PALETTE.length];
 }
 
 const TABS = ["activity", "map", "insights"] as const;
 type TabId = (typeof TABS)[number];
+const TAB_ITEMS: { value: TabId; label: string; glyph: string }[] = [
+  { value: "activity", label: "Activity", glyph: "activity" },
+  { value: "map", label: "Map", glyph: "connected" },
+  { value: "insights", label: "Insights", glyph: "bulb" },
+];
 const RANGE_VALUES = RANGES.map((r) => r.value);
 
 /* ------------------------------------------------------------------ page --- */
 
 export default function MemoryGraph() {
   const { settings, patch } = useSettings();
-  const toast = useToast();
   const enabled = settings?.semantic_enabled ?? false;
   const sem = useSemanticStatus();
-  const { llm, checking, check } = useLlmStatus(enabled);
   const [tab, setTab] = useStored<TabId>("memoryGraphTab", "activity", TABS);
   const [range, setRange] = useStored<Range>("memoryGraphRange", "month", RANGE_VALUES);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  // Like the Mac, the strip reports an index you asked for, not background passes.
+  const [indexing, setIndexing] = useState(false);
+  const indexRequested = useRef(false);
 
-  // Surface the outcome of each index pass, like the Mac status strip.
   useEvent<IndexRunResult | Record<string, unknown>>("semantic-updated", (r) => {
-    if (!r || !("embedded_count" in r)) return;
+    if (!indexRequested.current || !r || !("embedded_count" in r)) return;
     const run = r as IndexRunResult;
+    indexRequested.current = false;
+    setIndexing(false);
     if (run.error_message && run.embedded_count === 0) setMessage({ tone: "error", text: run.error_message });
-    else if (run.source_count > 0) {
+    else {
       const fallback = run.used_fallback ? " using lexical fallback" : "";
-      setMessage({
-        tone: "ok",
-        text: `Indexed ${plural(run.embedded_count, "new chunk")} with ${run.model_id}${fallback}.`,
-      });
+      setMessage({ tone: "ok", text: `Indexed ${plural(run.embedded_count, "new chunk")} with ${run.model_id}${fallback}.` });
     }
   });
 
-  const enable = () =>
-    patch({ semantic_enabled: true, semantic_auto_index: true })
-      .then(() => {
-        toast("Semantic memory is on. Indexing your dictations…", "success");
+  // Semantic memory ships off here (it's on by default on the Mac), so indexing
+  // from the empty state is also what turns it on.
+  const indexNow = () => {
+    indexRequested.current = true;
+    setIndexing(true);
+    setMessage({ tone: "ok", text: "Building semantic memory..." });
+    (enabled ? Promise.resolve() : patch({ semantic_enabled: true, semantic_auto_index: true }))
+      .then(() => semantic.indexNow())
+      .then((pending) => {
         sem.refresh();
-        check();
+        if (pending === 0) {
+          indexRequested.current = false;
+          setIndexing(false);
+          setMessage(null);
+        }
       })
-      .catch((e) => toast(String(e), "error"));
+      .catch((e) => {
+        indexRequested.current = false;
+        setIndexing(false);
+        setMessage({ tone: "error", text: String(e) });
+      });
+  };
 
   const usesRange = tab !== "insights";
   return (
     <div className={`view sm-view ${tab === "map" ? "sm-wide" : ""}`}>
       <PageHeader
         title="Memory Graph"
-        desc="Activity, concept map and insights from your dictations."
+        leading={
+          <>
+            <AboutButton />
+            <div className="sm-tabbar" role="tablist" aria-label="Memory Graph sections">
+              {TAB_ITEMS.map((t) => (
+                <button
+                  key={t.value}
+                  role="tab"
+                  aria-selected={tab === t.value}
+                  className={`sm-tabbtn ${tab === t.value ? "active" : ""}`}
+                  onClick={() => setTab(t.value)}
+                >
+                  <Glyph name={t.glyph} size={13} />
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </>
+        }
         actions={
-          enabled && (
-            <>
-              <AboutButton status={sem.status?.index ?? null} />
-              {usesRange ? (
-                <Segmented value={range} options={RANGES} onChange={setRange} />
-              ) : (
-                <Button size="sm" icon="settings" onClick={openSettings}>
-                  AI Settings
-                </Button>
-              )}
-            </>
+          usesRange ? (
+            <div className="sm-rangepick" role="group" aria-label="Time range">
+              {RANGES.map((r) => (
+                <button key={r.value} aria-pressed={range === r.value} className={range === r.value ? "active" : ""} onClick={() => setRange(r.value)}>
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <Button size="sm" onClick={openSettings} title="Semantic memory, its index and the insight model live in Model › AI Features">
+              <Icon name="sliders" size={13} /> AI Settings
+            </Button>
           )
         }
       />
 
-      {!settings ? (
-        <div className="card sm-spinner-row">
-          <Spinner /> Loading…
-        </div>
-      ) : !enabled ? (
-        <Onboarding onEnable={enable} />
-      ) : (
-        <>
-          <div className="sm-tabs-row">
-            <Tabs
-              value={tab}
-              onChange={setTab}
-              tabs={[
-                { value: "activity", label: "Activity" },
-                { value: "map", label: "Map" },
-                { value: "insights", label: "Insights" },
-              ]}
-            />
+      <StatusStrip progress={indexing ? sem.progress : null} message={message} />
+      {tab === "activity" && <ActivityTab range={range} revision={sem.revision} activity={sem.activity} setActivity={sem.setActivity} />}
+      {tab === "map" && <MapTab range={range} revision={sem.revision} />}
+      {tab === "insights" &&
+        (settings ? (
+          <InsightsTab
+            settings={settings}
+            status={sem.status?.index ?? null}
+            progress={sem.progress}
+            running={indexing || !!sem.progress || !!sem.status?.running}
+            revision={sem.revision}
+            onMessage={setMessage}
+            onIndexNow={indexNow}
+            refreshStatus={sem.refresh}
+          />
+        ) : (
+          <div className="card sm-empty-card">
+            <Spinner /> Loading…
           </div>
-          <StatusStrip progress={sem.progress} message={message} onDismiss={() => setMessage(null)} />
-          <LlmBanner llm={llm} settings={settings} checking={checking} onRetry={check} status={sem.status?.index ?? null} />
-          {tab === "activity" && (
-            <ActivityTab range={range} revision={sem.revision} activity={sem.activity} setActivity={sem.setActivity} />
-          )}
-          {tab === "map" && <MapTab range={range} revision={sem.revision} />}
-          {tab === "insights" && (
-            <InsightsTab
-              settings={settings}
-              llm={llm}
-              status={sem.status?.index ?? null}
-              running={!!sem.progress || !!sem.status?.running}
-              revision={sem.revision}
-              onMessage={setMessage}
-              refreshStatus={sem.refresh}
-            />
-          )}
-        </>
-      )}
+        ))}
     </div>
   );
 }
 
-function AboutButton({ status }: { status: IndexStatus | null }) {
+function AboutButton() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -280,87 +308,24 @@ function AboutButton({ status }: { status: IndexStatus | null }) {
   }, [open]);
   return (
     <div className="sm-info-btn" ref={ref}>
-      <IconButton name="info" label="About Memory Graph" onClick={() => setOpen((o) => !o)} />
+      <button className="sm-info" title="About Memory Graph" aria-label="About Memory Graph" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <Icon name="infoCircle" size={12} />
+      </button>
       {open && (
         <div className="sm-popover" role="dialog">
-          <h4>Local map of your dictations</h4>
-          <div className="sm-popover-row">
-            <Glyph name="shield" size={14} />
-            Everything is computed on this computer; a local model (Ollama or LM Studio) only phrases what is found.
-          </div>
-          {status && (
-            <>
-              <div className="sm-popover-row">
-                <Glyph name="stack" size={14} />
-                {plural(status.indexed_transcription_count, "dictation")} indexed ·{" "}
-                {plural(status.embedded_chunk_count, "chunk")}
-              </div>
-              <div className="sm-popover-row">
-                <Glyph name="cpu" size={14} />
-                {status.active_model ? `Embeddings by ${status.active_model}` : "Not indexed yet"}
-                {status.using_fallback ? " (keyword fallback)" : ""}
-              </div>
-            </>
-          )}
+          Local map of your dictations.
         </div>
       )}
     </div>
   );
 }
 
-function Onboarding({ onEnable }: { onEnable: () => void }) {
-  const items = [
-    "Activity: what kind of work your dictation was, what got in the way, decisions and open questions.",
-    "Map: the people, projects and topics you talk about, how they connect, and what is rising or fading.",
-    "Insights: open loops, rhythms and patterns, each linked back to what you actually said.",
-    "Chat AI can search your dictations by meaning once they are indexed.",
-  ];
-  return (
-    <div className="card sm-onboard">
-      <div className="sm-onboard-icon">
-        <Icon name="graph" size={22} />
-      </div>
-      <div>
-        <h2>Turn on semantic memory</h2>
-        <p>
-          Orttaai can index your dictations on this computer to map what you talk about and point out patterns. Nothing
-          leaves your machine: embeddings come from your local model server, with a keyword fallback when it is off.
-        </p>
-        <ul className="sm-onboard-list">
-          {items.map((t) => (
-            <li key={t}>
-              <Glyph name="checkCircle" size={14} />
-              {t}
-            </li>
-          ))}
-        </ul>
-        <div className="sm-onboard-actions">
-          <Button variant="primary" icon="graph" onClick={onEnable}>
-            Turn On Semantic Memory
-          </Button>
-          <Button variant="ghost" icon="settings" onClick={openSettings}>
-            AI Settings
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StatusStrip({
-  progress,
-  message,
-  onDismiss,
-}: {
-  progress: IndexProgress | null;
-  message: { tone: "ok" | "error"; text: string } | null;
-  onDismiss: () => void;
-}) {
+function StatusStrip({ progress, message }: { progress: IndexProgress | null; message: { tone: "ok" | "error"; text: string } | null }) {
   if (progress) {
     const ratio = progress.total > 0 ? Math.min(1, progress.done / progress.total) : null;
     return (
-      <div className="sm-strip sm-strip-info" role="status">
-        <Spinner size={13} />
+      <div className="sm-strip sm-strip-ok" role="status">
+        <Glyph name="checkCircle" size={12} />
         <span className="sm-strip-text">{progress.message}</span>
         <span className={`sm-progress ${ratio === null ? "indeterminate" : ""}`}>
           <span style={ratio === null ? undefined : { width: `${Math.round(ratio * 100)}%` }} />
@@ -371,104 +336,10 @@ function StatusStrip({
   if (!message) return null;
   return (
     <div className={`sm-strip ${message.tone === "ok" ? "sm-strip-ok" : "sm-strip-error"}`} role="status">
-      <Icon name={message.tone === "ok" ? "check" : "alert"} size={14} />
+      {message.tone === "ok" ? <Glyph name="checkCircle" size={12} /> : <Icon name="alert" size={12} />}
       <span className="sm-strip-text">{message.text}</span>
-      <button className="icon-btn" aria-label="Dismiss" onClick={onDismiss}>
-        <Icon name="x" size={14} />
-      </button>
     </div>
   );
-}
-
-function LlmBanner({
-  llm,
-  settings,
-  checking,
-  onRetry,
-  status,
-}: {
-  llm: LlmStatus | null;
-  settings: Settings;
-  checking: boolean;
-  onRetry: () => void;
-  status: IndexStatus | null;
-}) {
-  if (!llm) return null;
-  const provider = settings.llm_provider === "lm_studio" ? "LM Studio" : "Ollama";
-  const endpoint = settings.llm_provider === "lm_studio" ? settings.lmstudio_endpoint : settings.ollama_endpoint;
-  if (!llm.reachable) {
-    return (
-      <div className="sm-banner sm-banner-warn" role="alert">
-        <Icon name="alert" size={18} />
-        <div className="sm-banner-body">
-          <div className="sm-banner-title">
-            {provider} isn't reachable at {endpoint}
-          </div>
-          <div className="sm-banner-text">
-            Activity and the map still work from your wording.
-            {settings.semantic_keyword_fallback
-              ? " New dictations are indexed with the keyword fallback until it is back."
-              : " Indexing waits until it is back."}
-          </div>
-        </div>
-        <div className="sm-banner-actions">
-          <Button size="sm" icon="refresh" loading={checking} onClick={onRetry}>
-            Retry
-          </Button>
-          <Button size="sm" icon="settings" onClick={openSettings}>
-            Settings
-          </Button>
-        </div>
-      </div>
-    );
-  }
-  if (!llm.embedding_model_installed) {
-    const model = settings.semantic_embedding_model || "all-minilm";
-    return (
-      <div className="sm-banner sm-banner-warn">
-        <Icon name="alert" size={18} />
-        <div className="sm-banner-body">
-          <div className="sm-banner-title">
-            The embedding model {model} isn't installed in {provider}
-          </div>
-          <div className="sm-banner-text">
-            {settings.llm_provider === "ollama" ? (
-              <>
-                Run <code className="mono">ollama pull {model}</code>, or pick one of your models in Settings.
-              </>
-            ) : (
-              <>Load an embedding model in LM Studio, or pick one of your models in Settings.</>
-            )}
-            {llm.embedding_models.length > 0 && ` Installed: ${llm.embedding_models.slice(0, 4).join(", ")}.`}
-          </div>
-        </div>
-        <div className="sm-banner-actions">
-          <Button size="sm" icon="refresh" loading={checking} onClick={onRetry}>
-            Check Again
-          </Button>
-        </div>
-      </div>
-    );
-  }
-  if (status?.using_fallback) {
-    return (
-      <div className="sm-banner sm-banner-accent">
-        <Icon name="info" size={18} />
-        <div className="sm-banner-body">
-          <div className="sm-banner-title">{provider} is back</div>
-          <div className="sm-banner-text">
-            Your index used the keyword fallback while it was away. Index now to re-embed with {status.configured_model}.
-          </div>
-        </div>
-        <div className="sm-banner-actions">
-          <Button size="sm" icon="refresh" onClick={() => semantic.indexNow()}>
-            Index Now
-          </Button>
-        </div>
-      </div>
-    );
-  }
-  return null;
 }
 
 /* -------------------------------------------------------------- activity --- */
@@ -517,12 +388,7 @@ function ActivityTab({
   }, [range, activity?.state, setActivity]);
 
   if (error) {
-    return (
-      <div className="sm-banner sm-banner-warn">
-        <Icon name="alert" size={18} />
-        <div className="sm-banner-body">{error}</div>
-      </div>
-    );
+    return <div className="sm-notice">{error}</div>;
   }
   if (!report || (loading && report.session_count === 0)) {
     return (
@@ -555,9 +421,9 @@ function AnalysisStatus({
   switch (state) {
     case "checking":
       return (
-        <>
-          <Spinner size={12} /> Checking local AI…
-        </>
+        <span className="sm-status-text">
+          <Spinner size={11} /> Checking local AI…
+        </span>
       );
     case "running":
       return (
@@ -565,41 +431,41 @@ function AnalysisStatus({
           <span className="sm-progress">
             <span style={{ width: `${Math.round(((activity?.done ?? 0) / Math.max(1, activity?.total ?? 1)) * 100)}%` }} />
           </span>
-          <span className="mono">
+          <span className="sm-status-text sm-tnum" title={`Reading with ${activity?.model ?? "your local model"}, on this computer. Pauses while you dictate.`}>
             Reading {activity?.done ?? 0} of {activity?.total ?? 0}
           </span>
-          <button className="sm-link" onClick={() => semantic.activityStop().then(setActivity)}>
+          <button className="sm-ghost-btn" onClick={() => semantic.activityStop().then(setActivity)}>
             Stop
           </button>
         </>
       );
     case "paused":
       return (
-        <>
+        <span className="sm-status-text">
           Paused while you dictate · {activity?.done ?? 0} of {activity?.total ?? 0}
-        </>
+        </span>
       );
     case "finished":
       return (
-        <span className="sm-chip sm-chip-ok">
+        <span className="sm-status-chip ok" title="Every session in this range has been read by your local model.">
           <Glyph name="checkCircle" size={12} /> Read by {activity?.model}
         </span>
       );
     case "unavailable":
       return (
         <>
-          <span className="sm-chip sm-chip-warn" title={activity?.message ?? ""}>
-            <Icon name="alert" size={12} /> Local AI off
+          <span className="sm-status-chip warn" title={activity?.message ?? ""}>
+            <Glyph name="alertCircle" size={12} /> Local AI off
           </span>
-          <button className="sm-link" onClick={start} title={activity?.message ?? ""}>
+          <Button size="sm" onClick={start} title={activity?.message ?? ""}>
             Try Again
-          </button>
+          </Button>
         </>
       );
     default:
       return (
-        <Button size="sm" onClick={start}>
-          <Glyph name="cpu" size={14} /> Read with local AI
+        <Button size="sm" onClick={start} title="A local model reads each working session once. Nothing leaves your computer.">
+          <Glyph name="cpu" size={13} /> Read with local AI
         </Button>
       );
   }
@@ -608,7 +474,7 @@ function AnalysisStatus({
 function ChangeLabel({ change }: { change: number | null }) {
   if (change === null || Math.abs(change) < 3) return <span className="sm-change" />;
   return (
-    <span className={`sm-change ${change > 0 ? "up" : "down"}`}>
+    <span className={`sm-change ${change > 0 ? "up" : "down"}`} title={`${change > 0 ? "Up" : "Down"} ${Math.abs(change)} points from the period before`}>
       {change > 0 ? "↑" : "↓"}
       {Math.abs(change)}
     </span>
@@ -663,14 +529,18 @@ function ActivityContent({
         <div className="sm-summary-foot">
           {report.model_analyzed_count < report.session_count && (
             <span className="sm-note">
-              <Icon name="info" size={13} />
+              <Icon name="infoCircle" size={12} />
               {report.model_analyzed_count === 0
                 ? "Estimated from your wording until local AI reads these sessions."
                 : `${report.model_analyzed_count} of ${report.session_count} sessions read by local AI; the rest are estimated.`}
             </span>
           )}
-          <Button size="sm" onClick={() => askChat(summaryQuestion)}>
-            <Glyph name="chat" size={14} /> Ask Chat AI
+          <Button
+            size="sm"
+            onClick={() => askChat(summaryQuestion)}
+            title="Open Chat AI with a summary of this range: projects, decisions, what's open and what got in the way"
+          >
+            <Glyph name="chatPair" size={13} /> Ask Chat AI
           </Button>
         </div>
       </div>
@@ -683,7 +553,7 @@ function ActivityContent({
           />
           <div className="sm-stackbar" role="img" aria-label="Share of sessions by kind of work">
             {shares.map((s) => (
-              <span key={s.activity} style={{ flex: s.share, background: ACTIVITY_COLOR[s.activity] }} title={`${s.title} ${pct(s.share)}`} />
+              <span key={s.activity} style={{ flexGrow: s.share, background: ACTIVITY_COLOR[s.activity] }} title={`${s.title} ${pct(s.share)}`} />
             ))}
           </div>
           <div className="sm-key">
@@ -699,11 +569,11 @@ function ActivityContent({
           />
           {report.frictions.length === 0 ? (
             <div className="sm-quote">
-              <Glyph name="checkCircle" size={14} /> Nothing got in the way in this range.
+              <Glyph name="checkCircle" size={12} /> Nothing got in the way in this range.
             </div>
           ) : (
             <>
-              <div className="sm-friction-sub">
+              <div className={`sm-friction-sub ${report.friction_rate >= 0.3 ? "warn" : ""}`}>
                 {snagged} of {report.session_count} sessions hit a snag
               </div>
               <div className="sm-friction-list">
@@ -713,7 +583,11 @@ function ActivityContent({
                       <span>{g.title}</span>
                       <span>{plural(g.sessions, "session")}</span>
                     </div>
-                    {g.examples[0] && <div className="sm-friction-example">“{g.examples[0].text}”</div>}
+                    {g.examples[0] && (
+                      <div className="sm-friction-example" title={g.examples.map((x) => x.text).join("\n")}>
+                        “{g.examples[0].text}”
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -736,11 +610,9 @@ function ActivityContent({
                 </div>
                 <div className="sm-project-row">
                   {p.activities.map((a) => (
-                    <span className="sm-chip" key={a.activity}>
-                      <span style={{ color: ACTIVITY_COLOR[a.activity], display: "inline-flex" }}>
-                        <Glyph name={ACTIVITY_GLYPH[a.activity]} size={12} />
-                      </span>
-                      {a.title} <strong>{pct(a.share)}</strong>
+                    <span className="sm-work-chip" key={a.activity} style={{ "--tint": ACTIVITY_COLOR[a.activity] } as CSSVars}>
+                      <Glyph name={ACTIVITY_GLYPH[a.activity]} size={11} />
+                      {a.title} {pct(a.share)}
                     </span>
                   ))}
                 </div>
@@ -748,7 +620,7 @@ function ActivityContent({
                   <div className="sm-project-foot">
                     {p.latest_goal && <span>Latest: {p.latest_goal}</span>}
                     {p.friction_sessions > 0 && (
-                      <span>
+                      <span className="warn">
                         Friction in {p.friction_sessions}, mostly {midSentence(p.top_friction_title ?? "Other")}
                       </span>
                     )}
@@ -793,11 +665,15 @@ function midSentence(title: string) {
     .join(" ");
 }
 
+/** Inline custom properties, for the tinted chips and tiles. */
+type CSSVars = CSSProperties & Record<`--${string}`, string>;
+
+/** One line, built like the stat rows on the Overview's Today card. */
 function Stat({ glyph, value, label, tint = "var(--accent)" }: { glyph: string; value: string; label: string; tint?: string }) {
   return (
-    <div className="sm-stat">
-      <span style={{ color: tint, display: "inline-flex" }}>
-        <Glyph name={glyph} size={15} />
+    <div className="sm-stat" aria-label={`${value} ${label}`}>
+      <span className="sm-stat-tile" style={{ "--tint": tint } as CSSVars}>
+        <Glyph name={glyph} size={12} />
       </span>
       <span className="sm-stat-value">{value}</span>
       <span className="sm-stat-label">{label}</span>
@@ -808,8 +684,8 @@ function Stat({ glyph, value, label, tint = "var(--accent)" }: { glyph: string; 
 function ShareRow({ share }: { share: ActivityShare }) {
   return (
     <div className="sm-key-row">
-      <span style={{ color: ACTIVITY_COLOR[share.activity], display: "inline-flex" }}>
-        <Glyph name={ACTIVITY_GLYPH[share.activity]} size={14} />
+      <span style={{ color: ACTIVITY_COLOR[share.activity], display: "inline-flex", justifyContent: "center" }}>
+        <Glyph name={ACTIVITY_GLYPH[share.activity]} size={12} />
       </span>
       <span>{share.title}</span>
       <span className="sm-key-num">{plural(share.sessions, "session")}</span>
@@ -842,23 +718,25 @@ function NotesCard({
     <div className="card sm-card">
       <CardHead title={title} info={info} count={notes.length} />
       {notes.length === 0 ? (
-        <div className="sm-quote">{empty}</div>
+        <div className="sm-quote sm-quote-empty">{empty}</div>
       ) : (
         <div className="sm-notes">
           {notes.slice(0, 5).map((n) => (
             <div className="sm-note-row" key={n.id}>
-              <Glyph name={glyph} size={14} />
+              <Glyph name={glyph} size={12} />
               <div>
-                <div className="sm-note-text">{n.text}</div>
+                <div className="sm-note-text" title={n.text}>
+                  {n.text}
+                </div>
                 <div className="sm-note-caption">
                   {noteCaption(n)}
                   {n.is_estimate ? " · estimated" : ""}
                 </div>
               </div>
               {onAsk ? (
-                <Button size="sm" onClick={() => onAsk(n)}>
-                  <Glyph name="chat" size={13} /> Ask
-                </Button>
+                <button className="sm-ghost-btn" onClick={() => onAsk(n)} title="Ask Chat AI to help with this">
+                  <Glyph name="bubble" size={12} /> Ask
+                </button>
               ) : (
                 <span />
               )}
@@ -940,16 +818,16 @@ function MapTab({ range, revision }: { range: Range; revision: number }) {
   return (
     <>
       <div className="sm-controls">
-        <Segmented value={kind} options={KIND_FILTERS.map((k) => ({ value: k.value, label: k.label }))} onChange={setKind} />
+        <div className="sm-show" role="group" aria-label="Show">
+          {KIND_FILTERS.map((k) => (
+            <button key={k.value} aria-pressed={kind === k.value} className={kind === k.value ? "active" : ""} onClick={() => setKind(k.value)}>
+              {k.label}
+            </button>
+          ))}
+        </div>
         <label className="sm-search">
-          <Icon name="search" size={14} />
-          <input
-            className="text-input"
-            placeholder="Search concepts"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            aria-label="Search concepts"
-          />
+          <Icon name="search" size={12} />
+          <input placeholder="Search concepts" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search concepts" />
         </label>
         {graph && graph.nodes.length > 0 && (
           <span className="sm-controls-count">
@@ -959,10 +837,7 @@ function MapTab({ range, revision }: { range: Range; revision: number }) {
       </div>
 
       {error ? (
-        <div className="sm-banner sm-banner-warn">
-          <Icon name="alert" size={18} />
-          <div className="sm-banner-body">{error}</div>
-        </div>
+        <div className="sm-notice">{error}</div>
       ) : !graph ? (
         <div className="card sm-empty-card">
           {extraction ? (
@@ -970,7 +845,7 @@ function MapTab({ range, revision }: { range: Range; revision: number }) {
               <span className="sm-progress">
                 <span style={{ width: `${Math.round((extraction.done / Math.max(1, extraction.total)) * 100)}%` }} />
               </span>
-              <span className="mono">
+              <span className="sm-tnum">
                 Reading your dictations for the first time · {extraction.done} of {extraction.total}
               </span>
             </>
@@ -981,10 +856,8 @@ function MapTab({ range, revision }: { range: Range; revision: number }) {
           )}
         </div>
       ) : graph.nodes.length === 0 ? (
-        <div className="card sm-empty-card">
-          {debounced
-            ? `Nothing on the map matches “${debounced}”.`
-            : "Not enough dictation in this range to map yet. Pick a longer range."}
+        <div className="card sm-empty-card sm-quote-empty">
+          {debounced ? `Nothing on the map matches “${debounced}”.` : "Not enough dictation in this range to map yet. Pick a longer range."}
         </div>
       ) : (
         <>
@@ -1001,7 +874,7 @@ function MapTab({ range, revision }: { range: Range; revision: number }) {
                   }}
                 >
                   <span className="sm-highlight-title">
-                    <Glyph name={HIGHLIGHT_GLYPH[h.kind]} size={14} />
+                    <Glyph name={HIGHLIGHT_GLYPH[h.kind]} size={12} />
                     {h.title}
                   </span>
                   <span className="sm-highlight-detail">{h.detail}</span>
@@ -1010,7 +883,7 @@ function MapTab({ range, revision }: { range: Range; revision: number }) {
             </div>
           )}
           <div className="card sm-map">
-            <div style={{ position: "relative", minHeight: 0 }}>
+            <div className="sm-map-stage">
               {model && (
                 <ConceptCanvas model={model} selected={selected} onSelect={setSelected} highlighted={highlighted} />
               )}
@@ -1132,8 +1005,10 @@ function ConceptDetailPanel({
       <div className="sm-detail-top">
         <span className="sm-dot" style={{ background: KIND_COLOR[node.kind] }} />
         {node.kind_label}
-        {node.trend_label && <span className="sm-chip sm-chip-accent">{node.trend_label}</span>}
-        <IconButton name="x" label="Back to themes" onClick={() => onSelect(null)} />
+        {node.trend_label && <span className={`sm-trend ${node.trend === "fading" ? "fading" : ""}`}>{node.trend_label}</span>}
+        <button className="sm-detail-close" title="Back to themes" aria-label="Close" onClick={() => onSelect(null)}>
+          <Glyph name="x" size={10} />
+        </button>
       </div>
       <div>
         <div className="sm-detail-title">{node.title}</div>
@@ -1145,7 +1020,7 @@ function ConceptDetailPanel({
       {node.apps.length > 0 && (
         <div>
           <div className="sm-section-label">WHERE IT COMES UP</div>
-          <div className="small">
+          <div className="sm-detail-apps">
             {node.apps
               .slice(0, 3)
               .map((a) => `${a.app_name} ${pct(a.share)}`)
@@ -1194,7 +1069,7 @@ function ConceptDetailPanel({
               onClick={writeBrief}
               title="A local model reads your recent mentions and says what this is to you. Nothing leaves your computer."
             >
-              <Glyph name="quote" size={13} /> {writing ? "Summarizing…" : "Summarize with local AI"}
+              <Glyph name="alignLeft" size={13} /> {writing ? "Summarizing…" : "Summarize with local AI"}
             </Button>
             {briefError && <div className="sm-brief-error">{briefError}</div>}
           </>
@@ -1411,7 +1286,7 @@ function ConceptCanvas({
   // Labels: focus first, then the biggest; skip any that would overlap.
   const labelled = new Set([...layout.nodes].sort((a, b) => b.size - a.size).slice(0, labelBudget).map((n) => n.id));
   const placed: { x: number; y: number; w: number; h: number }[] = [];
-  const labels: { id: string; x: number; y: number; text: string; size: number; dim: boolean }[] = [];
+  const labels: { id: string; x: number; y: number; text: string; size: number; dim: boolean; strong: boolean }[] = [];
   const candidates = [...layout.nodes].sort((a, b) => {
     const fa = a.id === focusId ? 1 : 0;
     const fb = b.id === focusId ? 1 : 0;
@@ -1424,18 +1299,36 @@ function ConceptCanvas({
     const p = project(n.x, n.y);
     const fs = isFocus ? 12.5 : Math.max(10, Math.min(12.5, 10 + view.scale * 1.2));
     const w = n.title.length * fs * 0.56 + 6;
-    const rect = { x: p.x - w / 2, y: p.y + radius(n.r) + 2, w, h: fs + 4 };
+    const rect = { x: p.x - w / 2, y: p.y + radius(n.r) + 6, w, h: fs + 4 };
     if (rect.x > size.w + 80 || rect.x + rect.w < -80 || rect.y > size.h + 80 || rect.y < -80) continue;
     if (!isFocus && placed.some((o) => rect.x < o.x + o.w && rect.x + rect.w > o.x && rect.y < o.y + o.h && rect.y + rect.h > o.y)) continue;
     placed.push(rect);
-    labels.push({ id: n.id, x: p.x, y: rect.y, text: n.title, size: fs, dim: !related });
+    labels.push({ id: n.id, x: p.x, y: rect.y, text: n.title, size: fs, dim: !related, strong: isFocus || n.size > 0.6 });
   }
+
+  /** The nearest node under a point, with the Mac's generous hit radius. */
+  const hitNode = (sx: number, sy: number) => {
+    let best: { id: string; distance: number } | null = null;
+    for (const n of layout.nodes) {
+      const p = project(n.x, n.y);
+      const reach = Math.max(7, Math.min(n.r * Math.pow(view.scale, 0.58), n.r * 1.8) + 4);
+      const distance = Math.hypot(sx - p.x, sy - p.y);
+      if (distance <= reach && (!best || distance < best.distance)) best = { id: n.id, distance };
+    }
+    return best?.id ?? null;
+  };
+  const localPoint = (e: { clientX: number; clientY: number }) => {
+    const rect = wrap.current!.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
 
   const onPointerDown = (e: RPointerEvent) => {
     drag.current = { x: e.clientX, y: e.clientY, panX: view.panX, panY: view.panY, moved: false };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
   const onPointerMove = (e: RPointerEvent) => {
+    const at = localPoint(e);
+    setHovered(hitNode(at.x, at.y));
     const d = drag.current;
     if (!d) return;
     const dx = e.clientX - d.x;
@@ -1450,9 +1343,19 @@ function ConceptCanvas({
     drag.current = null;
     setDragging(false);
     if (d && !d.moved) {
-      const target = (e.target as Element).closest?.("[data-node]");
-      const id = target?.getAttribute("data-node") ?? null;
-      onSelect(id && id === selected ? null : id);
+      const at = localPoint(e);
+      onSelect(hitNode(at.x, at.y));
+    }
+  };
+  // Double-click zooms toward a concept, or fits the map from empty space.
+  const onDoubleClick = (e: RMouseEvent) => {
+    const at = localPoint(e);
+    const id = hitNode(at.x, at.y);
+    if (id) {
+      onSelect(id);
+      zoomAround(1.55, at.x, at.y);
+    } else {
+      setView(fitViewport(layout.bounds, size.w, size.h));
     }
   };
 
@@ -1466,6 +1369,7 @@ function ConceptCanvas({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerLeave={() => setHovered(null)}
+      onDoubleClick={onDoubleClick}
     >
       {size.w > 1 && (
         <svg role="img" aria-label="Concept map">
@@ -1487,7 +1391,7 @@ function ConceptCanvas({
                   y1={pa.y}
                   x2={pb.x}
                   y2={pb.y}
-                  style={{ strokeOpacity: opacity, strokeWidth: touches ? 1.2 + e.strength * 1.6 : 0.6 + e.strength * 1.2 }}
+                  style={{ strokeOpacity: opacity, strokeWidth: Math.max(0.6, (0.6 + e.strength * 2.4) * Math.pow(view.scale, 0.3)) }}
                 />
               );
             })}
@@ -1498,16 +1402,19 @@ function ConceptCanvas({
               .map((n) => {
                 const p = project(n.x, n.y);
                 const related = focus.size === 0 || focus.has(n.id);
+                const isFocus = n.id === focusId;
+                const color = colorById.get(n.id) ?? n.color;
+                const r = radius(n.r);
                 return (
-                  <g
-                    key={n.id}
-                    data-node={n.id}
-                    className={`sm-node ${n.id === focusId ? "focus" : ""}`}
-                    onPointerEnter={() => setHovered(n.id)}
-                    onPointerLeave={() => setHovered((h) => (h === n.id ? null : h))}
-                  >
+                  <g key={n.id} className="sm-node">
                     <title>{n.title}</title>
-                    <circle cx={p.x} cy={p.y} r={radius(n.r)} style={{ fill: colorById.get(n.id) ?? n.color, fillOpacity: related ? 0.92 : 0.18 }} />
+                    {isFocus && <circle cx={p.x} cy={p.y} r={r + 7} style={{ fill: color, fillOpacity: 0.2 }} />}
+                    <circle
+                      cx={p.x}
+                      cy={p.y}
+                      r={r}
+                      style={{ fill: color, fillOpacity: related ? 0.92 : 0.18, stroke: "#fff", strokeOpacity: isFocus ? 0.7 : 0.14, strokeWidth: isFocus ? 1.6 : 1 }}
+                    />
                   </g>
                 );
               })}
@@ -1521,7 +1428,7 @@ function ConceptCanvas({
                 y={l.y}
                 textAnchor="middle"
                 dominantBaseline="hanging"
-                style={{ fontSize: l.size, fontWeight: l.id === focusId ? 650 : 500 }}
+                style={{ fontSize: l.size, fontWeight: l.strong ? 600 : 500 }}
               >
                 {l.text}
               </text>
@@ -1529,15 +1436,15 @@ function ConceptCanvas({
           </g>
         </svg>
       )}
-      <div className="sm-canvas-tools" onPointerDown={(e) => e.stopPropagation()}>
+      <div className="sm-canvas-tools" onPointerDown={(e) => e.stopPropagation()} onPointerUp={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
         <button title="Zoom out" aria-label="Zoom out" onClick={() => zoomAround(0.78, center().x, center().y)}>
-          <Glyph name="zoomOut" size={14} />
+          <Glyph name="zoomOut" size={13} />
         </button>
         <button title="Zoom in" aria-label="Zoom in" onClick={() => zoomAround(1.28, center().x, center().y)}>
-          <Glyph name="zoomIn" size={14} />
+          <Glyph name="zoomIn" size={13} />
         </button>
         <button title="Fit the map" aria-label="Fit the map" onClick={() => setView(fitViewport(layout.bounds, size.w, size.h))}>
-          <Glyph name="fit" size={14} />
+          <Glyph name="fit" size={13} />
         </button>
       </div>
     </div>
@@ -1548,19 +1455,21 @@ function ConceptCanvas({
 
 function InsightsTab({
   settings,
-  llm,
   status,
+  progress,
   running,
   revision,
   onMessage,
+  onIndexNow,
   refreshStatus,
 }: {
   settings: Settings;
-  llm: LlmStatus | null;
   status: IndexStatus | null;
+  progress: IndexProgress | null;
   running: boolean;
   revision: number;
   onMessage: (m: { tone: "ok" | "error"; text: string } | null) => void;
+  onIndexNow: () => void;
   refreshStatus: () => void;
 }) {
   const [stored, setStored] = useState<StoredReport | null | undefined>(undefined);
@@ -1568,6 +1477,7 @@ function InsightsTab({
   const [findings, setFindings] = useState<InsightFinding[]>([]);
   const [signals, setSignals] = useState<SignalsOverview | null>(null);
   const [generating, setGenerating] = useState(false);
+  const { llm, checking, check } = useLlmStatus(settings.semantic_enabled);
   const toast = useToast();
 
   const load = useCallback(() => {
@@ -1597,27 +1507,26 @@ function InsightsTab({
           onMessage({ tone: "ok", text: `Generated ${plural(n, "graph insight")} with ${r.summary_model_name}.` });
         else {
           const reason = r.coverage_notes.find((c) => c.startsWith("Local model fallback:"));
-          onMessage({ tone: reason ? "error" : "ok", text: reason ?? `Generated ${plural(n, "heuristic graph insight")}.` });
+          onMessage({ tone: "ok", text: reason ?? `Generated ${plural(n, "heuristic graph insight")}.` });
         }
       })
       .catch((e) => onMessage({ tone: "error", text: String(e) }))
       .finally(() => setGenerating(false));
   };
 
-  const setStatus = (f: InsightFinding, s: "resolved" | "dismissed") =>
+  const setLoopStatus = (f: InsightFinding, s: "resolved" | "dismissed") =>
     semantic
       .setFindingStatus(f.id, s)
       .then(() => {
         setLoops((ls) => ls.filter((x) => x.id !== f.id));
         setFindings((fs) => fs.filter((x) => x.id !== f.id));
-        toast(s === "resolved" ? "Marked as done." : "Dismissed.", "success");
       })
       .catch((e) => toast(String(e), "error"));
 
   const modelLine = (
     <span className="sm-model-line">
-      <Glyph name="cpu" size={13} />
-      {phrased ? `Phrased by ${model} on ${providerName}` : "Plain phrasing, no model"}
+      <Glyph name="cpu" size={12} />
+      <span>{phrased ? `Phrased by ${model} on ${providerName}` : "Plain phrasing, no model"}</span>
       <button className="sm-link" onClick={openSettings}>
         Change
       </button>
@@ -1626,14 +1535,14 @@ function InsightsTab({
 
   const graphEmpty = (status?.node_count ?? 0) === 0;
   const report = stored?.report;
+  const patterns = findings.filter((f) => f.kind !== "open_commitment" && f.kind !== "open_question");
   return (
     <>
-      <SemanticIndexCard status={status} running={running} llm={llm} onChanged={refreshStatus} />
       {graphEmpty ? (
         <div className="card sm-ready">
           <div className="sm-ready-head">
             <div className="sm-icon-tile">
-              <Glyph name="brain" size={20} />
+              <Glyph name="brain" size={18} />
             </div>
             <div>
               <h2>Your memory graph is still empty</h2>
@@ -1641,37 +1550,30 @@ function InsightsTab({
             </div>
           </div>
           <div className="sm-ready-foot">
-            <Button variant="primary" icon="refresh" loading={running} onClick={() => semantic.indexNow().then(refreshStatus)}>
-              {running ? "Indexing…" : "Index Now"}
+            <Button variant="primary" disabled={running} onClick={onIndexNow}>
+              <Glyph name="rotate" size={14} /> {running ? "Indexing…" : "Index Now"}
             </Button>
           </div>
         </div>
       ) : generating && !report ? (
-        <div className="card sm-spinner-row">
+        <div className="card sm-generating">
           <Spinner size={20} />
           <div>
-            <strong>Reading {plural(status?.chunk_count ?? 0, "note")} and how they connect</strong>
-            <span className="muted small">{phrased ? `${model} on ${providerName} phrases what it finds` : "Plain phrasing, no model"}</span>
+            <div className="sm-generating-title">Reading {(status?.chunk_count ?? 0).toLocaleString()} notes and how they connect</div>
+            <div className="sm-generating-sub">{phrased ? `${model} on ${providerName} phrases what it finds` : "Plain phrasing, no model"}</div>
           </div>
         </div>
       ) : report ? (
-        <ReportView
-          stored={stored!}
-          loops={loops}
-          generating={generating}
-          onGenerate={generate}
-          onResolve={(f) => setStatus(f, "resolved")}
-          onDismiss={(f) => setStatus(f, "dismissed")}
-        />
+        <ReportView stored={stored!} loops={loops} generating={generating} onGenerate={generate} onResolve={(f) => setLoopStatus(f, "resolved")} onDismiss={(f) => setLoopStatus(f, "dismissed")} />
       ) : stored === undefined ? (
-        <div className="card sm-spinner-row">
+        <div className="card sm-empty-card">
           <Spinner /> Loading insights…
         </div>
       ) : (
         <div className="card sm-ready">
           <div className="sm-ready-head">
             <div className="sm-icon-tile">
-              <Glyph name="brain" size={20} />
+              <Glyph name="brain" size={18} />
             </div>
             <div>
               <h2>See what your notes add up to</h2>
@@ -1682,106 +1584,140 @@ function InsightsTab({
             </div>
           </div>
           <div className="sm-metrics">
-            <span className="sm-chip">
-              <strong>{(status?.chunk_count ?? 0).toLocaleString()}</strong> notes
-            </span>
-            <span className="sm-chip">
-              <strong>{(status?.node_count ?? 0).toLocaleString()}</strong> concepts
-            </span>
-            <span className="sm-chip">
-              <strong>{(status?.edge_count ?? 0).toLocaleString()}</strong> links
-            </span>
+            <Metric value={(status?.chunk_count ?? 0).toLocaleString()} label="notes" />
+            <Metric value={(status?.node_count ?? 0).toLocaleString()} label="concepts" />
+            <Metric value={(status?.edge_count ?? 0).toLocaleString()} label="links" />
           </div>
           <div className="sm-ready-foot">
             {modelLine}
-            <Button variant="primary" loading={generating} onClick={generate}>
-              <Glyph name="brain" size={15} /> Generate Insights
+            <Button variant="primary" disabled={generating} onClick={generate}>
+              <Glyph name="brain" size={14} /> {generating ? "Generating…" : "Generate Insights"}
             </Button>
           </div>
         </div>
       )}
-      {!report && !graphEmpty && (
-        <>
-          {loops.length > 0 && <OpenLoops loops={loops} onResolve={(f) => setStatus(f, "resolved")} onDismiss={(f) => setStatus(f, "dismissed")} />}
-          <FindingsList findings={findings.filter((f) => f.kind !== "open_commitment" && f.kind !== "open_question")} onDismiss={(f) => setStatus(f, "dismissed")} />
-        </>
+      {!report && !graphEmpty && loops.length + patterns.length > 0 && (
+        <Folded title="Open loops and patterns" detail={(loops.length + patterns.length).toLocaleString()}>
+          {loops.length > 0 && <OpenLoops loops={loops} onResolve={(f) => setLoopStatus(f, "resolved")} onDismiss={(f) => setLoopStatus(f, "dismissed")} />}
+          <FindingsList findings={patterns} onDismiss={(f) => setLoopStatus(f, "dismissed")} />
+        </Folded>
       )}
-      {signals && !graphEmpty && <SignalsSection signals={signals} />}
+      {signals && !graphEmpty && (
+        <Folded title="Signals" detail="last 60 days">
+          <SignalsSection signals={signals} />
+        </Folded>
+      )}
+      {settings.semantic_enabled && status && (
+        <IndexControls
+          settings={settings}
+          status={status}
+          llm={llm}
+          checking={checking}
+          onCheck={check}
+          progress={progress}
+          running={running}
+          onIndexNow={onIndexNow}
+          onChanged={refreshStatus}
+        />
+      )}
     </>
   );
 }
 
-/** Index state + Index Now / Rebuild / Clear (Mac Model › AI Features controls). */
-export function SemanticIndexCard({
+function Metric({ value, label }: { value: string | number; label: string }) {
+  return (
+    <span className="sm-metric">
+      <strong>{value}</strong> {label}
+    </span>
+  );
+}
+
+/** A folding row, for what this app has and the Mac's page doesn't. */
+function Folded({ title, detail, warn, children }: { title: string; detail: string; warn?: boolean; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="sm-index">
+      <button className="sm-index-head" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <span className={`sm-chevron ${open ? "open" : ""}`}>
+          <Icon name="chevronRight" size={10} />
+        </span>
+        <span className="sm-index-title">{title}</span>
+        <span className={`sm-index-detail ${warn ? "warn" : ""}`}>{detail}</span>
+      </button>
+      {open && children}
+    </div>
+  );
+}
+
+/** What's wrong with the local model server, in a few words; null when all is well. */
+function llmProblem(llm: LlmStatus | null, status: IndexStatus, provider: string) {
+  if (!llm) return null;
+  if (!llm.reachable) return `${provider} isn't reachable`;
+  if (!llm.embedding_model_installed) return "Embedding model isn't installed";
+  if (status.using_fallback) return `${provider} is back. Index now to re-embed`;
+  return null;
+}
+
+/**
+ * The index state and its controls, folded away. The Mac keeps these in Model ›
+ * AI Features; this app's Settings has no index controls yet, so they stay
+ * reachable here, with any local server problem named on the row itself.
+ */
+function IndexControls({
+  settings,
   status,
-  running,
   llm,
+  checking,
+  onCheck,
+  progress,
+  running,
+  onIndexNow,
   onChanged,
 }: {
-  status: IndexStatus | null;
-  running: boolean;
+  settings: Settings;
+  status: IndexStatus;
   llm: LlmStatus | null;
+  checking: boolean;
+  onCheck: () => void;
+  progress: IndexProgress | null;
+  running: boolean;
+  onIndexNow: () => void;
   onChanged: () => void;
 }) {
   const toast = useToast();
   const [confirm, setConfirm] = useState(false);
-  if (!status) return null;
-  const indexed = status.indexed_transcription_count;
-  const total = status.transcription_count;
+  const provider = settings.llm_provider === "lm_studio" ? "LM Studio" : "Ollama";
+  const problem = llmProblem(llm, status, provider);
+  const counts = `${status.indexed_transcription_count.toLocaleString()} of ${plural(status.transcription_count, "dictation")}`;
   return (
-    <div className="card sm-card">
-      <div className="sm-card-head">
-        <span className="sm-card-title">Semantic index</span>
-        <Hint text="Your dictations split into short passages and embedded on this computer, so Chat AI can search by meaning and the graph can link related notes." />
-        <span className="sm-card-count">
-          {indexed.toLocaleString()} of {plural(total, "dictation")} indexed
-        </span>
-      </div>
-      <div className="sm-metrics">
-        <span className="sm-chip">
-          <strong>{status.embedded_chunk_count.toLocaleString()}</strong> chunks
-        </span>
-        <span className="sm-chip">
-          <strong>{status.signal_count.toLocaleString()}</strong> signals
-        </span>
-        <span className={`sm-chip ${status.using_fallback ? "sm-chip-warn" : ""}`}>
-          <Glyph name="cpu" size={12} />
-          {status.active_model || status.configured_model}
-          {status.using_fallback ? " · keyword fallback" : ""}
-        </span>
-        {status.needs_reindex && <span className="sm-chip sm-chip-accent">Re-indexing for {status.configured_model}</span>}
-        {status.pending > 0 && <span className="sm-chip">{plural(status.pending, "dictation")} queued</span>}
-        {status.failed > 0 && (
-          <span className="sm-chip sm-chip-warn" title={status.last_error ?? ""}>
-            {plural(status.failed, "dictation")} failed
-          </span>
-        )}
-        {status.latest_indexed_at && <span className="sm-chip">Updated {relative(status.latest_indexed_at)}</span>}
-        {llm && !llm.reachable && <span className="sm-chip sm-chip-warn">Local model server offline</span>}
-      </div>
-      <div className="sm-index-actions">
-        <Button
-          size="sm"
-          icon="refresh"
-          loading={running}
-          onClick={() =>
-            semantic
-              .indexNow()
-              .then((n) => {
-                toast(n > 0 ? `Indexing ${plural(n, "dictation")}…` : "Everything is already indexed.", "info");
-                onChanged();
-              })
-              .catch((e) => toast(String(e), "error"))
-          }
-        >
-          {running ? "Indexing…" : "Index Now"}
-        </Button>
-        <Button size="sm" onClick={() => semantic.rebuildGraph().then(() => toast("Rebuilding the graph…", "info"))}>
-          <Glyph name="rotate" size={14} /> Rebuild Graph
-        </Button>
-        <Button size="sm" variant="ghost" icon="trash" onClick={() => setConfirm(true)} style={{ marginLeft: "auto" }}>
-          Clear Index
-        </Button>
+    <Folded title="Semantic index" detail={progress?.message ?? problem ?? counts} warn={!progress && !!problem}>
+      <LlmBanner llm={llm} settings={settings} provider={provider} checking={checking} onRetry={onCheck} status={status} onIndexNow={onIndexNow} />
+      <div className="card sm-card">
+        <div className="sm-metrics">
+          <Metric value={counts} label="indexed" />
+          <Metric value={status.embedded_chunk_count.toLocaleString()} label="chunks" />
+          <Metric value={status.signal_count.toLocaleString()} label="signals" />
+          <Metric value={status.active_model || status.configured_model} label={status.using_fallback ? "keyword fallback" : "model"} />
+          {status.needs_reindex && <Metric value="Re-indexing" label={`for ${status.configured_model}`} />}
+          {status.pending > 0 && <Metric value={status.pending.toLocaleString()} label="queued" />}
+          {status.failed > 0 && (
+            <span title={status.last_error ?? ""}>
+              <Metric value={status.failed.toLocaleString()} label="failed" />
+            </span>
+          )}
+          {status.latest_indexed_at && <Metric value={relative(status.latest_indexed_at)} label="last updated" />}
+        </div>
+        <div className="sm-index-actions">
+          <Button size="sm" disabled={running} onClick={onIndexNow}>
+            <Glyph name="rotate" size={13} /> {running ? "Indexing…" : "Index Now"}
+          </Button>
+          <Button size="sm" onClick={() => semantic.rebuildGraph().then(() => toast("Rebuilding the graph…", "info"))}>
+            <Glyph name="rotate" size={13} /> Rebuild Graph
+          </Button>
+          <Button size="sm" onClick={() => setConfirm(true)} style={{ marginLeft: "auto" }}>
+            <Icon name="trash" size={13} /> Clear Index
+          </Button>
+        </div>
       </div>
       <ConfirmDialog
         open={confirm}
@@ -1800,8 +1736,94 @@ export function SemanticIndexCard({
             .catch((e) => toast(String(e), "error"));
         }}
       />
-    </div>
+    </Folded>
   );
+}
+
+function LlmBanner({
+  llm,
+  settings,
+  provider,
+  checking,
+  onRetry,
+  status,
+  onIndexNow,
+}: {
+  llm: LlmStatus | null;
+  settings: Settings;
+  provider: string;
+  checking: boolean;
+  onRetry: () => void;
+  status: IndexStatus;
+  onIndexNow: () => void;
+}) {
+  if (!llm) return null;
+  const endpoint = settings.llm_provider === "lm_studio" ? settings.lmstudio_endpoint : settings.ollama_endpoint;
+  if (!llm.reachable) {
+    return (
+      <div className="card sm-card sm-banner" role="alert">
+        <Icon name="alert" size={14} />
+        <div className="sm-banner-body">
+          <div className="sm-section-title">
+            {provider} isn't reachable at {endpoint}
+          </div>
+          <div className="sm-fresh-text">
+            Activity and the map still work from your wording.
+            {settings.semantic_keyword_fallback
+              ? " New dictations are indexed with the keyword fallback until it is back."
+              : " Indexing waits until it is back."}
+          </div>
+        </div>
+        <Button size="sm" disabled={checking} onClick={onRetry}>
+          Retry
+        </Button>
+        <Button size="sm" onClick={openSettings}>
+          Settings
+        </Button>
+      </div>
+    );
+  }
+  if (!llm.embedding_model_installed) {
+    const model = settings.semantic_embedding_model || "all-minilm";
+    return (
+      <div className="card sm-card sm-banner">
+        <Icon name="alert" size={14} />
+        <div className="sm-banner-body">
+          <div className="sm-section-title">
+            The embedding model {model} isn't installed in {provider}
+          </div>
+          <div className="sm-fresh-text">
+            {settings.llm_provider === "ollama" ? (
+              <>
+                Run <code className="mono">ollama pull {model}</code>, or pick one of your models in Settings.
+              </>
+            ) : (
+              <>Load an embedding model in LM Studio, or pick one of your models in Settings.</>
+            )}
+            {llm.embedding_models.length > 0 && ` Installed: ${llm.embedding_models.slice(0, 4).join(", ")}.`}
+          </div>
+        </div>
+        <Button size="sm" disabled={checking} onClick={onRetry}>
+          Check Again
+        </Button>
+      </div>
+    );
+  }
+  if (status.using_fallback) {
+    return (
+      <div className="card sm-card sm-banner accent">
+        <Icon name="infoCircle" size={14} />
+        <div className="sm-banner-body">
+          <div className="sm-section-title">{provider} is back</div>
+          <div className="sm-fresh-text">Your index used the keyword fallback while it was away. Index now to re-embed with {status.configured_model}.</div>
+        </div>
+        <Button size="sm" onClick={onIndexNow}>
+          Index Now
+        </Button>
+      </div>
+    );
+  }
+  return null;
 }
 
 function ageText(f: InsightFinding) {
@@ -1827,30 +1849,29 @@ function OpenLoops({
   return (
     <div className="card sm-card">
       <div className="sm-card-head">
-        <span style={{ color: "var(--accent)", display: "inline-flex" }}>
-          <Glyph name="turn" size={15} />
+        <span style={{ color: "var(--accent)", display: "inline-flex", alignSelf: "center" }}>
+          <Glyph name="turn" size={14} />
         </span>
-        <span className="sm-card-title">Open Loops &amp; Commitments</span>
-        <span className="sm-card-count">{loops.length}</span>
+        <span className="sm-section-title">Open Loops &amp; Commitments</span>
       </div>
       <div className="sm-loops">
         {loops.map((l) => {
           const question = l.kind === "open_question";
           return (
             <div className="sm-loop" key={l.id}>
-              <span style={{ color: question ? "var(--warn)" : "var(--accent)", display: "inline-flex" }}>
-                <Glyph name={question ? "question" : "hand"} size={15} />
+              <span style={{ color: question ? "var(--warn)" : "var(--accent)", display: "inline-flex", justifyContent: "center", paddingTop: 1 }}>
+                <Glyph name={question ? "question" : "hand"} size={13} />
               </span>
               <div>
                 <div className="sm-loop-text">{l.detail}</div>
                 <div className={`sm-loop-age ${ageClass(l)}`}>{ageText(l)}</div>
               </div>
               <div className="sm-loop-actions">
-                <button className="icon-btn ok" title="Mark as done" aria-label="Mark resolved" onClick={() => onResolve(l)}>
-                  <Glyph name="checkCircle" size={16} />
+                <button className="sm-loop-btn ok" title="Mark as done" aria-label="Mark resolved" onClick={() => onResolve(l)}>
+                  <Glyph name="checkCircle" size={14} />
                 </button>
-                <button className="icon-btn" title="Dismiss" aria-label="Dismiss" onClick={() => onDismiss(l)}>
-                  <Glyph name="xCircle" size={16} />
+                <button className="sm-loop-btn" title="Dismiss" aria-label="Dismiss" onClick={() => onDismiss(l)}>
+                  <Glyph name="xCircle" size={14} />
                 </button>
               </div>
             </div>
@@ -1873,27 +1894,93 @@ const FINDING_LABEL: Record<string, string> = {
 function FindingsList({ findings, onDismiss }: { findings: InsightFinding[]; onDismiss: (f: InsightFinding) => void }) {
   if (findings.length === 0) return null;
   return (
-    <>
-      <div className="sm-section-title">Patterns</div>
-      <div className="sm-masonry">
-        {findings.slice(0, 12).map((f) => (
-          <div className="card sm-card sm-insight-card" key={f.id}>
-            <div className="sm-insight-title-row">
-              <div>
-                <div className="sm-insight-kind">{FINDING_LABEL[f.kind] ?? f.kind}</div>
-                <div className="sm-insight-title">{f.title}</div>
-              </div>
-              <span className="sm-chip">{pct(f.confidence)}</span>
-              <button className="icon-btn" title="Dismiss" aria-label="Dismiss" onClick={() => onDismiss(f)}>
-                <Icon name="x" size={14} />
-              </button>
+    <div className="sm-pair">
+      {findings.slice(0, 12).map((f) => (
+        <div className="card sm-card" key={f.id}>
+          <div className="sm-insight-title-row">
+            <div>
+              <div className="sm-insight-kind">{FINDING_LABEL[f.kind] ?? f.kind}</div>
+              <div className="sm-insight-title">{f.title}</div>
             </div>
-            <div className="sm-insight-body">{f.detail}</div>
+            <span className="sm-metric sm-confidence">{pct(f.confidence)}</span>
+            <button className="sm-loop-btn" title="Dismiss" aria-label="Dismiss" onClick={() => onDismiss(f)}>
+              <Glyph name="xCircle" size={14} />
+            </button>
           </div>
-        ))}
+          <div className="sm-insight-body">{f.detail}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SignalList({ title, glyph, items, empty }: { title: string; glyph: string; items: SignalWithContext[]; empty: string }) {
+  return (
+    <div className="card sm-card">
+      <div className="sm-card-head">
+        <span style={{ color: "var(--accent)", display: "inline-flex", alignSelf: "center" }}>
+          <Glyph name={glyph} size={13} />
+        </span>
+        <span className="sm-section-title">{title}</span>
+        <span className="sm-card-count">{items.length}</span>
+      </div>
+      {items.length === 0 ? (
+        <div className="sm-quote sm-quote-empty">{empty}</div>
+      ) : (
+        <div className="sm-notes">
+          {items.slice(0, 6).map((s) => (
+            <div key={s.id}>
+              <div className="sm-note-text">{s.value}</div>
+              <div className="sm-note-caption">
+                {[monthDay(s.source_created_at), s.app_name, s.model_id === "heuristic-v1" ? null : `read by ${s.model_id}`].filter(Boolean).join(" · ")}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SignalsSection({ signals }: { signals: SignalsOverview }) {
+  const tone = signals.mix.tone ?? {};
+  const intent = signals.mix.intent ?? {};
+  const chips = [
+    ...Object.entries(intent).map(([k, v]) => ({ k: `intent-${k}`, label: k, v })),
+    ...Object.entries(tone).map(([k, v]) => ({ k: `tone-${k}`, label: k, v })),
+  ].sort((a, b) => b.v - a.v);
+  return (
+    <>
+      {chips.length > 0 && (
+        <div className="sm-metrics">
+          {chips.map((c) => (
+            <Metric key={c.k} value={c.v} label={c.label} />
+          ))}
+        </div>
+      )}
+      <div className="sm-pair">
+        <SignalList title="Commitments" glyph="hand" items={signals.commitments} empty="No commitments voiced." />
+        <SignalList title="Questions" glyph="question" items={signals.questions} empty="No questions asked." />
+        <SignalList title="Decisions" glyph="seal" items={signals.decisions} empty="No decisions stated." />
+        <SignalList title="Blockers" glyph="alert" items={signals.blockers} empty="Nothing got in the way." />
       </div>
     </>
   );
+}
+
+/** Two columns, filled by estimated height so they end level (Mac masonry). */
+function masonryColumns(cards: InsightCard[]) {
+  if (cards.length < 2) return [cards];
+  const columns: InsightCard[][] = [[], []];
+  const heights = [0, 0];
+  for (const card of cards) {
+    const text = (card.title.length + card.body.length + card.action_text.length) / 42;
+    const excerpts = card.evidence.reduce((n, e) => n + e.excerpt.length, 0) / 58;
+    const target = heights[0] <= heights[1] ? 0 : 1;
+    columns[target].push(card);
+    heights[target] += 220 + text * 18 + card.evidence.length * 76 + excerpts * 16;
+  }
+  return columns.filter((c) => c.length > 0);
 }
 
 function caveat(r: StoredReport["report"]) {
@@ -1926,49 +2013,41 @@ function ReportView({
   return (
     <>
       <div className="card sm-card">
-        <div className="sm-card-head" style={{ alignItems: "center" }}>
-          <span className="sm-card-title">Summary</span>
-          <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-            {r.summary_model_name && <span className="sm-chip sm-chip-accent">{r.summary_model_name}</span>}
-            <span className="muted small">{mediumDateTime(r.generated_at)}</span>
-            <Button size="sm" loading={generating} onClick={onGenerate}>
-              <Glyph name="brain" size={14} /> {generating ? "Generating…" : "Regenerate"}
+        <div className="sm-summary-head">
+          <span className="sm-summary-title">Summary</span>
+          <span className="sm-summary-status">
+            {r.summary_model_name && <span className="sm-accent-chip">{r.summary_model_name}</span>}
+            <span className="sm-summary-date">{mediumDateTime(r.generated_at)}</span>
+            <Button size="sm" disabled={generating} onClick={onGenerate}>
+              <Glyph name="brain" size={13} /> {generating ? "Generating…" : "Regenerate"}
             </Button>
           </span>
         </div>
         <div className="sm-summary-lines">
           {r.summary.map((line) => (
             <div className="sm-summary-line" key={line}>
-              <Glyph name="checkCircle" size={12} />
+              <Glyph name="checkCircle" size={11} />
               <span>{line}</span>
             </div>
           ))}
         </div>
         <div className="sm-metrics">
-          <span className="sm-chip">
-            <strong>{r.source_node_count}</strong> nodes
-          </span>
-          <span className="sm-chip">
-            <strong>{r.source_edge_count}</strong> links
-          </span>
-          <span className="sm-chip">
-            <strong>{r.source_chunk_count}</strong> chunks
-          </span>
-          <span className="sm-chip">
-            <strong>{r.analyzer_name}</strong> {r.used_fallback ? "fallback" : "analyzer"}
-          </span>
+          <Metric value={r.source_node_count} label="nodes" />
+          <Metric value={r.source_edge_count} label="links" />
+          <Metric value={r.source_chunk_count} label="chunks" />
+          <Metric value={r.analyzer_name} label={r.used_fallback ? "fallback" : "analyzer"} />
         </div>
       </div>
       <div className="sm-caveat">
-        <Glyph name="shield" size={13} />
+        <Glyph name="shield" size={12} />
         {caveat(r)}
       </div>
       {stored.stale && (
-        <div className="sm-banner sm-banner-accent">
-          <Glyph name="rotate" size={18} />
-          <div className="sm-banner-body">
-            <div className="sm-banner-title">Snapshot is older than the current graph</div>
-            <div className="sm-banner-text">Regenerate to update the snapshot.</div>
+        <div className="card sm-card sm-fresh">
+          <Glyph name="staleCycle" size={14} />
+          <div>
+            <div className="sm-section-title">Snapshot is older than the current graph</div>
+            <div className="sm-fresh-text">Regenerate to update the snapshot.</div>
           </div>
         </div>
       )}
@@ -2003,28 +2082,24 @@ function ReportView({
           {r.comparisons.slice(0, 3).map((c) => (
             <div className="card sm-card" key={c.id}>
               <div className="sm-compare-head">
-                <span className="sm-card-title">{c.title}</span>
-                <span className="sm-chip sm-chip-accent">{c.trend}</span>
+                <span className="sm-section-title">{c.title}</span>
+                <span className="sm-accent-chip">{c.trend}</span>
               </div>
-              <div className="sm-insight-body" style={{ marginBottom: 10 }}>
-                {c.detail}
-              </div>
-              <div className="sm-evidence-list" style={{ borderTop: "none", paddingTop: 0 }}>
-                {c.evidence.slice(0, 2).map((e) => (
-                  <EvidenceRow key={e.id} e={e} />
-                ))}
-              </div>
+              <div className="sm-insight-body">{c.detail}</div>
+              {c.evidence.slice(0, 2).map((e) => (
+                <EvidenceRow key={e.id} e={e} />
+              ))}
             </div>
           ))}
         </>
       )}
       {r.coverage_notes.length > 0 && (
-        <div className="card sm-card">
-          <CardHead title="Coverage Notes" />
+        <div className="card sm-card sm-coverage-card">
+          <div className="sm-section-title">Coverage Notes</div>
           <div className="sm-coverage">
             {r.coverage_notes.map((n) => (
               <div className="sm-coverage-row" key={n}>
-                <Icon name="info" size={13} />
+                <Icon name="infoCircle" size={11} />
                 <span>{n}</span>
               </div>
             ))}
@@ -2035,8 +2110,12 @@ function ReportView({
         <div className="card sm-empty-card">Not enough connected evidence yet.</div>
       ) : (
         <div className="sm-masonry">
-          {r.cards.map((c) => (
-            <InsightCardView key={c.id} card={c} />
+          {masonryColumns(r.cards).map((column, i) => (
+            <div className="sm-masonry-col" key={i}>
+              {column.map((c) => (
+                <InsightCardView key={c.id} card={c} />
+              ))}
+            </div>
           ))}
         </div>
       )}
@@ -2052,10 +2131,8 @@ function ChartCard({ chart }: { chart: InsightChart }) {
   return (
     <div className="card sm-card">
       <div className="sm-chart-head">
-        <span className="sm-card-title">{chart.title}</span>
-        <span className="sm-chip" style={{ marginLeft: "auto" }}>
-          {chart.unit}
-        </span>
+        <span className="sm-section-title">{chart.title}</span>
+        <span className="sm-metric sm-chart-unit">{chart.unit}</span>
       </div>
       <div className="sm-chart-sub">{chart.subtitle}</div>
       <div className="sm-bars">
@@ -2067,19 +2144,19 @@ function ChartCard({ chart }: { chart: InsightChart }) {
                 <span>{p.label}</span>
                 <span>{Number.isInteger(p.value) ? p.value : p.value.toFixed(1)}</span>
               </div>
-              <svg viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true">
-                <rect x="0" y="0" width="100" height="8" rx="4" style={{ fill: "var(--surface-3)" }} />
-                <rect x="0" y="0" width={Math.max(6, ratio * 100)} height="8" rx="4" style={{ fill: colors[i % colors.length] }} />
-              </svg>
+              <div className="sm-bar-track">
+                <span style={{ width: `max(6px, ${ratio * 100}%)`, background: colors[i % colors.length] }} />
+              </div>
               {p.detail && <div className="sm-bar-detail">{p.detail}</div>}
             </div>
           );
         })}
       </div>
       {first && (
-        <div className="sm-evidence-list" style={{ marginTop: 10 }}>
+        <>
+          <div className="sm-divider" />
           <EvidenceRow e={first} />
-        </div>
+        </>
       )}
     </div>
   );
@@ -2093,18 +2170,16 @@ function InsightCardView({ card }: { card: InsightCard }) {
           <div className="sm-insight-kind">{card.kind}</div>
           <div className="sm-insight-title">{card.title}</div>
         </div>
-        <span className="sm-chip">{pct(card.confidence)}</span>
+        <span className="sm-metric sm-confidence">{pct(card.confidence)}</span>
       </div>
       <div className="sm-insight-body">{card.body}</div>
       <div className="sm-insight-action">
-        <Glyph name="turn" size={12} />
+        <Glyph name="turn" size={11} />
         <span>{card.action_text}</span>
       </div>
       {card.evidence.length > 0 && (
         <div className="sm-evidence-list">
-          <div className="sm-section-label" style={{ marginBottom: 0 }}>
-            EVIDENCE
-          </div>
+          <div className="sm-evidence-label">Evidence</div>
           {card.evidence.map((e) => (
             <EvidenceRow key={e.id} e={e} />
           ))}
@@ -2123,64 +2198,5 @@ function EvidenceRow({ e }: { e: InsightEvidence }) {
       </div>
       <div className="sm-evidence-text">{e.excerpt}</div>
     </div>
-  );
-}
-
-function SignalList({ title, glyph, items, empty }: { title: string; glyph: string; items: SignalWithContext[]; empty: string }): ReactNode {
-  return (
-    <div className="card sm-card">
-      <div className="sm-card-head">
-        <span style={{ color: "var(--accent)", display: "inline-flex" }}>
-          <Glyph name={glyph} size={14} />
-        </span>
-        <span className="sm-card-title">{title}</span>
-        <span className="sm-card-count">{items.length}</span>
-      </div>
-      {items.length === 0 ? (
-        <div className="sm-quote">{empty}</div>
-      ) : (
-        <div className="sm-signal-list">
-          {items.slice(0, 6).map((s) => (
-            <div className="sm-signal" key={s.id}>
-              <span>{s.value}</span>
-              <span className="sm-signal-meta">
-                {[monthDay(s.source_created_at), s.app_name, s.model_id === "heuristic-v1" ? null : `read by ${s.model_id}`]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SignalsSection({ signals }: { signals: SignalsOverview }) {
-  const tone = signals.mix.tone ?? {};
-  const intent = signals.mix.intent ?? {};
-  const chips = [
-    ...Object.entries(intent).map(([k, v]) => ({ k: `intent-${k}`, label: k, v })),
-    ...Object.entries(tone).map(([k, v]) => ({ k: `tone-${k}`, label: k, v })),
-  ].sort((a, b) => b.v - a.v);
-  return (
-    <>
-      <div className="sm-section-title">Signals · last 60 days</div>
-      {chips.length > 0 && (
-        <div className="sm-mix">
-          {chips.map((c) => (
-            <span className="sm-chip" key={c.k}>
-              {c.label} <strong>{c.v}</strong>
-            </span>
-          ))}
-        </div>
-      )}
-      <div className="sm-signals">
-        <SignalList title="Commitments" glyph="hand" items={signals.commitments} empty="No commitments voiced." />
-        <SignalList title="Questions" glyph="question" items={signals.questions} empty="No questions asked." />
-        <SignalList title="Decisions" glyph="seal" items={signals.decisions} empty="No decisions stated." />
-        <SignalList title="Blockers" glyph="alert" items={signals.blockers} empty="Nothing got in the way." />
-      </div>
-    </>
   );
 }

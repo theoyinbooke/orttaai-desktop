@@ -1,11 +1,11 @@
 // Settings → Audio (Mac AudioSettingsView): input device, live level, reset.
 // Owned by the engine area.
 import { useCallback, useEffect, useState } from "react";
-import { Button, LevelMeter, Select } from "../../ui";
+import { Button, Icon, Select, Spinner } from "../../ui";
 import { call } from "../../lib/api";
 import { useSettings } from "../../lib/settings";
 import { useEngine, type AudioDevice } from "../../lib/engine";
-import { Row, Section, usePatch } from "../../components/SettingsRows";
+import { Notice, Row, Section, usePatch } from "../../components/SettingsRows";
 import "../../styles/engine.css";
 
 const DEFAULT = "__default__";
@@ -58,14 +58,14 @@ export default function AudioSettings() {
   const defaultDevice = devices?.find((d) => d.is_default);
   const missing = selected && devices && !devices.some((d) => d.name === selected);
   const options = [
-    {
-      value: DEFAULT,
-      label: defaultDevice ? `System Default (${defaultDevice.name})` : "System Default",
-    },
+    { value: DEFAULT, label: "System Default" },
     ...(devices ?? []).map((d) => ({ value: d.name, label: d.name })),
     ...(missing ? [{ value: selected!, label: `${selected} (unavailable)` }] : []),
   ];
   const activeName = metered ?? selected ?? defaultDevice?.name ?? "System Default";
+  // Same curve as the shared LevelMeter: speech reads clearly on the bar.
+  const shown = error ? 0 : Math.min(1, Math.sqrt(Math.max(0, monitorLevel)) * 1.1);
+  const percent = `${Math.round(shown * 100)}%`;
 
   const reset = () => {
     setResetting(true);
@@ -98,29 +98,35 @@ export default function AudioSettings() {
           label="Input Level"
           hint="Speak to check the level moves. If it stays flat, check your system's microphone permission or choose another device."
         >
-          <div className="eng-meter" aria-label={`Input level for ${activeName}`}>
-            <LevelMeter level={monitorLevel} active={!error} />
-            <span className="small muted eng-meter-label">{error ? "Meter unavailable" : activeName}</span>
+          <div
+            className="st-meter"
+            role="meter"
+            aria-label={`Input level for ${activeName}`}
+            aria-valuenow={Math.round(shown * 100)}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            title={activeName}
+          >
+            <div className="st-meter-bar">
+              <span style={{ width: `${shown * 100}%` }} />
+            </div>
+            <span className="st-meter-value">{percent}</span>
           </div>
         </Row>
         {missing && (
-          <div className="eng-notice warn">
-            “{selected}” isn't connected. Orttaai records from the system default until it's back.
-          </div>
+          <Notice kind="warning">“{selected}” isn't connected. Orttaai records from the system default until it's back.</Notice>
         )}
         {isHeadset(activeName) && (
-          <div className="eng-notice">
+          <Notice>
             This is a Bluetooth headset mic. Recording with it switches the headphones to call quality and can take a
             moment to start. For the clearest dictation, choose your computer's microphone here and keep the headphones
             for listening.
-          </div>
+          </Notice>
         )}
         {devices && devices.length === 0 && (
-          <div className="eng-notice warn">
-            No audio input devices detected. Reconnect a microphone and reopen this section.
-          </div>
+          <Notice kind="error">No audio input devices detected. Reconnect a microphone and reopen this section.</Notice>
         )}
-        {error && <div className="eng-notice warn">{error}</div>}
+        {error && <Notice kind="warning">{error}</Notice>}
       </Section>
 
       <Section title="Troubleshooting">
@@ -128,14 +134,13 @@ export default function AudioSettings() {
           label="Reset Audio"
           hint="Restarts audio capture. Use it if recording stops picking up sound, for example after your computer wakes from sleep or a microphone reconnects."
         >
-          <Button onClick={reset} loading={resetting} icon="refresh">
+          <Button size="sm" className="st-btn" onClick={reset} disabled={resetting}>
+            {resetting ? <Spinner size={11} /> : <Icon name="refresh" size={12} />}
             {resetting ? "Resetting…" : "Reset"}
           </Button>
         </Row>
-        {resetMessage && (
-          <div className={`eng-notice ${resetMessage.ok ? "" : "warn"}`} role="status">
-            {resetMessage.text}
-          </div>
+        {resetMessage && !resetting && (
+          <Notice kind={resetMessage.ok ? "success" : "error"}>{resetMessage.text}</Notice>
         )}
       </Section>
     </>

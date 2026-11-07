@@ -26,6 +26,7 @@ import {
   type SceneStart,
   type SceneTurn,
 } from "../../lib/coach";
+import { CoachIcon } from "./icons";
 import { Btn, Eyebrow, Spinner, kindLimit, personaOf, useCoach } from "./parts";
 import PersonaGlyph from "./PersonaGlyph";
 import Reveal from "./Reveal";
@@ -613,7 +614,7 @@ export default function SceneSession({ sceneId, onScene, onExit }: { sceneId: st
                           coachVoice.speak(turn.text, { speaker: name, rate: 1, pitch: 1 }).then(() => setSpeaking(false));
                         }}
                       >
-                        <Icon name="play" size={13} />
+                        <CoachIcon name="playFill" size={13} />
                         Hear again
                       </button>
                     )}
@@ -679,7 +680,7 @@ export default function SceneSession({ sceneId, onScene, onExit }: { sceneId: st
                   aria-label={partnerSpeaking ? "Cut in" : recording ? "Finish your turn" : "Talk"}
                   style={{ ["--level" as string]: recording ? Math.min(1, level) : 0 }}
                 >
-                  <Icon name={recording ? "stop" : "mic"} size={22} />
+                  <CoachIcon name={recording ? "stopFill" : "micFill"} size={24} />
                 </button>
                 <span className={`coach-scene-status ${ready && notice ? "warn" : ""}`} title={notice ?? undefined}>
                   {status()}

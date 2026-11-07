@@ -1,9 +1,9 @@
 // Share sheet (Mac MilestoneShareSheet): pick a card for a badge (or the
-// numbers so far), see it at size, save the PNG or copy it. Cards show
-// numbers only. Analytics/home area.
-import { useEffect, useMemo, useState } from "react";
+// numbers so far), see it at size, then save, copy or share the image. Dark in
+// both looks, as on the Mac. Cards show numbers only. Analytics/home area.
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Button, Icon, Select, useToast } from "../ui";
+import { Icon, Select, Spinner } from "../ui";
 import { call } from "../lib/api";
 import {
   CARD_SIZES,
@@ -32,7 +32,6 @@ export default function ShareCardSheet({
   subjectId: string;
   onClose: () => void;
 }) {
-  const toast = useToast();
   const unlocked = useMemo(() => overview.badges.filter((b) => b.state.kind === "unlocked"), [overview]);
   const [selection, setSelection] = useState(subjectId);
   const badge: BadgeView | null = unlocked.find((b) => b.id === selection) ?? null;
@@ -40,8 +39,10 @@ export default function ShareCardSheet({
   const [template, setTemplate] = useState<CardTemplate>(templates[0]);
   const [size, setSize] = useState<CardSize>("portrait");
   const [stripStart, setStripStart] = useState(0);
-  const [busy, setBusy] = useState<"save" | "copy" | null>(null);
+  const [busy, setBusy] = useState<"save" | "copy" | "share" | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const feedbackTimer = useRef(0);
   const content = useMemo(() => new CardContent(overview.stats, badge, unlocked), [overview.stats, badge, unlocked]);
 
   useEffect(() => {
@@ -72,15 +73,21 @@ export default function ShareCardSheet({
   const dims = CARD_SIZES.find((s) => s.value === size) ?? CARD_SIZES[0];
   const previewW = Math.min(470, (600 * dims.w) / dims.h);
 
+  const show = (message: string) => {
+    setFeedback(message);
+    window.clearTimeout(feedbackTimer.current);
+    feedbackTimer.current = window.setTimeout(() => setFeedback(null), 3000);
+  };
+  useEffect(() => () => window.clearTimeout(feedbackTimer.current), []);
+
+  const saveCard = async () => call<string>("save_share_card", { fileName, pngBase64: await cardPng(template, content, size) });
+
   async function save() {
     setBusy("save");
     try {
-      const png = await cardPng(template, content, size);
-      const path = await call<string>("save_share_card", { fileName, pngBase64: png });
-      setSaved(path);
-      toast(`Saved ${path.split(/[\\/]/).pop()}`, "success");
+      setSaved(await saveCard());
     } catch (e) {
-      toast(`Couldn't save: ${String(e)}`, "error");
+      show(`Couldn't save: ${String(e)}`);
     } finally {
       setBusy(null);
     }
@@ -95,16 +102,31 @@ export default function ShareCardSheet({
       } catch {
         await call("copy_share_card", { pngBase64: await cardPng(template, content, size) });
       }
-      toast("Copied. Paste it into a post or a message.", "success");
+      show("Copied. Paste it into a post or a message.");
     } catch (e) {
-      toast(`Couldn't copy: ${String(e)}`, "error");
+      show(`Couldn't copy: ${String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // Linux and Windows have no share picker to open, so the card is saved and
+  // shown in its folder, ready to attach to a post or a message.
+  async function share() {
+    setBusy("share");
+    try {
+      const path = await saveCard();
+      setSaved(path);
+      await call("reveal_share_card", { path });
+    } catch (e) {
+      show(`Couldn't prepare the card: ${String(e)}`);
     } finally {
       setBusy(null);
     }
   }
 
   return createPortal(
-    <div className="modal-overlay" onMouseDown={onClose}>
+    <div className="modal-overlay share-overlay" onMouseDown={onClose}>
       <div
         className="share-sheet"
         role="dialog"
@@ -119,10 +141,10 @@ export default function ShareCardSheet({
           <div className="share-head">
             <div>
               <h2 id="share-title">Share your milestone</h2>
-              <p className="muted">Cards show your numbers only, never anything you dictated.</p>
+              <p>Cards show your numbers only, never anything you dictated.</p>
             </div>
-            <button className="icon-btn share-close" onClick={onClose} aria-label="Close" title="Close">
-              <Icon name="x" size={16} />
+            <button className="share-close" onClick={onClose} aria-label="Close" title="Close">
+              <Icon name="x" size={13} />
             </button>
           </div>
 
@@ -151,14 +173,18 @@ export default function ShareCardSheet({
                 ))}
               </div>
               {start > 0 && (
-                <button className="share-arrow left" onClick={() => setStripStart(Math.max(0, start - 2))} aria-label="Show earlier templates">
-                  <Icon name="chevronLeft" size={16} />
-                </button>
+                <span className="share-fade left">
+                  <button className="share-arrow" onClick={() => setStripStart(Math.max(0, start - 2))} aria-label="Show earlier templates">
+                    <Icon name="chevronLeft" size={15} />
+                  </button>
+                </span>
               )}
               {start < maxStart && (
-                <button className="share-arrow right" onClick={() => setStripStart(Math.min(maxStart, start + 2))} aria-label="Show more templates">
-                  <Icon name="chevronRight" size={16} />
-                </button>
+                <span className="share-fade right">
+                  <button className="share-arrow" onClick={() => setStripStart(Math.min(maxStart, start + 2))} aria-label="Show more templates">
+                    <Icon name="chevronRight" size={15} />
+                  </button>
+                </span>
               )}
             </div>
           </div>
@@ -175,18 +201,26 @@ export default function ShareCardSheet({
           </div>
 
           <div className="share-spacer" />
+          {feedback && (
+            <p className="share-feedback" role="status">
+              {feedback}
+            </p>
+          )}
           {saved && (
-            <button className="ghost-link share-saved" onClick={() => call("reveal_share_card", { path: saved }).catch((e) => toast(String(e), "error"))}>
+            <button className="ghost-link share-saved" onClick={() => call("reveal_share_card", { path: saved }).catch((e) => show(String(e)))}>
               <Icon name="check" size={14} /> Saved to {saved} · Show in folder
             </button>
           )}
           <div className="share-actions">
-            <Button variant="ghost" icon="copy" onClick={copy} loading={busy === "copy"} disabled={busy !== null}>
-              Copy
-            </Button>
-            <Button variant="primary" icon="download" onClick={save} loading={busy === "save"} disabled={busy !== null}>
-              Save image
-            </Button>
+            <button className="pill-btn" onClick={save} disabled={busy !== null}>
+              {busy === "save" ? <Spinner /> : <Icon name="download" size={15} />} Save image
+            </button>
+            <button className="pill-btn" onClick={copy} disabled={busy !== null}>
+              {busy === "copy" ? <Spinner /> : <Icon name="copy" size={15} />} Copy
+            </button>
+            <button className="pill-btn primary" onClick={share} disabled={busy !== null}>
+              {busy === "share" ? <Spinner /> : <Icon name="share" size={15} />} Share…
+            </button>
           </div>
         </div>
       </div>

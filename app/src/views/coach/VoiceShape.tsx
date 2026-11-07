@@ -1,20 +1,24 @@
 // The voice shape (Mac VoiceShapeView): six axes, now filled in amber over a
 // dashed outline of four weeks ago. Axes without enough dictations yet show
 // as grey points on the rim, and only the sides between known axes are
-// drawn. Judged axes carry a small check mark (judged by the local model). Hand-rolled SVG.
+// drawn. Judged axes carry a small bubble with a check (judged by the local
+// model). Drawn at its real size, so the Mac's radius, dots and 13 pt labels
+// land where they do there. Hand-rolled SVG.
 import type { Axis, Shape } from "../../lib/coach";
 
 type Props = {
   shape: Shape;
   showThen?: boolean;
   showLabels?: boolean;
-  /** Label size at the drawing's own scale (440 units across). */
+  /** The box it's drawn in; the shape fits the shorter side. */
+  width?: number;
+  height?: number;
   labelSize?: number;
   className?: string;
   /** Fixed colours, for share cards drawn outside the theme. */
   palette?: Partial<Palette>;
   /** Placement when nested inside another SVG (share cards). */
-  frame?: { x: number; y: number; width: number; height: number };
+  at?: { x: number; y: number };
   /** Font for the labels when drawn outside the page (share cards). */
   fontFamily?: string;
 };
@@ -41,28 +45,34 @@ const DEFAULTS: Palette = {
   judged: "var(--c-warm-ink)",
 };
 
-const SIDE = 440;
+/** How wide a label draws, so a judged axis's text and mark centre together. */
+let measurer: CanvasRenderingContext2D | null = null;
+function textWidth(text: string, size: number, family: string): number {
+  measurer ??= document.createElement("canvas").getContext("2d");
+  if (!measurer) return text.length * size * 0.56;
+  measurer.font = `600 ${size}px ${family}`;
+  return measurer.measureText(text).width;
+}
 
 export default function VoiceShape({
   shape,
   showThen = true,
   showLabels = true,
-  labelSize = 17,
+  width = 440,
+  height = 440,
+  labelSize = 13,
   className = "",
   palette,
-  frame,
+  at,
   fontFamily,
 }: Props) {
   const p = { ...DEFAULTS, ...palette };
   const axes = shape.axes;
   const n = Math.max(axes.length, 1);
-  const padX = showLabels ? 90 : 0;
-  const padY = showLabels ? 20 : 0;
-  const width = SIDE + padX * 2;
-  const height = SIDE + padY * 2;
+  const side = Math.min(width, height);
   const cx = width / 2;
   const cy = height / 2;
-  const radius = (SIDE / 2) * (showLabels ? 0.68 : 0.92);
+  const radius = (side / 2) * (showLabels ? 0.68 : 0.92);
 
   const point = (i: number, value: number, r = radius) => {
     const angle = ((-90 + (360 / n) * i) * Math.PI) / 180;
@@ -99,7 +109,9 @@ export default function VoiceShape({
     <svg
       className={`coach-shape ${className}`}
       viewBox={`0 0 ${width} ${height}`}
-      {...frame}
+      width={width}
+      height={height}
+      {...at}
       role="img"
       aria-label={`Voice shape: ${label}`}
     >
@@ -162,27 +174,38 @@ export default function VoiceShape({
 
       {showLabels &&
         axes.map((a, i) => {
-          const [x, y] = point(i, 1, radius + 34);
-          const anchor = Math.abs(x - cx) < 4 ? "middle" : x < cx ? "end" : "start";
+          const [x, y] = point(i, 1, radius + (34 * side) / 440);
+          const fill = a.now == null ? p.labelMuted : p.label;
+          if (!a.judged) {
+            return (
+              <text key={a.id} x={x} y={y} textAnchor="middle" dominantBaseline="middle" fontSize={labelSize} fontWeight={600} fontFamily={fontFamily} fill={fill}>
+                {a.title}
+              </text>
+            );
+          }
+          // SwiftUI centres the text and its checkmark.bubble as one run.
+          const mark = labelSize * 1.15;
+          const gap = labelSize * 0.3;
+          const family = fontFamily ?? getComputedStyle(document.body).fontFamily;
+          const left = x - (textWidth(a.title, labelSize, family) + gap + mark) / 2;
+          const markX = left + textWidth(a.title, labelSize, family) + gap;
           return (
-            <text
-              key={a.id}
-              x={x}
-              y={y}
-              textAnchor={anchor}
-              dominantBaseline="middle"
-              fontSize={labelSize}
-              fontWeight={600}
-              fontFamily={fontFamily}
-              fill={a.now == null ? p.labelMuted : p.label}
-            >
-              {a.title}
-              {a.judged && (
-                <tspan fill={p.judged} dx={5} fontSize={labelSize * 0.95}>
-                  {"\u2713"}
-                </tspan>
-              )}
-            </text>
+            <g key={a.id}>
+              <text x={left} y={y} dominantBaseline="middle" fontSize={labelSize} fontWeight={600} fontFamily={fontFamily} fill={fill}>
+                {a.title}
+              </text>
+              <g
+                transform={`translate(${markX} ${y - mark / 2}) scale(${mark / 24})`}
+                fill="none"
+                stroke={p.judged}
+                strokeWidth={2.2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M6 3h12a4 4 0 0 1 4 4v8a4 4 0 0 1-4 4h-7l-5 3.5V19a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4Z" />
+                <path d="M8 11.2l2.8 2.8 5.2-5.6" />
+              </g>
+            </g>
           );
         })}
     </svg>

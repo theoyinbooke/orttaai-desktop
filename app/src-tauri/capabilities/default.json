@@ -1,11 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main + panel windows",
-  "windows": ["main", "panel"],
+  "description": "Capability for the main, panel and setup windows",
+  "windows": ["main", "panel", "setup"],
   "permissions": [
     "core:default",
     "core:window:allow-set-theme",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
     "opener:default",
     "updater:default",
     "process:default",

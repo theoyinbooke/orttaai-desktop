@@ -2,7 +2,6 @@
 // and Performance, the 30-day trend, top apps, quick actions, recent
 // dictations and insights. Owned by the analytics/home area.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { emit } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "../styles/analytics.css";
 import { Button, ConfirmDialog, Icon, Kbd, Modal, PageHeader, Spinner, useToast } from "../ui";
@@ -28,6 +27,7 @@ import { CardIcon, LevelPill, TrendCard } from "./Analytics";
 import { HistoryDetail } from "./History";
 import EngineCard from "../components/EngineCard";
 import InsightsPanel from "../components/InsightsPanel";
+import { useEngine } from "../lib/engine";
 
 const REPO_URL = "https://github.com/theoyinbooke/orttaai-desktop";
 
@@ -38,6 +38,8 @@ export default function Home({ onNavigate }: { onNavigate: (t: Tab) => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState<"enjoyment" | "star" | null>(null);
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const { engine, snapshot } = useEngine();
   const checkedPrompt = useRef(false);
   const again = useRef(false);
   const running = useRef(false);
@@ -80,7 +82,7 @@ export default function Home({ onNavigate }: { onNavigate: (t: Tab) => void }) {
     pendingAnalyticsTab.set("history");
     onNavigate("analytics");
   }, [onNavigate]);
-  const runSetup = () => emit("navigate", "setup").catch((e) => toast(String(e), "error"));
+  const runSetup = () => call("open_setup_window").catch((e) => toast(String(e), "error"));
 
   // Mac shortcuts: ⌘, settings, ⇧⌘H history, ⌘R refresh (Ctrl here).
   useEffect(() => {
@@ -106,8 +108,13 @@ export default function Home({ onNavigate }: { onNavigate: (t: Tab) => void }) {
     <div className="home-actions">
       {loading && payload && <Spinner />}
       <button className="chip-btn" onClick={openHistory} title="Open your dictation history">
-        <Icon name="history" size={15} /> Open History
+        <Icon name="clockArrow" size={15} /> Open History
       </button>
+      {!insightsOpen && (
+        <button className="chip-btn" onClick={() => setInsightsOpen(true)} title="Open writing insights panel">
+          <Icon name="waveSearch" size={15} /> Insight
+        </button>
+      )}
     </div>
   );
 
@@ -127,49 +134,61 @@ export default function Home({ onNavigate }: { onNavigate: (t: Tab) => void }) {
       ? { title: "Speed things up", button: "Open Model Settings", action: () => onNavigate("models") }
       : null;
 
+  // The Mac needs no engine card: dictation just runs. Here it appears only when
+  // there's something to do, or when the shortcut can't be relied on (Wayland),
+  // since it carries the Click to record fallback.
+  const showEngine = engine === "off" || engine === "loading" || engine === "error" || !!snapshot?.hotkey_error || !!snapshot?.wayland;
+
   return (
     <div className="view home-view">
       <PageHeader title="Welcome back" actions={header} />
-      {error && <div className="an-error">{error}</div>}
+      <div className="home-layout">
+        <div className="home-main">
+          {error && <div className="an-error">{error}</div>}
 
-      {banner && (
-        <div className="card home-banner" aria-label={`Banner. ${banner.title}`}>
-          <Icon name="sparkle" size={22} className="home-banner-icon" />
-          <h2>{banner.title}</h2>
-          <Button variant="primary" onClick={banner.action}>
-            {banner.button}
-          </Button>
+          {banner && (
+            <div className="card home-banner" aria-label={`Banner. ${banner.title}`}>
+              <Icon name="pulse" size={22} className="home-banner-icon" />
+              <h2>{banner.title}</h2>
+              <Button variant="primary" onClick={banner.action}>
+                {banner.button}
+              </Button>
+            </div>
+          )}
+
+          {showEngine && <EngineCard onNavigate={onNavigate} />}
+
+          <div className="home-row">
+            <TodayCard today={payload.today} week={payload.trend30d.slice(-7)} usual={payload.usual_daily_words} />
+            <PerformanceHealthCard health={payload.performance} />
+          </div>
+
+          <TrendCard points={payload.trend30d} allTime={payload.header} />
+
+          <div className="home-row">
+            <TopAppsCard apps={payload.top_apps30d} />
+            <QuickActions
+              onSettings={() => onNavigate("settings")}
+              onModels={() => onNavigate("models")}
+              onHistory={openHistory}
+              onSetup={runSetup}
+              onRefresh={refresh}
+            />
+          </div>
+
+          <RecentCard
+            entries={payload.recent}
+            shortcut={comboToString(settings?.push_to_talk)}
+            onOpenHistory={openHistory}
+            onDeleted={refresh}
+          />
         </div>
-      )}
-
-      <EngineCard />
-
-      <div className="home-row">
-        <TodayCard today={payload.today} week={payload.trend30d.slice(-7)} usual={payload.usual_daily_words} streak={payload.streaks.current_days} />
-        <PerformanceHealthCard health={payload.performance} />
+        {insightsOpen && (
+          <div className="home-insights">
+            <InsightsPanel onClose={() => setInsightsOpen(false)} />
+          </div>
+        )}
       </div>
-
-      <TrendCard points={payload.trend30d} allTime={payload.header} />
-
-      <div className="home-row">
-        <TopAppsCard apps={payload.top_apps30d} />
-        <QuickActions
-          onSettings={() => onNavigate("settings")}
-          onModels={() => onNavigate("models")}
-          onHistory={openHistory}
-          onSetup={runSetup}
-          onRefresh={refresh}
-        />
-      </div>
-
-      <RecentCard
-        entries={payload.recent}
-        shortcut={comboToString(settings?.push_to_talk)}
-        onOpenHistory={openHistory}
-        onDeleted={refresh}
-      />
-
-      <InsightsPanel />
 
       {prompt && (
         <GitHubPrompt
@@ -193,7 +212,7 @@ export default function Home({ onNavigate }: { onNavigate: (t: Tab) => void }) {
 
 /* ------------------------------------------------------------------ today -- */
 
-function TodayCard({ today, week, usual, streak }: { today: TodaySnapshot; week: TrendPoint[]; usual: number | null; streak: number }) {
+function TodayCard({ today, week, usual }: { today: TodaySnapshot; week: TrendPoint[]; usual: number | null }) {
   // Always seven days, so the strip keeps its shape before a week of history.
   const days: TrendPoint[] = [...week];
   while (days.length < 7) days.unshift({ day: "", words: 0, sessions: 0, average_wpm: 0 });
@@ -220,7 +239,7 @@ function TodayCard({ today, week, usual, streak }: { today: TodaySnapshot; week:
       <div className="home-big">
         <span className={`home-big-value ${today.sessions === 0 ? "faint" : ""}`}>{fmt(today.words)}</span>
         <span className="home-big-unit">{today.words === 1 ? "word" : "words"}</span>
-        <span className="home-big-note">{today.sessions === 0 ? "Nothing dictated yet" : streak > 1 ? `${streak}-day streak` : ""}</span>
+        {today.sessions === 0 && <span className="home-big-note">Nothing dictated yet</span>}
       </div>
       <div className="week-strip" aria-hidden="true">
         {days.map((d, i) => {
@@ -238,9 +257,9 @@ function TodayCard({ today, week, usual, streak }: { today: TodaySnapshot; week:
       </div>
       <span className={`home-week-line ${comparison?.ahead ? "ahead" : ""}`}>{weekLine}</span>
       <div className="home-stats">
-        <MiniStat icon="mic" value={fmt(today.sessions)} label={today.sessions === 1 ? "session" : "sessions"} />
-        <MiniStat icon="history" value={activeTime} label="active" />
-        <MiniStat icon="bolt" value={today.average_wpm > 0 ? fmt(today.average_wpm) : "–"} label="WPM" />
+        <MiniStat icon="waveform" value={fmt(today.sessions)} label={today.sessions === 1 ? "session" : "sessions"} />
+        <MiniStat icon="clock" value={activeTime} label="active" />
+        <MiniStat icon="speedometer" value={today.average_wpm > 0 ? fmt(today.average_wpm) : "–"} label="WPM" />
       </div>
     </div>
   );
@@ -301,7 +320,7 @@ function PerformanceHealthCard({ health }: { health: PerformanceHealth }) {
       )}
       <div className="home-stats">
         <div className="home-mini wide" title={health.current_model_id}>
-          <CardIcon name="models" />
+          <CardIcon name="chip" />
           <span className="home-mini-value">{modelDisplayName(health.current_model_id)}</span>
           {health.is_express && <span className="express-chip">Express</span>}
         </div>
@@ -351,12 +370,12 @@ function QuickActions({
   onSetup: () => void;
   onRefresh: () => void;
 }) {
-  const actions: { label: string; icon: string; combo?: string; onClick: () => void }[] = [
-    { label: "Open Settings", icon: "settings", combo: "Ctrl+,", onClick: onSettings },
-    { label: "Open Model Settings", icon: "models", onClick: onModels },
-    { label: "Open Full History", icon: "history", combo: "Ctrl+Shift+H", onClick: onHistory },
-    { label: "Run Setup", icon: "sparkle", onClick: onSetup },
-    { label: "Refresh Dashboard", icon: "refresh", combo: "Ctrl+R", onClick: onRefresh },
+  const actions: { label: string; icon: string; onClick: () => void }[] = [
+    { label: "Open Settings", icon: "gear", onClick: onSettings },
+    { label: "Open Model Settings", icon: "cpu", onClick: onModels },
+    { label: "Open Full History", icon: "clockArrow", onClick: onHistory },
+    { label: "Run Setup", icon: "sliders", onClick: onSetup },
+    { label: "Refresh Dashboard", icon: "refresh", onClick: onRefresh },
   ];
   return (
     <div className="card home-card fixed" aria-label="Quick actions">
@@ -366,7 +385,6 @@ function QuickActions({
           <button key={a.label} className="quick-btn" onClick={a.onClick}>
             <Icon name={a.icon} size={15} />
             <span>{a.label}</span>
-            {a.combo && <Kbd combo={a.combo} />}
           </button>
         ))}
       </div>

@@ -1,7 +1,8 @@
 // Your coaches (Mac CoachCastView): one for each way of talking, picked by
 // their voice, and the local models that judge, write and play the partners.
-import { useCallback, useEffect, useState } from "react";
-import { Icon, Select, Switch } from "../../ui";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Icon, Switch } from "../../ui";
 import { useEvent } from "../../lib/api";
 import { useSettings, type SettingsPatch } from "../../lib/settings";
 import {
@@ -22,6 +23,7 @@ import {
   type PersonaId,
   type ShapedMode,
 } from "../../lib/coach";
+import { CoachIcon } from "./icons";
 import PersonaGlyph from "./PersonaGlyph";
 import { Btn, CoachPage, InfoButton, Spinner, Tag, useCoach } from "./parts";
 
@@ -45,7 +47,7 @@ function CastView({ onModels }: { onModels: () => void }) {
       title="Your coaches"
       accessory={<InfoButton title="Your coaches" text="Coaches change the words, never the score. Pick a seat, then the coach for it." />}
     >
-      <div className="coach-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+      <div className="coach-grid" style={{ gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
         {SHAPED.map((mode) => {
           const persona = personaFor(settings, mode);
           const p = catalog.personas.find((x) => x.id === persona)!;
@@ -84,7 +86,7 @@ function CastView({ onModels }: { onModels: () => void }) {
               <span className="coach-spacer" />
               {p.id === chosen && (
                 <span style={{ color: "var(--accent)" }}>
-                  <Icon name="check" size={16} />
+                  <CoachIcon name="checkmark" size={15} weight={2.6} />
                 </span>
               )}
             </div>
@@ -103,7 +105,7 @@ function CastView({ onModels }: { onModels: () => void }) {
                 coachVoice.speak(p.sample, personaVoice(catalog, p.id as PersonaId, settings));
               }}
             >
-              <Icon name="play" size={12} />
+              <CoachIcon name="playFill" size={12} />
               Hear
             </button>
           </div>
@@ -173,6 +175,128 @@ function gradeDetail(info: ModelsInfo, model: string, catalog: Catalog | null): 
   return model === info.insights_model ? "Not checked · also used by Insights" : "Not checked";
 }
 
+type DropdownOption = { value: string; label: string; detail?: string; warns?: boolean };
+
+/** Mac OrttaaiDropdown: a 340pt field whose list drops down as wide as it, with
+ *  a search box, a detail line under each option and a check on the chosen one. */
+function Dropdown({
+  value,
+  options,
+  onChange,
+  ariaLabel,
+  triggerLabel,
+  searchPrompt,
+}: {
+  value: string;
+  options: DropdownOption[];
+  onChange: (v: string) => void;
+  ariaLabel: string;
+  triggerLabel?: string;
+  searchPrompt?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const label = triggerLabel ?? options.find((o) => o.value === value)?.label ?? "Select";
+  const text = query.trim().toLowerCase();
+  const shown = text ? options.filter((o) => o.label.toLowerCase().includes(text)) : options;
+
+  useLayoutEffect(() => {
+    if (!open || !trigger.current) return;
+    const r = trigger.current.getBoundingClientRect();
+    const height = list.current?.offsetHeight ?? 200;
+    const below = r.bottom + 6;
+    setRect({ top: below + height > window.innerHeight - 8 ? Math.max(8, r.top - 6 - height) : below, left: r.left, width: r.width });
+  }, [open, shown.length]);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!trigger.current?.contains(t) && !list.current?.contains(t)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Only the list closes, not the page behind it.
+      e.stopPropagation();
+      setOpen(false);
+      trigger.current?.focus();
+    };
+    const onShift = (e: Event) => {
+      if (!list.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", onShift);
+    window.addEventListener("scroll", onShift, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", onShift);
+      window.removeEventListener("scroll", onShift, true);
+      setQuery("");
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        className={`coach-dropdown ${open ? "open" : ""}`}
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="coach-ellipsis">{label}</span>
+        <svg width={10} height={14} viewBox="0 0 10 14" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M2 5l3-3 3 3M2 9l3 3 3-3" />
+        </svg>
+      </button>
+      {open &&
+        createPortal(
+          <div
+            ref={list}
+            className="coach-dropdown-list"
+            style={{ top: rect?.top ?? 0, left: rect?.left ?? 0, width: rect?.width ?? 340, visibility: rect ? "visible" : "hidden" }}
+          >
+            {searchPrompt && (
+              <label className="coach-dropdown-search">
+                <Icon name="search" size={13} />
+                <input autoFocus value={query} placeholder={searchPrompt} aria-label={searchPrompt} onChange={(e) => setQuery(e.target.value)} />
+              </label>
+            )}
+            <div className="coach-dropdown-options" role="listbox" aria-label={ariaLabel}>
+              {shown.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  role="option"
+                  aria-selected={o.value === value}
+                  className={o.value === value ? "selected" : ""}
+                  onClick={() => {
+                    onChange(o.value);
+                    setOpen(false);
+                  }}
+                >
+                  <span className="text">
+                    <span className="coach-ellipsis">{o.label}</span>
+                    {o.detail && <span className={`detail coach-ellipsis ${o.warns ? "warns" : ""}`}>{o.detail}</span>}
+                  </span>
+                  {o.value === value && <CoachIcon name="checkmark" size={13} weight={2.4} />}
+                </button>
+              ))}
+              {shown.length === 0 && <span className="none">No matches</span>}
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
 /** The three jobs, each a dropdown of the models on the server (Mac `jobRow`s). */
 export function JobPickers({ info, catalog }: { info: ModelsInfo; catalog: Catalog | null }) {
   const { patch } = useSettings();
@@ -181,7 +305,7 @@ export function JobPickers({ info, catalog }: { info: ModelsInfo; catalog: Catal
     {
       key: "coach_model",
       title: "Coach",
-      icon: "edit",
+      icon: "textBubble",
       summary: "Writes your note after each rep",
       infoText: "Writes the note after each rep, in your coach's voice. Only numbers Coach counted may appear in a note.",
       current: setup.coach_model,
@@ -191,7 +315,7 @@ export function JobPickers({ info, catalog }: { info: ModelsInfo; catalog: Catal
     {
       key: "coach_judge_model",
       title: "Judge",
-      icon: "shield",
+      icon: "checkSeal",
       summary: judgeSummary(info, catalog),
       infoText: "Answers one yes or no question per check, with how sure it is. It's only used once it has passed the judge check.",
       current: setup.judge_model,
@@ -201,7 +325,7 @@ export function JobPickers({ info, catalog }: { info: ModelsInfo; catalog: Catal
     {
       key: "coach_partner_model",
       title: "Scene partner",
-      icon: "assistant",
+      icon: "bubbles",
       summary: "Plays the people in scenes",
       infoText: "Plays the people in scenes and answers while you wait, so a quick model feels most like talking. Its reply is spoken as it's written.",
       current: setup.scene_model,
@@ -213,18 +337,18 @@ export function JobPickers({ info, catalog }: { info: ModelsInfo; catalog: Catal
     <div className="coach-surface coach-jobs">
       {jobs.map((job) => {
         const models = info.chat_models.includes(job.current) || !job.current ? info.chat_models : [job.current, ...info.chat_models];
-        const options = [
-          { value: "", label: job.key === "coach_partner_model" ? `${job.automatic} · ${setup.coach_model}` : `Automatic · ${job.current}` },
+        const options: DropdownOption[] = [
+          { value: "", label: "Automatic", detail: job.automatic },
           ...models.map((m) => {
             const d = gradeDetail(info, m, catalog);
-            return { value: m, label: d ? `${m} — ${d}` : m };
+            return { value: m, label: m, detail: d, warns: d === "Not installed" || d?.startsWith("Failed") };
           }),
         ];
         const warn = job.summary.startsWith("Failed") || job.summary.startsWith("Not checked");
         return (
           <div key={job.key} className="coach-job">
             <span className="icon">
-              <Icon name={job.icon} size={18} />
+              <CoachIcon name={job.icon} size={20} />
             </span>
             <div className="coach-col" style={{ gap: 2, flex: 1, minWidth: 0 }}>
               <span className="coach-row" style={{ gap: 6 }}>
@@ -233,11 +357,12 @@ export function JobPickers({ info, catalog }: { info: ModelsInfo; catalog: Catal
               </span>
               <span style={{ fontSize: 13, color: warn ? "var(--c-warm-ink)" : "var(--c-ink-3)" }}>{job.summary}</span>
             </div>
-            <Select
-              className="coach-job-select"
+            <Dropdown
               ariaLabel={`${job.title} model`}
               value={job.value}
               options={options}
+              triggerLabel={job.value ? job.current : `Automatic · ${job.current}`}
+              searchPrompt="Search models"
               onChange={(v) => patch({ [job.key]: v } as SettingsPatch)}
             />
           </div>
@@ -284,20 +409,20 @@ function ModelsView({ onBack }: { onBack: () => void }) {
       {info && <JudgeCheckCard info={info} judge={judge} />}
       {info && <CompareCard info={info} />}
       <div className="coach-surface coach-jobs">
-        <div className="coach-job">
+        <div className="coach-job short">
           <div className="coach-col" style={{ gap: 2, flex: 1 }}>
-            <span className="coach-row" style={{ gap: 6 }}>
-              <strong style={{ fontSize: 15 }}>Read the note aloud</strong>
+            <span className="coach-row" style={{ gap: 5 }}>
+              <span className="coach-settings-label">Read the note aloud</span>
               <InfoButton title="Read the note aloud" text="Uses this computer's own voice, after each rep." />
             </span>
           </div>
           <Switch label="Read the note aloud" checked={!!settings?.coach_read_aloud} onChange={(v) => patch({ coach_read_aloud: v })} />
         </div>
         <VoiceRow />
-        <div className="coach-job">
+        <div className="coach-job short">
           <div className="coach-col" style={{ gap: 2, flex: 1 }}>
-            <span className="coach-row" style={{ gap: 6 }}>
-              <strong style={{ fontSize: 15 }}>Hearing you</strong>
+            <span className="coach-row" style={{ gap: 5 }}>
+              <span className="coach-settings-label">Hearing you</span>
               <InfoButton title="Hearing you" text="Practice uses the same speech engine and Polish as your dictation." />
             </span>
           </div>
@@ -324,10 +449,10 @@ export function VoiceRow() {
     };
   }, []);
   return (
-    <div className="coach-job">
+    <div className="coach-job voice">
       <div className="coach-col" style={{ gap: 2, flex: 1, minWidth: 0 }}>
-        <span className="coach-row" style={{ gap: 6 }}>
-          <strong style={{ fontSize: 15 }}>Voice</strong>
+        <span className="coach-row" style={{ gap: 5 }}>
+          <span className="coach-settings-label">Voice</span>
           <InfoButton
             title="Voice"
             text="Coach and the scene partners speak with the voices installed on this computer. Natural or neural voices sound best; each partner keeps a voice of its own."
@@ -341,15 +466,15 @@ export function VoiceRow() {
       </div>
       {voices.length > 0 && (
         <>
-          <Select
-            className="coach-job-select"
+          <Dropdown
             ariaLabel="Coach voice"
             value={settings?.coach_voice ?? ""}
-            options={[{ value: "", label: "Automatic" }, ...voices.map((v) => ({ value: v.name, label: `${v.name} (${v.lang})` }))]}
+            options={[{ value: "", label: "Automatic" }, ...voices.map((v) => ({ value: v.name, label: v.name, detail: v.lang }))]}
+            searchPrompt="Search voices"
             onChange={(v) => patch({ coach_voice: v })}
           />
           <Btn compact onClick={() => coachVoice.speak("That's the one. Say what done looks like was clear all the way through.", { voice: settings?.coach_voice ?? "" })}>
-            <Icon name="play" size={12} />
+            <CoachIcon name="playFill" size={12} />
             Hear
           </Btn>
         </>
@@ -364,7 +489,7 @@ function JudgeCheckCard({ info, judge }: { info: ModelsInfo; judge: JudgeState |
   const grades = [...info.grades].sort((a, b) => Number(passes(b, catalog)) - Number(passes(a, catalog)) || b.accuracy - a.accuracy);
   const checking = judge?.state === "checking" ? judge : null;
   return (
-    <section className="coach-surface coach-pad coach-col" style={{ gap: 14 }}>
+    <section className="coach-surface coach-pad tight coach-col" style={{ gap: 14 }}>
       <div className="coach-row coach-wrap" style={{ gap: 6 }}>
         <h2 className="coach-h2" style={{ fontSize: 18 }}>
           Judge check
@@ -438,7 +563,7 @@ function CompareCard({ info }: { info: ModelsInfo }) {
   };
   const question = result?.question ? catalog.questions.find((q) => q.id === result.question)?.label : null;
   return (
-    <section className="coach-surface coach-pad coach-col" style={{ gap: 14 }}>
+    <section className="coach-surface coach-pad tight coach-col" style={{ gap: 14 }}>
       <div className="coach-row coach-wrap" style={{ gap: 6 }}>
         <h2 className="coach-h2" style={{ fontSize: 18 }}>
           Compare on my dictations

@@ -16,6 +16,7 @@ import {
   type SetupStep,
   type StarterModel,
 } from "../../lib/coach";
+import { CoachIcon } from "./icons";
 import { Btn, Spinner } from "./parts";
 
 /** Opens the setup card the first time Coach opens without its models. */
@@ -201,7 +202,7 @@ export function ModelSetupList({ compact = false, setup: given }: { compact?: bo
       {(status?.models ?? []).map((m) => (
         <div key={m.name} className="coach-setup-row">
           <span className="icon">
-            <Icon name={m.jobs.includes("Scene partner") ? "assistant" : "shield"} size={compact ? 14 : 18} />
+            <CoachIcon name={m.jobs.includes("Scene partner") ? "bubbles" : "checkSeal"} size={compact ? 16 : 20} />
           </span>
           <span className="text">
             <strong>{m.name}</strong>
@@ -212,7 +213,7 @@ export function ModelSetupList({ compact = false, setup: given }: { compact?: bo
       ))}
       <div className="coach-setup-row">
         <span className="icon">
-          <Icon name="volume" size={compact ? 14 : 18} />
+          <Icon name="waveform" size={compact ? 16 : 20} />
         </span>
         <span className="text">
           <strong>Voices</strong>
@@ -228,7 +229,7 @@ export function ModelSetupList({ compact = false, setup: given }: { compact?: bo
       {!compact && (
         <div className="coach-row" style={{ marginTop: 6 }}>
           <span className="coach-row" style={{ gap: 6, fontSize: 14, color: "var(--c-ink-3)" }}>
-            <Icon name="shield" size={15} />
+            <Icon name="lock" size={15} />
             Through {status?.provider_name ?? "Ollama"}, on this computer
           </span>
           <span className="coach-spacer" />
@@ -284,7 +285,7 @@ function ServerMissing({
         </span>
       </div>
       {canStart && (
-        <Btn compact onClick={start} disabled={starting}>
+        <Btn onClick={start} disabled={starting}>
           {starting ? "Starting…" : installed === false ? "Get Ollama" : "Start Ollama"}
         </Btn>
       )}
@@ -298,7 +299,10 @@ function ServerMissing({
 function Ready() {
   return (
     <span className="coach-setup-status ready">
-      <Icon name="check" size={14} />
+      <svg width={14} height={14} viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx={12} cy={12} r={11} fill="currentColor" />
+        <path d="M7 12.4l3.4 3.4L17 8.8" fill="none" stroke="var(--c-card, #fff)" strokeWidth={2.6} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
       Ready
     </span>
   );
@@ -359,7 +363,7 @@ function TurnScene() {
       </div>
       <div className="pill">
         <span className="mic">
-          <Icon name="mic" size={14} />
+          <CoachIcon name="micFill" size={15} />
         </span>
         <span>Listening. Pause when you're done.</span>
         <kbd>Space</kbd>
@@ -374,7 +378,7 @@ function LocalScene({ models }: { models: StarterModel[] }) {
       <div className="chips">
         {models.map((m) => (
           <div key={m.name} className="chip">
-            <Icon name={m.jobs.includes("Scene partner") ? "assistant" : "shield"} size={12} />
+            <CoachIcon name={m.jobs.includes("Scene partner") ? "bubbles" : "checkSeal"} size={12} />
             <span>
               <strong>{m.name}</strong>
               <em>{m.jobs.join(" · ")}</em>
@@ -385,7 +389,7 @@ function LocalScene({ models }: { models: StarterModel[] }) {
       <Icon name="arrowRight" size={14} />
       <div className="laptop" aria-hidden="true">
         <span className="screen">
-          <Icon name="shield" size={20} />
+          <Icon name="lock" size={20} />
         </span>
         <span className="base" />
       </div>
@@ -395,13 +399,13 @@ function LocalScene({ models }: { models: StarterModel[] }) {
 
 function ProgressScene({ progress, done, working }: { progress: number | null; done: boolean; working: boolean }) {
   const value = done ? 1 : progress ?? (working ? 0.08 : 0);
-  const r = 42;
+  const r = 46;
   const c = 2 * Math.PI * r;
   return (
     <svg className="coach-art-ring" viewBox="0 0 160 160" width={160} height={160} aria-hidden="true">
       <circle cx={80} cy={80} r={75} fill="none" stroke="var(--accent)" strokeOpacity={0.16} />
       <circle cx={80} cy={80} r={59} fill="none" stroke="var(--accent)" strokeOpacity={0.16} />
-      <circle cx={80} cy={80} r={r} fill="none" stroke="var(--w-16)" strokeWidth={7} />
+      <circle cx={80} cy={80} r={46} fill="none" stroke="var(--c-ring-track)" strokeWidth={7} />
       <circle
         cx={80}
         cy={80}

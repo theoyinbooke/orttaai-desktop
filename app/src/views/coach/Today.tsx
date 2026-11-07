@@ -2,6 +2,7 @@
 // talking, today's rep, the week, your habit or a real moment caught in the wild.
 import { useState } from "react";
 import { Icon } from "../../ui";
+import { CoachIcon } from "./icons";
 import {
   caughtLabel,
   greeting,
@@ -30,7 +31,7 @@ export default function Today({ onShowProof, onShareWeek }: { onShowProof: () =>
       title={greeting(snapshot.built_at)}
       accessory={
         <Btn onClick={onShareWeek}>
-          <Icon name="share" size={16} />
+          <CoachIcon name="shareUp" size={16} />
           Share this week
         </Btn>
       }
@@ -62,7 +63,7 @@ function VoiceCard({ mode, setLens }: { mode: ShapedMode; setLens: (m: ShapedMod
         <h2 className="coach-h2">Your voice</h2>
         <InfoButton
           title="Your voice"
-          text="Six things about your last 28 days of dictation in this way of talking, from 0 at the centre to best at the edge. The dashed outline is the 28 days before. Points marked with a check are judged by your local model, a few dictations a day; the rest are counted. Each point needs 8 dictations."
+          text="Six things about your last 28 days of dictation in this way of talking, from 0 at the centre to best at the edge. The dashed outline is the 28 days before. Points marked with a bubble are judged by your local model, a few dictations a day; the rest are counted. Each point needs 8 dictations."
         />
       </div>
       <Lens
@@ -72,7 +73,7 @@ function VoiceCard({ mode, setLens }: { mode: ShapedMode; setLens: (m: ShapedMod
         onChange={(m) => m && setLens(m)}
       />
       <div className="coach-today-shape">
-        <VoiceShape shape={shape} />
+        <VoiceShape shape={shape} width={456} height={400} />
         {empty && (
           <div className="coach-today-count">
             <span className="coach-display">{recent}</span>
@@ -80,10 +81,9 @@ function VoiceCard({ mode, setLens }: { mode: ShapedMode; setLens: (m: ShapedMod
           </div>
         )}
       </div>
-      <div className="coach-row coach-wrap" style={{ gap: 16 }}>
+      <div className="coach-row" style={{ gap: 16 }}>
         <Legend title="Now" />
         {shape.axes.some((a) => a.then != null) && <Legend title="4 weeks ago" dashed />}
-        <span className="coach-spacer" />
         <span className="coach-today-insight">{insight(shape, recent, judge, catalog.full_shape_dictations)}</span>
       </div>
     </section>
@@ -149,7 +149,9 @@ function HabitCard({ state, onShowProof }: { state: HabitState; onShowProof: () 
         <span className="coach-display" style={{ fontSize: 24, color: "var(--c-muted)" }}>
           {percent(v.before_share)}
         </span>
-        <span style={{ color: "var(--c-ink-3)" }}>→</span>
+        <span style={{ color: "var(--c-ink-3)" }}>
+          <Icon name="arrowRight" size={14} />
+        </span>
         <span className="coach-display" style={{ fontSize: 44, color: v.status === "working" ? "var(--c-gain)" : "var(--c-ink)" }}>
           {percent(v.after_share)}
         </span>
@@ -191,7 +193,9 @@ function WeekCard() {
               role="img"
               aria-label={`${label}: ${day.practised ? "practised" : day.dictated ? "dictated, no rep" : "nothing yet"}`}
             >
-              <span className={`ring ${state}`} />
+              <svg className={`ring ${state}`} width={34} height={34} viewBox="0 0 34 34" aria-hidden="true">
+                <circle cx={17} cy={17} r={17} />
+              </svg>
               <span className={day.is_today ? "today" : ""}>{label}</span>
             </div>
           );

@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "./App.css";
-import { Icon, ThemeProvider, ToastProvider, useTheme, useToast } from "./ui";
+import { Icon, ShellContext, ThemeProvider, ToastProvider, useTheme, useToast } from "./ui";
 import { TABS, type AppInfo, type Tab } from "./types";
 import { call, setPendingChatPrefill, useEvent } from "./lib/api";
 import { SettingsProvider, useSettings } from "./lib/settings";
-import { EngineProvider, STATE_LABEL, useEngine } from "./lib/engine";
+import { EngineProvider } from "./lib/engine";
 import { phaseLabel, useUpdater } from "./lib/updater";
+import { AI_SETTINGS_ROUTE, requestAISection } from "./lib/navigation";
 import Home from "./views/Home";
 import ChatAI from "./views/ChatAI";
 import MemoryGraph from "./views/MemoryGraph";
@@ -17,47 +19,43 @@ import Coach from "./views/Coach";
 import Models from "./views/Models";
 import SettingsView from "./views/Settings";
 import About from "./views/About";
-import Setup from "./views/Setup";
 import WhatsNew from "./components/WhatsNew";
 import Celebrations from "./components/Celebrations";
 
-const NAV: { group: string; items: { tab: Tab; label: string; icon: string }[] }[] = [
-  {
-    group: "Workspace",
-    items: [
-      { tab: "home", label: "Home", icon: "home" },
-      { tab: "chat", label: "Chat AI", icon: "assistant" },
-      { tab: "graph", label: "Memory Graph", icon: "graph" },
-      { tab: "memory", label: "Memory", icon: "dictionary" },
-    ],
-  },
-  {
-    group: "Progress",
-    items: [
-      { tab: "analytics", label: "Analytics", icon: "insights" },
-      { tab: "milestones", label: "Milestones", icon: "trophy" },
-      { tab: "coach", label: "Coach", icon: "coach" },
-    ],
-  },
-  {
-    group: "Library",
-    items: [{ tab: "models", label: "Models", icon: "models" }],
-  },
+type Section = { tab: Tab; label: string; icon: string; tag?: string };
+
+// Mac HomeSidebarView: the same two groups, in the same order.
+const WORKSPACE: Section[] = [
+  { tab: "home", label: "Overview", icon: "house" },
+  { tab: "chat", label: "ChatAI", icon: "chatBubbles" },
+  { tab: "graph", label: "Graph", icon: "connected" },
+  { tab: "analytics", label: "Analytics", icon: "barsAxis" },
+  { tab: "milestones", label: "Milestones", icon: "rosette" },
+  { tab: "coach", label: "Coach", icon: "scope", tag: "Beta" },
+];
+const MANAGE: Section[] = [
+  { tab: "memory", label: "Memory", icon: "book" },
+  { tab: "models", label: "Model", icon: "cpu" },
+  { tab: "settings", label: "Settings", icon: "gear" },
+  { tab: "about", label: "About", icon: "infoCircle" },
 ];
 
-function BrandMark() {
+/** The Mac's signal-cursor glyph: three rising bars and a text cursor. */
+export function BrandMark({ className }: { className?: string }) {
   return (
-    <svg className="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="3" y="9" width="2.6" height="6" rx="1.3" />
-      <rect x="8" y="5" width="2.6" height="14" rx="1.3" />
-      <rect x="13.4" y="2.5" width="2.6" height="19" rx="1.3" />
-      <rect x="18.8" y="8" width="2.6" height="8" rx="1.3" />
+    <svg className={`brand-mark ${className ?? ""}`} viewBox="0 0 100 84" aria-hidden="true">
+      <rect x="0" y="44" width="18" height="36" rx="9" />
+      <rect x="25" y="28" width="18" height="52" rx="9" />
+      <rect x="50" y="12" width="18" height="68" rx="9" />
+      <rect x="85" y="3" width="6" height="78" rx="3" />
+      <rect x="77" y="0" width="22" height="6" rx="3" />
+      <rect x="77" y="78" width="22" height="6" rx="3" />
     </svg>
   );
 }
 
 /** Keep the CSS theme in sync with `settings.appearance` (the source of truth). */
-function AppearanceSync() {
+export function AppearanceSync() {
   const { settings } = useSettings();
   const { choice, setChoice } = useTheme();
   useEffect(() => {
@@ -66,7 +64,8 @@ function AppearanceSync() {
   return null;
 }
 
-function UpdateButton({ collapsed }: { collapsed: boolean }) {
+/** Mac AppUpdateSidebarButton: hidden while there is nothing to say. */
+function UpdateRow() {
   const { settings } = useSettings();
   const { phase, act, checkNow } = useUpdater(settings?.auto_download_updates ?? true);
   const toast = useToast();
@@ -77,27 +76,88 @@ function UpdateButton({ collapsed }: { collapsed: boolean }) {
     if (phase.kind === "uptodate") toast("You're on the latest version.", "success");
     if (phase.kind === "failed") toast(`Update check failed: ${phase.message}`, "warn");
   }, [phase.kind]); // eslint-disable-line react-hooks/exhaustive-deps
-  const highlight = phase.kind === "available" || phase.kind === "ready";
-  const label = phaseLabel(phase);
+  if (phase.kind !== "available" && phase.kind !== "downloading" && phase.kind !== "ready" && phase.kind !== "installing") {
+    return null;
+  }
+  const emphasized = phase.kind === "available" || phase.kind === "ready";
+  return (
+    <button className={`update-row ${emphasized ? "emphasized" : ""}`} onClick={act} disabled={phase.kind === "installing"}>
+      <Icon name={phase.kind === "ready" ? "restart" : "download"} size={16} />
+      <span className="update-row-text">
+        <b>{phaseLabel(phase)}</b>
+        <span>Orttaai {phase.version}</span>
+      </span>
+      {phase.kind === "downloading" && <i className="update-row-bar" style={{ width: `${Math.round(phase.fraction * 100)}%` }} />}
+    </button>
+  );
+}
+
+function WindowControls() {
+  const win = getCurrentWindow();
+  return (
+    <div className="window-controls">
+      <button onClick={() => win.minimize()} aria-label="Minimize" title="Minimize">
+        <Icon name="minimize" size={15} />
+      </button>
+      <button onClick={() => win.toggleMaximize()} aria-label="Maximize" title="Maximize">
+        <Icon name="maximize" size={15} />
+      </button>
+      <button className="close" onClick={() => win.close()} aria-label="Close" title="Close">
+        <Icon name="close" size={15} />
+      </button>
+    </div>
+  );
+}
+
+function SidebarRow({ section, tab, count, onSelect }: { section: Section; tab: Tab; count?: number; onSelect: (t: Tab) => void }) {
+  const selected = tab === section.tab;
   return (
     <button
-      className={`nav-item update-btn ${highlight ? "update-ready" : ""}`}
-      onClick={act}
-      title={collapsed ? label : undefined}
-      disabled={phase.kind === "checking" || phase.kind === "installing"}
+      className={`side-row ${selected ? "selected" : ""}`}
+      onClick={() => onSelect(section.tab)}
+      aria-label={section.tag ? `${section.label}, ${section.tag}` : section.label}
+      aria-current={selected ? "page" : undefined}
     >
-      <Icon name={phase.kind === "ready" ? "restart" : "refresh"} size={19} />
-      <span className="nav-label">{label}</span>
-      {phase.kind === "downloading" && (
-        <span className="update-progress" style={{ width: `${Math.round(phase.fraction * 100)}%` }} />
-      )}
+      <Icon name={section.icon} size={18} />
+      <span className="side-row-label">{section.label}</span>
+      {section.tag && <span className="side-row-tag">{section.tag}</span>}
+      {!!count && <span className="side-row-count" aria-label={`${count} suggestions waiting`}>{count}</span>}
     </button>
+  );
+}
+
+/** Mac SectionRail: the slim column shown when the sidebar is collapsed and beside Coach. */
+function SectionRail({ tab, coach, onSelect, onExpand }: { tab: Tab; coach: boolean; onSelect: (t: Tab) => void; onExpand?: () => void }) {
+  const rail = (s: Section) => (
+    <button
+      key={s.tab}
+      className={`rail-btn ${tab === s.tab ? "selected" : ""}`}
+      onClick={() => onSelect(s.tab)}
+      title={s.tag ? `${s.label} (beta)` : s.label}
+      aria-label={s.label}
+    >
+      <Icon name={s.icon} size={18} />
+    </button>
+  );
+  return (
+    <aside className={`section-rail ${coach ? "coach" : ""}`} data-tauri-drag-region>
+      <BrandMark className="rail-brand" />
+      {onExpand && (
+        <button className="rail-expand" onClick={onExpand} title="Show the sidebar" aria-label="Show the sidebar">
+          <Icon name="sidebarLeft" size={16} />
+        </button>
+      )}
+      {WORKSPACE.map(rail)}
+      <span className="rail-divider" aria-hidden="true" />
+      {MANAGE.slice(0, 2).map(rail)}
+      <span className="rail-fill" data-tauri-drag-region />
+      {rail(MANAGE[2])}
+    </aside>
   );
 }
 
 function AppShell() {
   const [tab, setTab] = useState<Tab>("home");
-  const [setupOpen, setSetupOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem("orttaai-rail") === "1";
@@ -106,28 +166,54 @@ function AppShell() {
     }
   });
   const [info, setInfo] = useState<AppInfo | null>(null);
-  const { settings, patch } = useSettings();
-  const { engine } = useEngine();
+  const [pending, setPending] = useState(0);
+  const { patch } = useSettings();
   const toast = useToast();
 
   useEffect(() => {
     call<AppInfo>("app_info").then(setInfo).catch((e) => toast(String(e), "error"));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // First run → the setup wizard.
+  const refreshPending = () =>
+    call<unknown[]>("list_suggestions").then((s) => setPending(s.length)).catch(() => {});
   useEffect(() => {
-    if (settings && !settings.has_completed_setup) setSetupOpen(true);
-  }, [settings?.has_completed_setup]); // eslint-disable-line react-hooks/exhaustive-deps
+    refreshPending();
+  }, []);
+  useEvent("memory-changed", refreshPending);
+
+  const openSetup = () => call("open_setup_window").catch((e) => toast(String(e), "error"));
 
   useEvent<string>("chat-prefill", (q) => setPendingChatPrefill(q));
   useEvent<string>("engine-error", (m) => toast(m, "error"));
   useEvent<string>("engine-warning", (m) => toast(m, "warn"));
   useEvent<string>("navigate", (route) => {
-    if (route === "setup") setSetupOpen(true);
-    else if ((TABS as readonly string[]).includes(route)) setTab(route as Tab);
+    if (route === "setup") openSetup();
+    else if (route === AI_SETTINGS_ROUTE) {
+      requestAISection();
+      setTab("models");
+    } else if ((TABS as readonly string[]).includes(route)) setTab(route as Tab);
   });
 
-  const toggleRail = () =>
+  // Dev rig only (stripped from release builds): keys the screenshot script drives.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const onKey = (e: KeyboardEvent) => {
+      const n = /^F(\d+)$/.exec(e.key)?.[1];
+      if (!n) return;
+      const i = Number(n);
+      if (i >= 1 && i <= TABS.length) {
+        e.preventDefault();
+        setTab(TABS[i - 1]);
+      } else if (i === 11 || i === 12) {
+        e.preventDefault();
+        patch({ appearance: i === 11 ? "dark" : "light" }).catch(() => {});
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [patch]);
+
+  const toggleSidebar = () =>
     setCollapsed((c) => {
       try {
         localStorage.setItem("orttaai-rail", c ? "0" : "1");
@@ -137,118 +223,65 @@ function AppShell() {
       return !c;
     });
 
-  const appearance = settings?.appearance ?? "system";
-  const cycleTheme = () =>
-    patch({ appearance: appearance === "dark" ? "light" : appearance === "light" ? "system" : "dark" }).catch(
-      (e) => toast(String(e), "error"),
-    );
-  const themeIcon = appearance === "dark" ? "moon" : appearance === "light" ? "sun" : "monitor";
-
   function openFeedback() {
     const body = `<!-- Describe your feedback, bug, or feature request below. -->\n\n\n---\nOrttaai v${info?.version ?? "?"} · ${info?.platform ?? "?"} · ${info?.session ?? "?"} · ${info?.gpu_backend ?? "?"}`;
     const url = `https://github.com/theoyinbooke/orttaai-desktop/issues/new?body=${encodeURIComponent(body)}`;
     openUrl(url).catch((e) => toast(String(e), "error"));
   }
 
-  if (setupOpen) {
-    return (
-      <Setup
-        onDone={() => {
-          setSetupOpen(false);
-          setTab("home");
-        }}
-      />
-    );
-  }
+  // Coach brings its own slim rail; the sidebar steps aside.
+  const coach = tab === "coach";
+  const showRail = collapsed || coach;
 
   return (
-    <div className={`app ${collapsed ? "rail-collapsed" : ""}`}>
-      <AppearanceSync />
-      <aside className="sidebar">
-        <div className="brand">
-          <button
-            className="brand-badge"
-            onClick={collapsed ? toggleRail : undefined}
-            title={collapsed ? "Expand sidebar" : undefined}
-            aria-label={collapsed ? "Expand sidebar" : "Orttaai"}
-          >
-            <BrandMark />
-          </button>
-          <span className="brand-name">Orttaai</span>
-          <button className="icon-btn rail-toggle" onClick={toggleRail} aria-label="Collapse sidebar" title="Collapse sidebar">
-            <Icon name="chevronLeft" size={18} />
-          </button>
-        </div>
-
-        <div className={`engine-pill engine-${engine}`} title={`Engine: ${STATE_LABEL[engine]}`}>
-          <span className="engine-dot" />
-          <span className="engine-text">{STATE_LABEL[engine]}</span>
-        </div>
-
-        <nav className="nav">
-          {NAV.map((section) => (
-            <div key={section.group} className="nav-group">
-              <span className="nav-group-label">{section.group}</span>
-              {section.items.map((it) => (
-                  <button
-                    key={it.tab}
-                    className={`nav-item ${tab === it.tab ? "active" : ""}`}
-                    onClick={() => setTab(it.tab)}
-                    title={collapsed ? it.label : undefined}
-                  >
-                    <Icon name={it.icon} size={19} />
-                    <span className="nav-label">{it.label}</span>
-                  </button>
-                ))}
+    <ShellContext.Provider value={{ toggleSidebar: coach ? undefined : toggleSidebar }}>
+      <div className={`app ${showRail ? "rail" : ""}`}>
+        <AppearanceSync />
+        {showRail ? (
+          <SectionRail tab={tab} coach={coach} onSelect={setTab} onExpand={coach ? undefined : toggleSidebar} />
+        ) : (
+          <aside className="sidebar">
+            <div className="sidebar-brand" data-tauri-drag-region>
+              <BrandMark />
+              <span data-tauri-drag-region>Orttaai</span>
             </div>
-          ))}
-        </nav>
+            <nav className="sidebar-nav">
+              <span className="side-group">Workspace</span>
+              {WORKSPACE.map((s) => (
+                <SidebarRow key={s.tab} section={s} tab={tab} onSelect={setTab} />
+              ))}
+              <span className="side-group manage">Manage</span>
+              {MANAGE.map((s) => (
+                <SidebarRow key={s.tab} section={s} tab={tab} count={s.tab === "memory" ? pending : 0} onSelect={setTab} />
+              ))}
+            </nav>
+            <div className="sidebar-foot">
+              <UpdateRow />
+              <button className="run-setup" onClick={openSetup} title="Run setup again">
+                <Icon name="sliders" size={17} />
+                <span>Run Setup</span>
+              </button>
+            </div>
+          </aside>
+        )}
 
-        <div className="sidebar-foot">
-          <UpdateButton collapsed={collapsed} />
-          <button className="nav-item" onClick={openFeedback} title={collapsed ? "Send feedback" : undefined}>
-            <Icon name="send" size={19} />
-            <span className="nav-label">Feedback</span>
-          </button>
-          <button
-            className={`nav-item ${tab === "about" ? "active" : ""}`}
-            onClick={() => setTab("about")}
-            title={collapsed ? "About" : undefined}
-          >
-            <Icon name="info" size={19} />
-            <span className="nav-label">About</span>
-          </button>
-          <button
-            className={`nav-item ${tab === "settings" ? "active" : ""}`}
-            onClick={() => setTab("settings")}
-            title={collapsed ? "Settings" : undefined}
-          >
-            <Icon name="settings" size={19} />
-            <span className="nav-label">Settings</span>
-          </button>
-          <div className="foot-tools">
-            <button className="icon-btn" onClick={cycleTheme} title={`Appearance: ${appearance}`} aria-label="Toggle appearance">
-              <Icon name={themeIcon} size={17} />
-            </button>
-          </div>
-        </div>
-      </aside>
-
-      <main className="content">
-        {tab === "home" && <Home onNavigate={setTab} />}
-        {tab === "chat" && <ChatAI />}
-        {tab === "graph" && <MemoryGraph />}
-        {tab === "memory" && <Memory />}
-        {tab === "analytics" && <Analytics />}
-        {tab === "milestones" && <Milestones />}
-        {tab === "coach" && <Coach />}
-        {tab === "models" && <Models />}
-        {tab === "settings" && <SettingsView info={info} onRunSetup={() => setSetupOpen(true)} />}
-        {tab === "about" && <About info={info} onFeedback={openFeedback} />}
-      </main>
-      <WhatsNew />
-      <Celebrations />
-    </div>
+        <main className={`content section-${tab}`}>
+          <WindowControls />
+          {tab === "home" && <Home onNavigate={setTab} />}
+          {tab === "chat" && <ChatAI />}
+          {tab === "graph" && <MemoryGraph />}
+          {tab === "memory" && <Memory />}
+          {tab === "analytics" && <Analytics />}
+          {tab === "milestones" && <Milestones />}
+          {tab === "coach" && <Coach />}
+          {tab === "models" && <Models />}
+          {tab === "settings" && <SettingsView info={info} onRunSetup={openSetup} />}
+          {tab === "about" && <About info={info} onFeedback={openFeedback} />}
+        </main>
+        <WhatsNew />
+        <Celebrations />
+      </div>
+    </ShellContext.Provider>
   );
 }
 

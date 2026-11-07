@@ -27,7 +27,7 @@ use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager,
+    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
 /// Map any displayable error into the `String` errors Tauri commands return.
@@ -162,8 +162,63 @@ fn app_info() -> AppInfo {
     }
 }
 
-/// Bring the main window forward, optionally on a specific page.
+/// The first-run / "Run Setup" window: its own fixed 600 x 750 window, as on the
+/// Mac, not a page inside the main window.
+pub(crate) fn open_setup(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window("setup") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    let window = WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("index.html".into()))
+        .title("Orttaai Setup")
+        .inner_size(600.0, 750.0)
+        .resizable(false)
+        .maximizable(false)
+        .center()
+        .build()?;
+    let _ = window.set_focus();
+    Ok(())
+}
+
+/// Opens Setup from a place that can't build a window inline (menu events, the
+/// second-instance callback).
+fn open_setup_later(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = open_setup(&app) {
+            eprintln!("orttaai: couldn't open setup: {e}");
+        }
+    });
+}
+
+#[tauri::command]
+async fn open_setup_window(app: AppHandle) -> Result<(), String> {
+    open_setup(&app).map_err(|e| e.to_string())
+}
+
+/// Setup is done: its window goes away and the workspace opens on Overview.
+#[tauri::command]
+async fn finish_setup(app: AppHandle) -> Result<(), String> {
+    show_main(&app, Some("home"));
+    if let Some(window) = app.get_webview_window("setup") {
+        window.destroy().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Bring the main window forward, optionally on a specific page. Until setup
+/// is finished that means the setup window.
 pub(crate) fn show_main(app: &AppHandle, route: Option<&str>) {
+    if route == Some("setup") {
+        open_setup_later(app);
+        return;
+    }
+    if !Settings::load_or_default().has_completed_setup {
+        open_setup_later(app);
+        return;
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
@@ -247,10 +302,14 @@ pub fn run() {
             wire_learn_from_edits(app.handle());
             sync_launch_at_login(app.handle(), &Settings::load_or_default());
             engine::on_app_ready(app.handle());
-            // Launched at login → stay in the tray.
-            if std::env::args().any(|a| a == "--minimized") {
+            // The main window starts hidden: a new install sees only the setup
+            // window, and a launch at login stays in the tray.
+            if !Settings::load_or_default().has_completed_setup {
+                open_setup(app.handle())?;
+            } else if !std::env::args().any(|a| a == "--minimized") {
                 if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.hide();
+                    let _ = w.show();
+                    let _ = w.set_focus();
                 }
             }
             Ok(())
@@ -262,12 +321,20 @@ pub fn run() {
                 if window.label() == "main" {
                     api.prevent_close();
                     let _ = window.hide();
+                } else if window.label() == "setup"
+                    && !Settings::load_or_default().has_completed_setup
+                {
+                    // Nothing else is open yet, and a tray isn't a given on Linux,
+                    // so closing first-run setup quits; the next launch reopens it.
+                    window.app_handle().exit(0);
                 }
             }
         })
         .invoke_handler(tauri::generate_handler![
             // == shell ==
             app_info,
+            open_setup_window,
+            finish_setup,
             settings_cmds::get_settings,
             settings_cmds::update_settings,
             settings_cmds::reset_settings,

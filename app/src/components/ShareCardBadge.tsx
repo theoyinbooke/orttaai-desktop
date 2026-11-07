@@ -73,7 +73,8 @@ export function MilestoneBadge({
 }) {
   const look: BadgeLook = forceUnlocked ? "unlocked" : lookOf(badge);
   const g = ringGeometry(size);
-  const c = colors(badge.tier, look, "var(--faint)");
+  // Follows the theme's accent on pages; share cards (canvas) stay the dark look.
+  const c = { ...colors(badge.tier, look, "var(--tx3)"), ...(look === "unlocked" ? null : { ticks: "var(--accent)" }) };
   const half = size / 2;
   const arcR = half - g.outerW / 2;
   const circ = 2 * Math.PI * arcR;
@@ -91,7 +92,7 @@ export function MilestoneBadge({
       style={{ opacity: look === "locked" ? 0.75 : 1 }}
     >
       <circle cx={half} cy={half} r={half} fill="#26262A" />
-      <circle cx={half} cy={half} r={half - g.border / 2} fill="none" stroke="#3A3A3C" strokeWidth={g.border} />
+      <circle cx={half} cy={half} r={half - g.border / 2} fill="none" stroke="var(--surface-3)" strokeWidth={g.border} />
       {look === "unlocked" && (
         <circle cx={half} cy={half} r={arcR} fill="none" stroke={TIER_COLOR[badge.tier]} strokeWidth={g.outerW} />
       )}
@@ -101,7 +102,7 @@ export function MilestoneBadge({
           cy={half}
           r={arcR}
           fill="none"
-          stroke={AMBER}
+          stroke="var(--accent)"
           strokeWidth={g.outerW}
           strokeLinecap="round"
           strokeDasharray={`${circ * fraction} ${circ}`}

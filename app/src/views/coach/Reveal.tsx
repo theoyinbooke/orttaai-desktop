@@ -5,6 +5,7 @@ import { useState } from "react";
 import "./practice.css";
 import { Icon, useToast } from "../../ui";
 import { coachApi, coachVoice, monthDay, personaVoice, type CheckResult, type RepResult } from "../../lib/coach";
+import { CoachIcon } from "./icons";
 import { Btn, InfoButton, Tag, checkLabel, personaOf, skillOf, trackOf, useCoach } from "./parts";
 import PersonaGlyph from "./PersonaGlyph";
 
@@ -51,7 +52,7 @@ export default function Reveal({ result, nextTitle = "Next rep", onAgain, onNext
               <p>“{result.note}”</p>
             </div>
             <button type="button" className="coach-reveal-play" onClick={hear} aria-label={`Hear ${persona.name} say it`}>
-              <Icon name="play" size={18} />
+              <CoachIcon name="playFill" size={18} />
             </button>
           </div>
         </div>
@@ -71,13 +72,13 @@ export default function Reveal({ result, nextTitle = "Next rep", onAgain, onNext
         )}
 
         <div className="coach-surface coach-pad coach-reveal-checks">
-          <div className="coach-row">
+          <div className="coach-row" style={{ gap: 8 }}>
             <h3 className="coach-h3">How it was scored</h3>
             <InfoButton
               title="How it was scored"
               text={
                 result.judge_model
-                  ? `Counted checks are exact. The others were each asked as one yes or no question of ${result.judge_model} on this machine, with how sure it was. Your coach doesn't change the score.`
+                  ? `Counted checks are exact. The others were each asked as one yes or no question of ${result.judge_model} on this computer, with how sure it was. Your coach doesn't change the score.`
                   : "Only the counted checks ran. The rest need a local model (Ollama or LM Studio) that has passed the judge check in Cast › Models."
               }
             />
@@ -182,7 +183,7 @@ function CheckCell({ check, label, isSkill }: { check: CheckResult; label: strin
         <span style={{ fontWeight: isSkill ? 600 : 400 }}>{label}</span>
         {isSkill && (
           <span className="coach-reveal-target" aria-label="This skill" title="This skill">
-            <Icon name="target" size={13} />
+            <Icon name="scope" size={13} />
           </span>
         )}
       </div>

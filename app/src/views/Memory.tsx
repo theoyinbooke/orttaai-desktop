@@ -2,8 +2,8 @@
 // text-pipeline area.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Badge, Button, ConfirmDialog, CopyButton, Icon, IconButton, PageHeader, Spinner, Switch, Tabs, useToast } from "../ui";
-import { ToggleRow } from "../components/SettingsRows";
+import { Badge, Button, ConfirmDialog, CopyButton, Icon, IconButton, PageHeader, Spinner, Switch, useToast } from "../ui";
+import { Glyph, Row, Section, TabBar, ToggleRow } from "../components/SettingsRows";
 import { useSettings } from "../lib/settings";
 import {
   countLabel,
@@ -21,21 +21,27 @@ import "../styles/memory.css";
 
 type Sub = "dictionary" | "snippets" | "suggestions";
 
-const EMPTY: Record<Sub, { title: string; message: string; icon: string }> = {
+const TABS: { value: Sub; label: string; icon: ReactNode }[] = [
+  { value: "dictionary", label: "Dictionary", icon: <Icon name="book" size={13} /> },
+  { value: "snippets", label: "Snippets", icon: <Glyph name="textPlus" /> },
+  { value: "suggestions", label: "Suggestions", icon: <Glyph name="bulb" /> },
+];
+
+const EMPTY: Record<Sub, { title: string; message: string; icon: ReactNode }> = {
   dictionary: {
     title: "No dictionary entries",
     message: "Add common terms, names, and preferred spellings.",
-    icon: "dictionary",
+    icon: <Icon name="textCheck" size={13} />,
   },
   snippets: {
     title: "No snippets yet",
     message: "Save short triggers for long text you repeat often.",
-    icon: "edit",
+    icon: <Glyph name="textInsert" />,
   },
   suggestions: {
     title: "No pending suggestions",
     message: "Fix a misheard name right after dictating it and it appears here, or run Analyze History.",
-    icon: "sparkle",
+    icon: <Glyph name="brain" />,
   },
 };
 
@@ -84,60 +90,28 @@ export default function Memory() {
     }
   };
 
-  const pending = data.suggestions.length;
-
   return (
     <div className="view memory-view">
       <PageHeader
         title="Memory"
-        desc="What speech recognition hears, how Orttaai should write it, and what it has learned from you."
+        leading={<TabBar tabs={TABS} value={sub} onChange={setSub} label="Memory sections" />}
         actions={
-          <>
-            <Button size="sm" icon="download" onClick={() => fileRef.current?.click()}>
-              Import…
-            </Button>
-            <Button size="sm" icon="share" onClick={exportMemory}>
-              Export
-            </Button>
+          <label className="mem-search">
+            <Icon name="search" size={13} />
             <input
-              ref={fileRef}
-              type="file"
-              accept="application/json,.json"
-              hidden
-              onChange={(e) => {
-                importFile(e.currentTarget.files?.[0]);
-                e.currentTarget.value = "";
-              }}
+              value={query}
+              onChange={(e) => setQuery(e.currentTarget.value)}
+              placeholder="Search entries"
+              aria-label="Search entries"
             />
-          </>
+            {query && (
+              <button className="mem-search-clear" aria-label="Clear search" onClick={() => setQuery("")}>
+                <Glyph name="clearFill" size={13} />
+              </button>
+            )}
+          </label>
         }
       />
-
-      <div className="mem-toolbar">
-        <Tabs<Sub>
-          value={sub}
-          onChange={setSub}
-          tabs={[
-            { value: "dictionary", label: `Dictionary · ${data.dictionary.length}` },
-            { value: "snippets", label: `Snippets · ${data.snippets.length}` },
-            { value: "suggestions", label: pending ? `Suggestions · ${pending}` : "Suggestions" },
-          ]}
-        />
-        <label className="mem-search">
-          <Icon name="search" size={15} />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.currentTarget.value)}
-            placeholder="Search entries"
-            aria-label="Search entries"
-          />
-          {query && (
-            <button className="mem-search-clear" aria-label="Clear search" onClick={() => setQuery("")}>
-              <Icon name="x" size={13} />
-            </button>
-          )}
-        </label>
-      </div>
 
       {(flash || data.error) && (
         <div className={`mem-flash ${flash?.tone === "error" || (!flash && data.error) ? "is-error" : ""}`} role="status">
@@ -149,15 +123,15 @@ export default function Memory() {
           )}
           {flash && (
             <button className="mem-flash-x" aria-label="Dismiss" onClick={() => setFlash(null)}>
-              <Icon name="x" size={13} />
+              <Icon name="x" size={12} />
             </button>
           )}
         </div>
       )}
 
       {data.loading ? (
-        <div className="card mem-loading">
-          <Spinner /> <span className="muted">Loading memory entries…</span>
+        <div className="mem-loading">
+          <Spinner size={13} /> <span>Loading memory entries…</span>
         </div>
       ) : sub === "dictionary" ? (
         <DictionaryTab entries={data.dictionary} query={query} onError={fail} />
@@ -172,43 +146,52 @@ export default function Memory() {
           onReport={(text) => setFlash({ tone: "info", text })}
         />
       )}
+
+      {/* Desktop only: moving Personal Memory between computers, which the Mac does over iCloud. */}
+      {!data.loading && sub !== "suggestions" && (
+        <Section>
+          <Row label="Import and Export" hint="Moves your dictionary and snippets between computers as a JSON file.">
+            <Button size="sm" className="st-btn" onClick={() => fileRef.current?.click()}>
+              Import…
+            </Button>
+            <Button size="sm" className="st-btn" onClick={exportMemory}>
+              Export
+            </Button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="application/json,.json"
+              hidden
+              onChange={(e) => {
+                importFile(e.currentTarget.files?.[0]);
+                e.currentTarget.value = "";
+              }}
+            />
+          </Row>
+        </Section>
+      )}
     </div>
   );
 }
 
 /* ------------------------------------------------------------ shared bits -- */
 
-function MemCard({ title, info, meta, children }: { title: string; info: string; meta?: ReactNode; children: ReactNode }) {
-  return (
-    <section className="mem-card">
-      <header className="mem-card-head">
-        <div>
-          <h2>{title}</h2>
-          <p>{info}</p>
-        </div>
-        {meta && <div className="mem-card-meta">{meta}</div>}
-      </header>
-      {children}
-    </section>
-  );
-}
-
 function Empty({ sub, searching }: { sub: Sub; searching: boolean }) {
   const e = EMPTY[sub];
   const noun = sub === "dictionary" ? "dictionary" : sub === "snippets" ? "snippet" : "suggestion";
   return (
     <div className="mem-empty">
-      <Icon name={searching ? "search" : e.icon} size={16} />
-      <div>
+      <div className="mem-empty-title">
+        {e.icon}
         <strong>{searching ? `No ${noun} matches` : e.title}</strong>
-        <p>{searching ? "Try a different search query." : e.message}</p>
       </div>
+      <p>{searching ? "Try a different search query." : e.message}</p>
     </div>
   );
 }
 
 function Used({ n }: { n: number }) {
-  return <span className="mem-used mono">{n}×</span>;
+  return <span className="mem-used">{n}×</span>;
 }
 
 /** Enter submits, Escape cancels (single-line inputs). */
@@ -239,34 +222,56 @@ function CaseToggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => v
   );
 }
 
+/** The add line doubles as the edit line, so bring it into view when editing starts. */
+function focusEditor(input: HTMLElement | null) {
+  input?.closest(".set-section")?.scrollIntoView({ block: "nearest" });
+  input?.focus();
+}
+
 /* ------------------------------------------------------------- dictionary -- */
 
 function DictionaryTab({ entries, query, onError }: { entries: DictionaryEntry[]; query: string; onError: (e: unknown) => void }) {
   const [source, setSource] = useState("");
   const [target, setTarget] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
+  const [editing, setEditing] = useState<DictionaryEntry | null>(null);
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState<DictionaryEntry | null>(null);
+  const firstField = useRef<HTMLInputElement>(null);
   const shown = useMemo(() => entries.filter((e) => matches(query, e.source, e.target)), [entries, query]);
   const valid = source.trim() !== "" && target.trim() !== "";
 
-  const add = () => {
+  const reset = () => {
+    setSource("");
+    setTarget("");
+    setCaseSensitive(false);
+    setEditing(null);
+  };
+  const begin = (e: DictionaryEntry) => {
+    setEditing(e);
+    setSource(e.source);
+    setTarget(e.target);
+    setCaseSensitive(e.is_case_sensitive);
+    focusEditor(firstField.current);
+  };
+  const save = () => {
     if (!valid || busy) return;
     setBusy(true);
     memoryApi
-      .saveDictionary({ source, target, caseSensitive })
-      .then(() => {
-        setSource("");
-        setTarget("");
-        setCaseSensitive(false);
-      })
+      .saveDictionary(
+        editing
+          ? { id: editing.id, source, target, caseSensitive, active: editing.is_active }
+          : { source, target, caseSensitive },
+      )
+      .then(reset)
       .catch(onError)
       .finally(() => setBusy(false));
   };
+  const onKeys = keys(save, editing ? reset : undefined);
 
   return (
     <>
-      <div className="set-rows">
+      <Section>
         <ToggleRow
           k="dictionary_enabled"
           label="Dictionary Replacements"
@@ -277,23 +282,28 @@ function DictionaryTab({ entries, query, onError }: { entries: DictionaryEntry[]
           label="Bias Recognition to My Words"
           hint="Nudges speech recognition toward the words in your dictionary, so names are heard right the first time."
         />
-      </div>
+      </Section>
 
-      <MemCard
+      <Section
         title="Dictionary"
-        info="What speech recognition hears, and how Orttaai should write it."
-        meta={<span className="small muted">{countLabel(entries.filter((e) => e.is_active).length, entries.length)}</span>}
+        desc="What speech recognition hears, and how Orttaai should write it."
+        accessory={countLabel(entries.filter((e) => e.is_active).length, entries.length)}
       >
         <div className="mem-editor">
-          <input className="text-input" placeholder="Heard as" value={source} onChange={(e) => setSource(e.currentTarget.value)} onKeyDown={keys(add)} aria-label="Heard as" />
+          <input ref={firstField} className="text-input" placeholder="Heard as" value={source} onChange={(e) => setSource(e.currentTarget.value)} onKeyDown={onKeys} aria-label="Heard as" />
           <span className="mem-editor-arrow" aria-hidden="true">
-            →
+            <Icon name="arrowRight" size={11} />
           </span>
-          <input className="text-input" placeholder="Written as" value={target} onChange={(e) => setTarget(e.currentTarget.value)} onKeyDown={keys(add)} aria-label="Written as" />
+          <input className="text-input" placeholder="Written as" value={target} onChange={(e) => setTarget(e.currentTarget.value)} onKeyDown={onKeys} aria-label="Written as" />
           <CaseToggle on={caseSensitive} onChange={setCaseSensitive} />
-          <Button variant="primary" size="sm" icon="plus" onClick={add} disabled={!valid} loading={busy}>
-            Add
+          <Button variant="primary" size="sm" className="st-btn" onClick={save} disabled={!valid} loading={busy}>
+            {editing ? "Update" : "Add"}
           </Button>
+          {editing && (
+            <Button size="sm" className="st-btn" onClick={reset}>
+              Cancel
+            </Button>
+          )}
         </div>
 
         {shown.length === 0 ? (
@@ -308,11 +318,11 @@ function DictionaryTab({ entries, query, onError }: { entries: DictionaryEntry[]
               <span />
             </div>
             {shown.map((e) => (
-              <DictionaryRow key={e.id} entry={e} onError={onError} onDelete={() => setDeleting(e)} />
+              <DictionaryRow key={e.id} entry={e} onError={onError} onEdit={() => begin(e)} onDelete={() => setDeleting(e)} />
             ))}
           </div>
         )}
-      </MemCard>
+      </Section>
 
       <ConfirmDialog
         open={deleting !== null}
@@ -323,6 +333,7 @@ function DictionaryTab({ entries, query, onError }: { entries: DictionaryEntry[]
         onConfirm={() => {
           const id = deleting?.id;
           setDeleting(null);
+          if (id === editing?.id) reset();
           if (id !== undefined) memoryApi.deleteDictionary(id).catch(onError);
         }}
       />
@@ -330,44 +341,17 @@ function DictionaryTab({ entries, query, onError }: { entries: DictionaryEntry[]
   );
 }
 
-function DictionaryRow({ entry, onError, onDelete }: { entry: DictionaryEntry; onError: (e: unknown) => void; onDelete: () => void }) {
-  const [editing, setEditing] = useState(false);
-  const [source, setSource] = useState(entry.source);
-  const [target, setTarget] = useState(entry.target);
-  const [cs, setCs] = useState(entry.is_case_sensitive);
-
-  const begin = () => {
-    setSource(entry.source);
-    setTarget(entry.target);
-    setCs(entry.is_case_sensitive);
-    setEditing(true);
-  };
-  const save = () => {
-    if (!source.trim() || !target.trim()) return;
-    memoryApi
-      .saveDictionary({ id: entry.id, source, target, caseSensitive: cs, active: entry.is_active })
-      .then(() => setEditing(false))
-      .catch(onError);
-  };
-
-  if (editing) {
-    return (
-      <div className="mem-row mem-dict is-editing" role="row">
-        <input className="text-input" autoFocus value={source} onChange={(e) => setSource(e.currentTarget.value)} onKeyDown={keys(save, () => setEditing(false))} aria-label="Heard as" />
-        <input className="text-input" value={target} onChange={(e) => setTarget(e.currentTarget.value)} onKeyDown={keys(save, () => setEditing(false))} aria-label="Written as" />
-        <CaseToggle on={cs} onChange={setCs} />
-        <span className="mem-actions">
-          <Button size="sm" variant="primary" onClick={save} disabled={!source.trim() || !target.trim()}>
-            Update
-          </Button>
-          <Button size="sm" onClick={() => setEditing(false)}>
-            Cancel
-          </Button>
-        </span>
-      </div>
-    );
-  }
-
+function DictionaryRow({
+  entry,
+  onError,
+  onEdit,
+  onDelete,
+}: {
+  entry: DictionaryEntry;
+  onError: (e: unknown) => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   return (
     <div className={`mem-row mem-dict ${entry.is_active ? "" : "is-off"}`} role="row">
       <span className="mem-cell" title={entry.source}>
@@ -382,11 +366,11 @@ function DictionaryRow({ entry, onError, onDelete }: { entry: DictionaryEntry; o
         {entry.target}
       </span>
       <Used n={entry.usage_count} />
-      <span>
+      <span className="mem-switch">
         <Switch checked={entry.is_active} label={`${entry.source} active`} onChange={(v) => memoryApi.setDictionaryActive(entry.id, v).catch(onError)} />
       </span>
       <span className="mem-actions">
-        <IconButton name="edit" label={`Edit ${entry.source}`} onClick={begin} />
+        <IconButton name="edit" label={`Edit ${entry.source}`} onClick={onEdit} />
         <IconButton name="trash" label={`Delete ${entry.source}`} className="mem-danger" onClick={onDelete} />
       </span>
     </div>
@@ -398,37 +382,57 @@ function DictionaryRow({ entry, onError, onDelete }: { entry: DictionaryEntry; o
 function SnippetsTab({ entries, query, onError }: { entries: SnippetEntry[]; query: string; onError: (e: unknown) => void }) {
   const [trigger, setTrigger] = useState("");
   const [expansion, setExpansion] = useState("");
+  const [editing, setEditing] = useState<SnippetEntry | null>(null);
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState<SnippetEntry | null>(null);
+  const firstField = useRef<HTMLInputElement>(null);
   const shown = useMemo(() => entries.filter((e) => matches(query, e.trigger, e.expansion)), [entries, query]);
   const valid = trigger.trim() !== "" && expansion.trim() !== "";
 
-  const add = () => {
+  const reset = () => {
+    setTrigger("");
+    setExpansion("");
+    setEditing(null);
+  };
+  const begin = (e: SnippetEntry) => {
+    setEditing(e);
+    setTrigger(e.trigger);
+    setExpansion(e.expansion);
+    focusEditor(firstField.current);
+  };
+  const save = () => {
     if (!valid || busy) return;
     setBusy(true);
     memoryApi
-      .saveSnippet({ trigger, expansion })
-      .then(() => {
-        setTrigger("");
-        setExpansion("");
-      })
+      .saveSnippet(editing ? { id: editing.id, trigger, expansion, active: editing.is_active } : { trigger, expansion })
+      .then(reset)
       .catch(onError)
       .finally(() => setBusy(false));
   };
 
   return (
     <>
-      <div className="set-rows">
+      <Section>
         <ToggleRow k="snippets_enabled" label="Snippet Expansions" hint="Say a trigger phrase and Orttaai types its full text." />
-      </div>
+      </Section>
 
-      <MemCard
+      <Section
         title="Snippets"
-        info="Short phrases that expand into text you repeat often. Say the trigger on its own, or after “insert”."
-        meta={<span className="small muted">{countLabel(entries.filter((e) => e.is_active).length, entries.length)}</span>}
+        desc="Short phrases that expand into text you repeat often."
+        accessory={countLabel(entries.filter((e) => e.is_active).length, entries.length)}
       >
         <div className="mem-editor mem-editor-snippet">
-          <input className="text-input mem-trigger-field" placeholder="Trigger phrase" value={trigger} onChange={(e) => setTrigger(e.currentTarget.value)} aria-label="Trigger phrase" />
+          <input
+            ref={firstField}
+            className="text-input mem-trigger-field"
+            placeholder="Trigger phrase"
+            value={trigger}
+            onChange={(e) => setTrigger(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && editing) reset();
+            }}
+            aria-label="Trigger phrase"
+          />
           <textarea
             className="text-input"
             placeholder="Text it types"
@@ -436,16 +440,22 @@ function SnippetsTab({ entries, query, onError }: { entries: SnippetEntry[]; que
             rows={Math.min(5, Math.max(1, expansion.split("\n").length))}
             onChange={(e) => setExpansion(e.currentTarget.value)}
             onKeyDown={(e) => {
+              if (e.key === "Escape" && editing) reset();
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
-                add();
+                save();
               }
             }}
             aria-label="Text it types"
           />
-          <Button variant="primary" size="sm" icon="plus" onClick={add} disabled={!valid} loading={busy}>
-            Add
+          <Button variant="primary" size="sm" className="st-btn" onClick={save} disabled={!valid} loading={busy}>
+            {editing ? "Update" : "Add"}
           </Button>
+          {editing && (
+            <Button size="sm" className="st-btn" onClick={reset}>
+              Cancel
+            </Button>
+          )}
         </div>
 
         {shown.length === 0 ? (
@@ -460,11 +470,11 @@ function SnippetsTab({ entries, query, onError }: { entries: SnippetEntry[]; que
               <span />
             </div>
             {shown.map((e) => (
-              <SnippetRow key={e.id} entry={e} onError={onError} onDelete={() => setDeleting(e)} />
+              <SnippetRow key={e.id} entry={e} onError={onError} onEdit={() => begin(e)} onDelete={() => setDeleting(e)} />
             ))}
           </div>
         )}
-      </MemCard>
+      </Section>
 
       <ConfirmDialog
         open={deleting !== null}
@@ -475,6 +485,7 @@ function SnippetsTab({ entries, query, onError }: { entries: SnippetEntry[]; que
         onConfirm={() => {
           const id = deleting?.id;
           setDeleting(null);
+          if (id === editing?.id) reset();
           if (id !== undefined) memoryApi.deleteSnippet(id).catch(onError);
         }}
       />
@@ -482,51 +493,17 @@ function SnippetsTab({ entries, query, onError }: { entries: SnippetEntry[]; que
   );
 }
 
-function SnippetRow({ entry, onError, onDelete }: { entry: SnippetEntry; onError: (e: unknown) => void; onDelete: () => void }) {
-  const [editing, setEditing] = useState(false);
-  const [trigger, setTrigger] = useState(entry.trigger);
-  const [expansion, setExpansion] = useState(entry.expansion);
-
-  const begin = () => {
-    setTrigger(entry.trigger);
-    setExpansion(entry.expansion);
-    setEditing(true);
-  };
-  const save = () => {
-    if (!trigger.trim() || !expansion.trim()) return;
-    memoryApi
-      .saveSnippet({ id: entry.id, trigger, expansion, active: entry.is_active })
-      .then(() => setEditing(false))
-      .catch(onError);
-  };
-
-  if (editing) {
-    return (
-      <div className="mem-row mem-snip is-editing" role="row">
-        <input className="text-input" autoFocus value={trigger} onChange={(e) => setTrigger(e.currentTarget.value)} onKeyDown={keys(save, () => setEditing(false))} aria-label="Trigger phrase" />
-        <textarea
-          className="text-input"
-          value={expansion}
-          rows={Math.min(5, Math.max(2, expansion.split("\n").length))}
-          onChange={(e) => setExpansion(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setEditing(false);
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save();
-          }}
-          aria-label="Text it types"
-        />
-        <span className="mem-actions">
-          <Button size="sm" variant="primary" onClick={save} disabled={!trigger.trim() || !expansion.trim()}>
-            Update
-          </Button>
-          <Button size="sm" onClick={() => setEditing(false)}>
-            Cancel
-          </Button>
-        </span>
-      </div>
-    );
-  }
-
+function SnippetRow({
+  entry,
+  onError,
+  onEdit,
+  onDelete,
+}: {
+  entry: SnippetEntry;
+  onError: (e: unknown) => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   return (
     <div className={`mem-row mem-snip ${entry.is_active ? "" : "is-off"}`} role="row">
       <span className="mem-cell mem-target" title={entry.trigger}>
@@ -536,12 +513,12 @@ function SnippetRow({ entry, onError, onDelete }: { entry: SnippetEntry; onError
         {entry.expansion.replace(/\n/g, " ")}
       </span>
       <Used n={entry.usage_count} />
-      <span>
+      <span className="mem-switch">
         <Switch checked={entry.is_active} label={`${entry.trigger} active`} onChange={(v) => memoryApi.setSnippetActive(entry.id, v).catch(onError)} />
       </span>
       <span className="mem-actions">
         <CopyButton text={entry.expansion} label="Copy text" compact />
-        <IconButton name="edit" label={`Edit ${entry.trigger}`} onClick={begin} />
+        <IconButton name="edit" label={`Edit ${entry.trigger}`} onClick={onEdit} />
         <IconButton name="trash" label={`Delete ${entry.trigger}`} className="mem-danger" onClick={onDelete} />
       </span>
     </div>
@@ -550,15 +527,16 @@ function SnippetRow({ entry, onError, onDelete }: { entry: SnippetEntry; onError
 
 /* ------------------------------------------------------------ suggestions -- */
 
-const CHECK_ICON: Record<EditCheck["outcome"], string> = {
-  learned: "dictionary",
-  already_known: "check",
-  edited_no_name: "edit",
-  no_change: "check",
-  text_not_found: "search",
-  unreadable: "x",
-  secure_field: "shield",
-  not_english: "globe",
+/** Mac `MemoryView.symbol(for:)`. */
+const CHECK_ICON: Record<EditCheck["outcome"], ReactNode> = {
+  learned: <Icon name="book" size={13} />,
+  already_known: <Icon name="check" size={13} />,
+  edited_no_name: <Icon name="edit" size={13} />,
+  no_change: <Icon name="check" size={13} />,
+  text_not_found: <Glyph name="eyeSlash" />,
+  unreadable: <Glyph name="eyeSlash" />,
+  secure_field: <Icon name="lock" size={13} />,
+  not_english: <Icon name="globe" size={13} />,
 };
 
 function SuggestionsTab({
@@ -594,7 +572,7 @@ function SuggestionsTab({
 
   return (
     <>
-      <div className="set-rows">
+      <Section>
         <ToggleRow
           k="learn_from_edits"
           disabled={!editsSupported}
@@ -612,39 +590,39 @@ function SuggestionsTab({
         <ToggleRow
           k="ai_suggestions"
           label="Prefer Local AI for Suggestions"
-          hint="Uses your local model (Ollama or LM Studio, from AI Features) to propose dictionary words and snippets from your history. Nothing leaves this computer."
+          hint="Uses your local model (Ollama or LM Studio, set in Model › AI Features) to propose dictionary words and snippets from your history. Nothing leaves this computer."
         />
-      </div>
+      </Section>
 
       {settings?.learn_from_edits && editsSupported && (
-        <MemCard
+        <Section
           title="Learning from your edits"
-          info="After each dictation, Orttaai watches the same text box for a few minutes. If you fix a misheard name or term in what you dictated, the fix appears below as a suggestion. Rewording and ordinary typos don't count. Only the outcome is kept here, never the text."
+          desc="After each dictation, Orttaai watches the same text box for a few minutes. If you fix a misheard name or term in what you dictated, the fix appears below as a suggestion. Rewording and ordinary typos don't count. Only the outcome is kept here, never the text."
         >
           {checks.length === 0 ? (
-            <p className="muted small mem-pad">
+            <p className="mem-pad">
               Nothing checked yet. Dictate into any app; if you then fix a misheard name in the same box, Orttaai will notice.
             </p>
           ) : (
             <ul className="mem-checks">
               {checks.map((c) => (
                 <li key={c.id} className={c.outcome === "learned" ? "is-learned" : ""}>
-                  <Icon name={CHECK_ICON[c.outcome] ?? "info"} size={14} />
+                  <span className="mem-check-icon">{CHECK_ICON[c.outcome] ?? <Icon name="info" size={13} />}</span>
                   <span className="mem-check-text">{c.description}</span>
-                  {c.app_name && <span className="muted small">{c.app_name}</span>}
-                  <span className="muted small mem-check-when">{relativeTime(c.checked_at)}</span>
+                  {c.app_name && <span className="mem-check-meta">{c.app_name}</span>}
+                  <span className="mem-check-meta mem-check-when">{relativeTime(c.checked_at)}</span>
                 </li>
               ))}
             </ul>
           )}
-        </MemCard>
+        </Section>
       )}
 
-      <MemCard
+      <Section
         title="Suggestions"
-        info="Words and phrases found in your history that could become dictionary entries or snippets."
-        meta={
-          <Button size="sm" icon="sparkle" onClick={analyze} loading={analyzing}>
+        desc="Words and phrases found in your history that could become dictionary entries or snippets."
+        accessory={
+          <Button size="sm" className="st-btn" onClick={analyze} disabled={analyzing}>
             {analyzing ? "Analyzing…" : "Analyze History"}
           </Button>
         }
@@ -664,7 +642,7 @@ function SuggestionsTab({
               <div key={s.id} className="mem-row mem-sugg" role="row">
                 <span className="mem-type">
                   <span>{s.kind === "dictionary" ? "Dictionary" : "Snippet"}</span>
-                  <span className="faint">{s.origin === "edit" ? "Your edit" : "History"}</span>
+                  <span className="mem-origin">{s.origin === "edit" ? "Your edit" : "History"}</span>
                 </span>
                 <span className="mem-cell" title={s.candidate_source}>
                   {s.candidate_source}
@@ -672,25 +650,20 @@ function SuggestionsTab({
                 <span className="mem-cell mem-target" title={s.evidence ?? s.candidate_target}>
                   {s.candidate_target.replace(/\n/g, " ")}
                 </span>
-                <span className="mem-conf">
-                  <span className="mem-conf-bar">
-                    <span style={{ width: `${Math.round(s.confidence * 100)}%` }} />
-                  </span>
-                  <span className="mono small">{Math.round(s.confidence * 100)}%</span>
-                </span>
+                <span className="mem-used">{Math.round(s.confidence * 100)}%</span>
                 <span className="mem-actions">
-                  <Button size="sm" variant="primary" onClick={() => memoryApi.acceptSuggestion(s.id).catch(onError)}>
+                  <Button size="sm" variant="primary" className="st-btn" onClick={() => memoryApi.acceptSuggestion(s.id).catch(onError)}>
                     Accept
                   </Button>
-                  <Button size="sm" className="mem-reject" onClick={() => memoryApi.dismissSuggestion(s.id).catch(onError)}>
-                    Dismiss
+                  <Button size="sm" className="st-btn st-danger" onClick={() => memoryApi.dismissSuggestion(s.id).catch(onError)}>
+                    Reject
                   </Button>
                 </span>
               </div>
             ))}
           </div>
         )}
-      </MemCard>
+      </Section>
     </>
   );
 }

@@ -1,12 +1,16 @@
-// Chat AI (Mac ChatAIView). Owned by the ai area.
-// Saved conversations grouped by recency, a composer with model / reply depth /
-// thinking / mode, streamed replies rendered as safe markdown, collapsible
-// reasoning, sources from your own dictation, stop, and offline guidance.
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+// Chat AI (Mac ChatAIView, ChatAIMarkdown, ChatAIReplyStatus). Owned by the ai area.
+// A floating history panel, a start page with the composer and starter pills, and a
+// conversation that scrolls on under the composer. Replies render as safe markdown.
+// Kept beyond the Mac: Stop, folded reasoning, the dictation a reply drew on, Paste a
+// Document (in the chat settings menu), and a spinner on a chat still being answered.
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { emit } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Button, ConfirmDialog, CopyButton, Icon, IconButton, Modal, Spinner, useToast } from "../ui";
+import { Button, ConfirmDialog, Modal, PageHeader, Spinner, useToast } from "../ui";
+import { Glyph, SignalMark, type GlyphName } from "../components/chat/Glyph";
+import { useChatVoice, type VoicePhase } from "../components/chat/useChatVoice";
 import { takePendingChatPrefill, useEvent } from "../lib/api";
+import { useEngine } from "../lib/engine";
 import { useSettings } from "../lib/settings";
 import {
   chat,
@@ -114,10 +118,12 @@ export function parseMarkdown(md: string): Block[] {
       const items: { marker: string; text: string; depth: number }[] = [];
       while (i < lines.length) {
         const m = LIST_RE.exec(lines[i]);
-        if (m) {
-          items.push({ marker: m[2], text: m[3], depth: Math.min(4, Math.floor(m[1].replace(/\t/g, "  ").length / 2)) });
+        const depth = m ? Math.min(3, Math.floor(m[1].replace(/\t/g, "    ").length / 2)) : 0;
+        if (m && (/\d/.test(m[2]) === ordered || depth > 0)) {
+          items.push({ marker: m[2], text: m[3], depth });
           i++;
-        } else if (lines[i].trim() && /^\s{2,}/.test(lines[i]) && items.length) {
+        } else if (m) break;
+        else if (lines[i].trim() && /^\s{2,}/.test(lines[i]) && items.length) {
           items[items.length - 1].text += " " + lines[i].trim();
           i++;
         } else break;
@@ -188,6 +194,27 @@ function withBreaks(text: string, key: string): ReactNode[] {
   return text.split("\n").flatMap((l, i) => (i === 0 ? inline(l, `${key}-${i}`) : [<br key={`${key}-br${i}`} />, ...inline(l, `${key}-${i}`)]));
 }
 
+/** Language and Copy sit on a code block's header line. */
+function CopyCode({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef(0);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  return (
+    <button
+      className={`md-code-copy ${copied ? "copied" : ""}`}
+      onClick={() => {
+        navigator.clipboard?.writeText(code);
+        setCopied(true);
+        window.clearTimeout(timer.current);
+        timer.current = window.setTimeout(() => setCopied(false), 1500);
+      }}
+    >
+      <Glyph name={copied ? "check" : "copy"} size={12} />
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 export function Markdown({ text }: { text: string }) {
   const blocks = useMemo(() => parseMarkdown(text), [text]);
   return (
@@ -197,7 +224,11 @@ export function Markdown({ text }: { text: string }) {
         switch (b.kind) {
           case "heading": {
             const H = (`h${Math.min(6, b.level + 2)}`) as "h3" | "h4" | "h5" | "h6";
-            return <H key={key}>{inline(b.text, key)}</H>;
+            return (
+              <H key={key} className={`md-h${Math.min(4, b.level)}`}>
+                {inline(b.text, key)}
+              </H>
+            );
           }
           case "paragraph":
             return <p key={key}>{withBreaks(b.text, key)}</p>;
@@ -209,8 +240,8 @@ export function Markdown({ text }: { text: string }) {
             return (
               <div key={key} className="md-code">
                 <div className="md-code-head">
-                  <span className="mono small">{b.lang || "text"}</span>
-                  <CopyButton text={b.code} compact />
+                  <span>{b.lang || "code"}</span>
+                  <CopyCode code={b.code} />
                 </div>
                 <pre>
                   <code>{b.code}</code>
@@ -246,10 +277,14 @@ export function Markdown({ text }: { text: string }) {
             );
           case "list":
             return (
-              <ul key={key} className={`md-list ${b.ordered ? "ordered" : ""}`}>
+              <ul key={key} className="md-list">
                 {b.items.map((it, j) => (
-                  <li key={j} style={{ marginLeft: it.depth * 18 }}>
-                    <span className="md-marker">{b.ordered ? it.marker.replace(")", ".") : "•"}</span>
+                  <li key={j} style={{ paddingLeft: it.depth * 18 }}>
+                    {/\d/.test(it.marker) ? (
+                      <span className="md-marker number">{it.marker.replace(")", ".")}</span>
+                    ) : (
+                      <span className="md-marker">{it.depth === 0 ? "•" : "◦"}</span>
+                    )}
                     <span>{inline(it.text, `${key}i${j}`)}</span>
                   </li>
                 ))}
@@ -262,49 +297,19 @@ export function Markdown({ text }: { text: string }) {
   );
 }
 
-// ============================================================== glyphs ===
-
-function Glyph({ name, size = 15 }: { name: "chevron" | "clip" | "sidebar" | "brain" | "doc" | "more"; size?: number }) {
-  const paths: Record<string, ReactNode> = {
-    chevron: <path d="m6 9 6 6 6-6" />,
-    clip: <path d="m21 11-8.6 8.6a5 5 0 0 1-7-7l8.5-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.3-2.3l7.9-8" />,
-    sidebar: (
-      <>
-        <rect x="3" y="4" width="18" height="16" rx="2" />
-        <path d="M9 4v16" />
-      </>
-    ),
-    brain: (
-      <path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1V5a2 2 0 0 0-3-1Zm6 0a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1" />
-    ),
-    doc: <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5ZM14 3v5h5M9 13h6M9 17h4" />,
-    more: <path d="M5 12h.01M12 12h.01M19 12h.01" strokeWidth={3} />,
-  };
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      {paths[name]}
-    </svg>
-  );
-}
+// ============================================================== marks ===
 
 /** The Orttaai mark, beating gently while a reply is being written. */
 function WaitingMark({ beating }: { beating: boolean }) {
-  return (
-    <svg className={`chat-mark ${beating ? "beating" : ""}`} viewBox="0 0 24 24" width={16} height={16} aria-hidden="true">
-      <rect x="3" y="9" width="2.6" height="6" rx="1.3" />
-      <rect x="8" y="5" width="2.6" height="14" rx="1.3" />
-      <rect x="13.4" y="2.5" width="2.6" height="19" rx="1.3" />
-      <rect x="18.8" y="8" width="2.6" height="8" rx="1.3" />
-    </svg>
-  );
+  return <SignalMark height={15} className={`chat-mark ${beating ? "beating" : ""}`} />;
 }
 
 // ============================================================ helpers ===
 
-const DEPTHS: { value: ThinkingDepth; label: string; hint: string }[] = [
-  { value: "low", label: "Low", hint: "Quick, concise answers" },
-  { value: "medium", label: "Medium", hint: "Reasoned, polished answers" },
-  { value: "high", label: "High", hint: "Deep structure, tone and audience" },
+const DEPTHS: { value: ThinkingDepth; label: string }[] = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
 ];
 
 function greeting(): string {
@@ -315,17 +320,17 @@ function greeting(): string {
   return "Late night";
 }
 
-type Starter = { title: string; detail: string; prompt: string; myTone?: boolean; sendNow?: boolean; icon: string };
+type Starter = { title: string; detail: string; prompt: string; myTone?: boolean; sendNow?: boolean; icon: GlyphName };
 
 function starters(hasTone: boolean): Starter[] {
   return [
-    { title: "Polish a reply", detail: "Turn a rough idea into a clear message", prompt: "Draft a polished, concise reply for this situation:", icon: "edit" },
+    { title: "Polish a reply", detail: "Turn a rough idea into a clear message", prompt: "Draft a polished, concise reply for this situation:", icon: "pencilLine" },
     {
       title: "Rewrite in my tone",
       detail: hasTone ? "Sounds like you, not a template" : "Builds on Tone of Voice in Analytics",
       prompt: "Rewrite this in my tone while keeping it clear and natural:",
       myTone: true,
-      icon: "sparkle",
+      icon: "personWave",
     },
     { title: "Search my dictation", detail: "Ask what you said about anything", prompt: "What have I said about ", icon: "search" },
     {
@@ -333,7 +338,7 @@ function starters(hasTone: boolean): Starter[] {
       detail: "Patterns from your recent dictation",
       prompt: "Look at how I've been writing lately. What patterns, habits and favourite phrases stand out, and what could I tighten?",
       sendNow: true,
-      icon: "insights",
+      icon: "textSearch",
     },
   ];
 }
@@ -353,54 +358,119 @@ const lsSet = (k: string, v: string) => {
   }
 };
 
-type Streaming = { conversationId: number; messageId: number; content: string; reasoning: string; startedAt: number };
+/** "2 hours ago", "yesterday" (Foundation's named relative format). */
+function relativeTime(unix: number): string {
+  const diff = unix - Date.now() / 1000;
+  const abs = Math.abs(diff);
+  const units: [Intl.RelativeTimeFormatUnit, number][] = [
+    ["year", 31_536_000],
+    ["month", 2_592_000],
+    ["week", 604_800],
+    ["day", 86_400],
+    ["hour", 3600],
+    ["minute", 60],
+  ];
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  for (const [unit, secs] of units) {
+    if (abs >= secs) return rtf.format(Math.trunc(diff / secs), unit);
+  }
+  return rtf.format(0, "second");
+}
+
+/** Keeps both ends of a long model name, like `.truncationMode(.middle)` at 150pt. */
+function middleTruncate(name: string, max = 24): string {
+  if (name.length <= max) return name;
+  const keep = (max - 1) / 2;
+  return `${name.slice(0, Math.ceil(keep))}…${name.slice(-Math.floor(keep))}`;
+}
+
+const THOUGHT_HOLD_MS = 1200;
+const LINE_HEIGHT = 16;
+const CHAT_MODES: { value: ChatMode; label: string; icon: GlyphName }[] = [
+  { value: "regular", label: "Regular", icon: "textBubble" },
+  { value: "my_tone", label: "My Tone", icon: "personWave" },
+];
+
+type Streaming = {
+  conversationId: number;
+  messageId: number;
+  content: string;
+  reasoning: string;
+  thought: string | null;
+  thoughtAt: number;
+  startedAt: number;
+};
 
 // ================================================================ view ===
 
 export default function ChatAI() {
   const toast = useToast();
   const { settings, patch } = useSettings();
+  const { level } = useEngine();
   const [groups, setGroups] = useState<ChatGroup[]>([]);
+  const [everyChat, setEveryChat] = useState<ChatConversation[]>([]);
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
-  const [historyVisible, setHistoryVisible] = useState(() => lsGet("chatAIHistoryVisible", "1") === "1");
+  const [historyVisible, setHistoryVisible] = useState(() => lsGet("chatAIHistoryVisible", "0") === "1");
   const [selected, setSelected] = useState<number | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [models, setModels] = useState<ModelInfo[] | null>(null);
+  const [loadingModels, setLoadingModels] = useState(false);
   const [model, setModel] = useState("");
   const [depth, setDepth] = useState<ThinkingDepth>("medium");
   const [think, setThink] = useState(false);
   const [mode, setMode] = useState<ChatMode>("regular");
   const [documents, setDocuments] = useState<ChatDocument[]>([]);
   const [info, setInfo] = useState<ChatInfo | null>(null);
-  const [offline, setOffline] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false);
   const [streaming, setStreaming] = useState<Streaming | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<ChatConversation | null>(null);
   const [deleting, setDeleting] = useState<ChatConversation | null>(null);
+  const [menu, setMenu] = useState<null | "engine" | "mode" | "settings">(null);
   const [pasteOpen, setPasteOpen] = useState(false);
-  const [menu, setMenu] = useState<null | "engine" | "mode">(null);
   const [now, setNow] = useState(Date.now());
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const selectedRef = useRef<number | null>(null);
   selectedRef.current = selected;
+  // The page opens on your latest chat, unless another page handed over a question.
+  const openedLatest = useRef(false);
 
-  const allConversations = useMemo(() => groups.flatMap((g) => g.conversations), [groups]);
-  const current = allConversations.find((c) => c.id === selected) ?? null;
+  const voice = useChatVoice(
+    (text) => {
+      setErrorBanner(null);
+      setDraft((d) => (!d.trim() ? text : /[ \n]$/.test(d) ? d + text : `${d} ${text}`));
+    },
+    (message) => setErrorBanner(message),
+  );
+  const voiceActive = voice.phase !== "off";
 
   const refreshList = useCallback(() => {
-    chat.conversations(search).then(setGroups).catch(() => {});
+    chat
+      .conversations(search)
+      .then((g) => {
+        setGroups(g);
+        if (search.trim()) return;
+        const all = g.flatMap((x) => x.conversations);
+        setEveryChat(all);
+        if (!openedLatest.current) {
+          openedLatest.current = true;
+          if (selectedRef.current == null && all[0]) setSelected(all[0].id);
+        }
+      })
+      .catch(() => {});
   }, [search]);
 
   const refreshModels = useCallback(() => {
+    setLoadingModels(true);
     chat
       .models()
       .then((m) => {
         setModels(m);
-        setOffline(null);
+        setOffline(false);
         setModel((cur) => {
           if (cur && m.some((x) => x.name === cur)) return cur;
           const saved = settings?.chat_model?.trim();
@@ -408,10 +478,11 @@ export default function ChatAI() {
           return m[0]?.name ?? cur;
         });
       })
-      .catch((e) => {
+      .catch(() => {
         setModels([]);
-        setOffline(String(e));
-      });
+        setOffline(true);
+      })
+      .finally(() => setLoadingModels(false));
   }, [settings?.chat_model]);
 
   useEffect(() => {
@@ -425,10 +496,6 @@ export default function ChatAI() {
     refreshModels();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings?.llm_provider, settings?.ollama_endpoint, settings?.lmstudio_endpoint]);
-
-  useEffect(() => {
-    if (settings?.chat_thinking) setDepth(settings.chat_thinking);
-  }, [settings?.chat_thinking]);
 
   useEffect(() => {
     const t = window.setTimeout(refreshList, search ? 180 : 0);
@@ -453,12 +520,18 @@ export default function ChatAI() {
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, streaming?.content, streaming?.reasoning]);
+  }, [messages, streaming?.content, streaming?.thought]);
 
   useEvent<ChatDeltaEvent>("chat-delta", (d) => {
-    setStreaming((s) =>
-      s && s.messageId === d.message_id ? { ...s, content: d.content, reasoning: d.reasoning } : s,
-    );
+    setStreaming((s) => {
+      if (!s || s.messageId !== d.message_id) return s;
+      // A fast model finishes a sentence many times a second; a new one replaces
+      // the status line only after the last has been readable.
+      const at = Date.now();
+      const fresh = d.reasoning && latestThought(d.reasoning) && latestThought(d.reasoning) !== latestThought(s.thought);
+      const show = fresh && at - s.thoughtAt >= THOUGHT_HOLD_MS;
+      return { ...s, content: d.content, reasoning: d.reasoning, thought: show ? d.reasoning : s.thought, thoughtAt: show ? at : s.thoughtAt };
+    });
   });
   useEvent<TurnResult>("chat-done", (r) => {
     setStreaming((s) => (s && s.messageId === r.assistant_message_id ? null : s));
@@ -478,6 +551,7 @@ export default function ChatAI() {
   // Questions handed over from other pages (Memory Graph "Ask Chat AI").
   const applyPrefill = (q: string | null) => {
     if (!q) return;
+    openedLatest.current = true;
     setSelected(null);
     setMessages([]);
     setDraft(q);
@@ -497,20 +571,30 @@ export default function ChatAI() {
   const busy = streaming != null;
   const hasTone = info?.has_tone_profile ?? false;
   const providerName = info?.provider_name ?? (isOllama ? "Ollama" : "LM Studio");
+  const canSend = draft.trim().length > 0 && !busy;
+  const canRecord = !busy && voice.phase !== "processing" && voice.phase !== "starting";
 
-  const toggleHistory = () => {
-    setHistoryVisible((v) => {
-      lsSet("chatAIHistoryVisible", v ? "0" : "1");
-      return !v;
-    });
+  const toggleHistory = (visible: boolean) => {
+    lsSet("chatAIHistoryVisible", visible ? "1" : "0");
+    setHistoryVisible(visible);
+  };
+
+  const toggleSearch = () => {
+    if (searchOpen) setSearch("");
+    setSearchOpen(!searchOpen);
   };
 
   const newChat = () => {
     setSelected(null);
     setDraft("");
     setErrorBanner(null);
-    setDocuments([]);
     inputRef.current?.focus();
+  };
+
+  const openChat = (id: number) => {
+    setSelected(id);
+    setDraft("");
+    setErrorBanner(null);
   };
 
   const send = async (text?: string, forceMode?: ChatMode) => {
@@ -534,6 +618,8 @@ export default function ChatAI() {
         messageId: turn.assistant_message_id,
         content: "",
         reasoning: "",
+        thought: null,
+        thoughtAt: 0,
         startedAt: Date.now(),
       });
       if (selected !== turn.conversation_id) {
@@ -553,9 +639,10 @@ export default function ChatAI() {
   };
 
   const pickStarter = (s: Starter) => {
-    if (s.myTone) setMode("my_tone");
+    const useTone = s.myTone && hasTone;
+    if (useTone) setMode("my_tone");
     if (s.sendNow) {
-      send(s.prompt, s.myTone ? "my_tone" : undefined);
+      send(s.prompt, useTone ? "my_tone" : undefined);
       return;
     }
     setDraft(s.prompt);
@@ -579,346 +666,403 @@ export default function ChatAI() {
         /* unreadable */
       }
     }
-    if (!added.length) {
-      toast("No readable text was found in the selected file.", "warn");
+    if (!added.length && !documents.length) {
+      setErrorBanner("No readable text was found in the selected file.");
       return;
     }
-    setDocuments((d) => {
-      const next = [...d, ...added];
-      toast(`${next.length} document${next.length === 1 ? "" : "s"} attached.`, "success");
-      return next;
-    });
+    setErrorBanner(null);
+    setDocuments((d) => [...d, ...added]);
   };
-
-  // Auto-grow the composer.
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(220, el.scrollHeight)}px`;
-  }, [draft]);
 
   const streamingHere = streaming && streaming.conversationId === selected ? streaming : null;
   const showEmpty = selected == null || (messages.length === 0 && !streamingHere);
-  const recents = allConversations.filter((c) => c.id !== selected).slice(0, 3);
+  const recents = everyChat.filter((c) => c.id !== selected).slice(0, 3);
+  const historyCount = everyChat.length;
+  const offlineLine = offline
+    ? `${providerName} is not reachable${info ? ` at ${info.endpoint}` : ""}. Start ${providerName}, then refresh models.`
+    : null;
+  const noModelsLine =
+    !offline && models && models.length === 0
+      ? `${providerName} is reachable, but no local chat models were found. Download one in Model › AI Features (gemma4:e2b is a good start).`
+      : null;
+  const errorLine = errorBanner ?? offlineLine ?? noModelsLine;
+  const offlineHint = !errorBanner && offline
+    ? isOllama
+      ? "Install Ollama from ollama.com and run `ollama serve`, then pull a chat model such as gemma4:e2b."
+      : "Start the server from LM Studio's Developer tab, or run `lms server start`, then download a chat model."
+    : undefined;
 
-  return (
-    <div className={`chat ${historyVisible ? "with-history" : ""}`}>
-      {historyVisible && (
-        <aside className="chat-history" aria-label="Chat history">
-          <div className="chat-history-head">
-            <span className="chat-history-title">Chats</span>
-            <div className="chat-history-actions">
-              <IconButton name="search" label={searchOpen ? "Close search" : "Search chats"} onClick={() => {
-                setSearchOpen((o) => !o);
-                if (searchOpen) setSearch("");
-              }} />
-              <IconButton name="plus" label="New chat" onClick={newChat} />
-            </div>
-          </div>
-          {searchOpen && (
-            <div className="chat-search">
-              <input
-                className="text-input"
-                placeholder="Search chats"
-                value={search}
-                autoFocus
-                onChange={(e) => setSearch(e.target.value)}
-                onKeyDown={(e) => e.key === "Escape" && (setSearch(""), setSearchOpen(false))}
-              />
-            </div>
-          )}
-          <div className="chat-history-list">
-            {groups.length === 0 && (
-              <p className="muted small chat-history-empty">
-                {search ? `No chats match “${search}”` : "No chats yet"}
-              </p>
-            )}
-            {groups.map((g) => (
-              <div key={g.title} className="chat-group">
-                <div className="overline chat-group-title">{g.title}</div>
-                {g.conversations.map((c) => (
-                  <HistoryRow
-                    key={c.id}
-                    c={c}
-                    active={c.id === selected}
-                    live={info?.inflight.includes(c.id) || streaming?.conversationId === c.id}
-                    onOpen={() => {
-                      setSelected(c.id);
-                      setErrorBanner(null);
-                    }}
-                    onRename={() => setRenaming(c)}
-                    onDelete={() => setDeleting(c)}
-                  />
-                ))}
-              </div>
-            ))}
-          </div>
-        </aside>
-      )}
+  // Two lines in a conversation, four on the start page, growing to eight. Sized
+  // before paint, so keeping the newest words in view measures the final layout.
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "0px";
+    const min = (showEmpty ? 4 : 2) * LINE_HEIGHT;
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, min), 8 * LINE_HEIGHT)}px`;
+  }, [draft, showEmpty]);
 
-      <section className="chat-main">
-        <header className="chat-head">
-          <button className="icon-btn" onClick={toggleHistory} aria-label={historyVisible ? "Hide chat history" : "Show chat history"} title={historyVisible ? "Hide chat history" : "Show chat history"}>
-            <Glyph name="sidebar" size={18} />
+  // The composer moves when a chat starts; keep typing where you were.
+  const wasEmpty = useRef(showEmpty);
+  useEffect(() => {
+    if (wasEmpty.current !== showEmpty) {
+      wasEmpty.current = showEmpty;
+      inputRef.current?.focus();
+    }
+  }, [showEmpty]);
+
+  // The text field keeps the focus once a voice message ends.
+  const wasVoiceActive = useRef(false);
+  useEffect(() => {
+    if (wasVoiceActive.current && !voiceActive) inputRef.current?.focus();
+    wasVoiceActive.current = voiceActive;
+  }, [voiceActive]);
+
+  // Return finishes a recording and Escape drops it, wherever the focus is.
+  useEffect(() => {
+    if (voice.phase !== "recording") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        voice.finish();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        voice.cancel();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [voice]);
+
+  const composer = (
+    <div className="chat-composer">
+      <div className="chat-context">
+        <span className="chat-context-item" title="Replies draw on your dictation history and recent work">
+          <Glyph name="bookClosed" /> Your dictation
+        </span>
+        <span className="chat-context-item" title="Runs on your own hardware">
+          <Glyph name="laptop" /> {providerName} · This computer
+        </span>
+        {documents.length > 0 && (
+          <span className="chat-context-item">
+            <Glyph name="clip" /> {documents.length === 1 ? "1 file" : `${documents.length} files`}
+          </span>
+        )}
+        <span className="chat-context-spacer" />
+        <div className="chat-menu-anchor">
+          <button className="chat-context-btn" onClick={() => setMenu(menu === "settings" ? null : "settings")} title="Chat settings" aria-label="Chat settings">
+            <Glyph name="gear" size={14} />
           </button>
-          <h1 className="chat-title">{current?.title ?? "ChatAI"}</h1>
-          <IconButton name="plus" label="New chat" onClick={newChat} />
-        </header>
-
-        <div className="chat-scroll" ref={scrollRef}>
-          {offline && (
-            <div className="chat-offline card">
-              <Icon name="alert" size={18} />
-              <div>
-                <strong>{providerName} isn't reachable{info ? ` at ${info.endpoint}` : ""}.</strong>
-                <p className="muted small">
-                  Start {providerName}, then refresh models.{" "}
-                  {isOllama
-                    ? "Install Ollama from ollama.com and run `ollama serve`, then pull a chat model such as gemma4:e2b."
-                    : "Start the server from LM Studio's Developer tab, or run `lms server start`, then download a chat model."}
-                </p>
-                <div className="chat-offline-actions">
-                  <Button size="sm" icon="refresh" onClick={refreshModels}>
-                    Refresh Models
-                  </Button>
-                  <Button size="sm" icon="settings" onClick={() => emit("navigate", "settings")}>
-                    AI Settings…
-                  </Button>
-                </div>
-              </div>
-            </div>
-          )}
-          {!offline && models && models.length === 0 && (
-            <div className="chat-offline card">
-              <Icon name="info" size={18} />
-              <div>
-                <strong>{providerName} is reachable, but no local chat models were found.</strong>
-                <p className="muted small">Download one in Settings → AI Features (gemma4:e2b is a good start).</p>
-                <div className="chat-offline-actions">
-                  <Button size="sm" icon="settings" onClick={() => emit("navigate", "settings")}>
-                    AI Settings…
-                  </Button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {showEmpty ? (
-            <div className="chat-empty">
-              <WaitingMark beating={false} />
-              <h2>{greeting()}</h2>
-              <p className="muted">
-                {hasTone
-                  ? "Draft, rewrite in your own voice, or ask how you write. Everything stays on this computer."
-                  : "Draft, rewrite, or ask about how you write. Everything stays on this computer."}
-              </p>
-              <div className="chat-starters">
-                {starters(hasTone).map((s) => (
-                  <button key={s.title} className="chat-starter" onClick={() => pickStarter(s)} title={s.detail}>
-                    <Icon name={s.icon} size={16} />
-                    <span className="chat-starter-text">
-                      <span className="chat-starter-title">{s.title}</span>
-                      <span className="chat-starter-detail">{s.detail}</span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-              {recents.length > 0 && (
-                <div className="chat-recents">
-                  <div className="overline">Recent</div>
-                  {recents.map((c) => (
-                    <button key={c.id} className="chat-recent" onClick={() => setSelected(c.id)}>
-                      <span className="chat-recent-title">{c.title}</span>
-                      <span className="muted small">{shortTimestamp(c.updated_at)}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="chat-messages">
-              {messages.map((m) => (
-                <MessageBubble key={m.id} m={m} />
-              ))}
-              {streamingHere && (
-                <div className="chat-msg assistant">
-                  <div className="chat-msg-head">
-                    <WaitingMark beating />
-                    <span className="chat-status" key={streamingHere.content ? "chatai" : "status"}>
-                      {streamingHere.content
-                        ? "ChatAI"
-                        : replyStatusLine((now - streamingHere.startedAt) / 1000, thinkingOn, streamingHere.reasoning || null)}
-                    </span>
-                  </div>
-                  {streamingHere.reasoning && (
-                    <Reasoning text={streamingHere.reasoning} live={!streamingHere.content} />
-                  )}
-                  {streamingHere.content && (
-                    <div className="chat-msg-body">
-                      <Markdown text={streamingHere.content} />
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+          {menu === "settings" && (
+            <Popover onClose={() => setMenu(null)} align="right">
+              <button
+                className="chat-pop-item"
+                disabled={loadingModels}
+                onClick={() => {
+                  setMenu(null);
+                  refreshModels();
+                }}
+              >
+                <Glyph name="refresh" size={14} /> Refresh Models
+              </button>
+              <button
+                className="chat-pop-item"
+                onClick={() => {
+                  setMenu(null);
+                  setPasteOpen(true);
+                }}
+              >
+                <Glyph name="doc" size={14} /> Paste a Document…
+              </button>
+              <div className="chat-pop-divider" />
+              <button
+                className="chat-pop-item"
+                onClick={() => {
+                  setMenu(null);
+                  emit("navigate", "ai-settings");
+                }}
+              >
+                <Glyph name="sliders" size={14} /> AI Settings…
+              </button>
+            </Popover>
           )}
         </div>
-
-        <div className="chat-composer-wrap">
-          <div className="chat-context">
-            <span className="chat-context-item" title="Replies draw on your dictation history and recent work">
-              <Icon name="dictionary" size={13} /> Your dictation
-            </span>
-            <span className="chat-context-item" title="Runs on your own hardware">
-              <Icon name="monitor" size={13} /> {providerName} · This computer
-            </span>
-            {documents.length > 0 && (
-              <span className="chat-context-item">
-                <Glyph name="clip" size={13} /> {documents.length === 1 ? "1 file" : `${documents.length} files`}
+      </div>
+      <div className="chat-input-card">
+        <div className="chat-input-wrap">
+          <textarea
+            ref={inputRef}
+            className={`chat-input ${voiceActive ? "hidden" : ""}`}
+            rows={1}
+            value={draft}
+            tabIndex={voiceActive ? -1 : 0}
+            spellCheck={false}
+            placeholder="Ask about your dictation, or ask for a draft"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                send();
+              }
+            }}
+          />
+          {voiceActive && <VoiceStrip phase={voice.phase} startedAt={voice.startedAt} level={level} onCancel={voice.cancel} />}
+        </div>
+        {documents.length > 0 && (
+          <div className="chat-docs">
+            {documents.map((d, i) => (
+              <span key={`${d.name}-${i}`} className="chat-doc">
+                <Glyph name="doc" />
+                <span className="chat-doc-name">{d.name}</span>
+                <span className="chat-doc-words">{d.content.split(/\s+/).filter(Boolean).length}w</span>
+                <button aria-label={`Remove ${d.name}`} onClick={() => setDocuments((ds) => ds.filter((_, j) => j !== i))}>
+                  <Glyph name="x" size={11} weight={3} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="chat-composer-bar">
+          <button className="chat-chip icon-only" title="Attach documents" aria-label="Attach documents" onClick={() => fileRef.current?.click()}>
+            <Glyph name="plus" size={18} />
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            multiple
+            hidden
+            accept=".txt,.md,.markdown,.csv,.tsv,.json,.log,.html,.xml,.yaml,.yml,.rtf,.tex,.srt,.vtt,text/*"
+            onChange={(e) => {
+              attachFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          <div className="chat-menu-anchor">
+            <button
+              className={`chat-chip menu ${mode === "my_tone" ? "active" : ""}`}
+              onClick={() => setMenu(menu === "mode" ? null : "mode")}
+              title={hasTone ? "Chat mode" : "Chat mode. My Tone needs a Tone of Voice profile from Analytics."}
+            >
+              <Glyph name={mode === "my_tone" ? "personWave" : "textBubble"} />
+              {mode === "my_tone" ? "My Tone" : "Regular"}
+              <Glyph name="chevron" size={9} weight={4} className="chat-chevron" />
+            </button>
+            {menu === "mode" && (
+              <Popover onClose={() => setMenu(null)}>
+                {CHAT_MODES.map((m) => (
+                  <button
+                    key={m.value}
+                    className="chat-pop-item"
+                    disabled={m.value === "my_tone" && !hasTone}
+                    onClick={() => {
+                      setMode(m.value);
+                      setMenu(null);
+                    }}
+                  >
+                    <Glyph name={m.icon} size={14} /> {m.label}
+                  </button>
+                ))}
+              </Popover>
+            )}
+          </div>
+          <span className="chat-composer-spacer" />
+          <div className="chat-menu-anchor">
+            <button className="chat-chip engine" onClick={() => setMenu(menu === "engine" ? null : "engine")} title="Model, reply depth and thinking">
+              <Glyph name={thinkingOn ? "brain" : "bolt"} className="chat-engine-icon" />
+              <span className="chat-chip-model" title={model}>
+                {model ? middleTruncate(model) : "Choose model"}
+              </span>
+              <span className="chat-chip-depth">{DEPTHS.find((d) => d.value === depth)?.label}</span>
+              <Glyph name="chevron" size={9} weight={4} className="chat-chevron" />
+            </button>
+            {menu === "engine" && (
+              <Popover onClose={() => setMenu(null)} align="right">
+                <div className="chat-pop-section">Model</div>
+                {models && models.length === 0 && <div className="chat-pop-note">No chat models found</div>}
+                {models === null && (
+                  <div className="chat-pop-note">
+                    <Spinner />
+                  </div>
+                )}
+                {models?.map((m) => (
+                  <button key={m.name} className="chat-pop-item" onClick={() => (setModel(m.name), setMenu(null))}>
+                    <span className="chat-pop-check">{m.name === model && <Glyph name="check" size={13} weight={2.6} />}</span>
+                    {m.name}
+                  </button>
+                ))}
+                <div className="chat-pop-section">Reply depth</div>
+                {DEPTHS.map((d) => (
+                  <button key={d.value} className="chat-pop-item" onClick={() => (setDepth(d.value), setMenu(null))}>
+                    <span className="chat-pop-check">{d.value === depth && <Glyph name="check" size={13} weight={2.6} />}</span>
+                    {d.label}
+                  </button>
+                ))}
+                {supportsThinking && (
+                  <>
+                    <div className="chat-pop-divider" />
+                    <button className="chat-pop-item" onClick={() => (setThink(!think), setMenu(null))}>
+                      <span className="chat-pop-check">{think && <Glyph name="check" size={13} weight={2.6} />}</span>
+                      Thinking
+                    </button>
+                  </>
+                )}
+              </Popover>
+            )}
+          </div>
+          <button
+            className={`chat-voice ${voice.phase === "recording" ? "recording" : ""}`}
+            disabled={!canRecord}
+            onClick={voice.toggle}
+            title={voice.phase === "recording" ? "Finish voice input (Enter)" : "Speak your message"}
+            aria-label={voice.phase === "recording" ? "Finish voice input" : "Speak your message"}
+          >
+            {voice.phase === "processing" || voice.phase === "starting" ? (
+              <Spinner size={14} />
+            ) : (
+              <span className="chat-voice-bars">
+                <i />
+                <i />
+                <i />
               </span>
             )}
-            <span className="chat-context-spacer" />
-            <button className="chat-context-btn" onClick={refreshModels} title="Refresh models">
-              <Icon name="refresh" size={13} />
+          </button>
+          {busy ? (
+            <button className="chat-send ready" onClick={stop} aria-label="Stop" title="Stop generating">
+              <Glyph name="stop" size={17} />
             </button>
-            <button className="chat-context-btn" onClick={() => emit("navigate", "settings")} title="AI Settings…">
-              <Icon name="settings" size={13} />
+          ) : (
+            <button className={`chat-send ${canSend ? "ready" : ""}`} disabled={!canSend} onClick={() => send()} aria-label="Send" title="Send (Enter). Shift-Enter adds a new line.">
+              <Glyph name="arrowUp" size={17} weight={3} />
             </button>
+          )}
+        </div>
+        {errorLine && (
+          <p className="chat-error" role="alert" title={offlineHint}>
+            {errorLine}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="chat">
+      <PageHeader
+        title="ChatAI"
+        actions={
+          <div className="chat-head-actions">
+            <HeadButton label={historyVisible ? "Hide chat history" : "Show chat history"} icon="history" active={historyVisible} onClick={() => toggleHistory(!historyVisible)} />
+            <HeadButton label="New chat" icon="compose" onClick={newChat} />
           </div>
-          <div className="chat-composer">
-            {documents.length > 0 && (
-              <div className="chat-docs">
-                {documents.map((d, i) => (
-                  <span key={`${d.name}-${i}`} className="chat-doc">
-                    <Glyph name="doc" size={13} />
-                    <span className="chat-doc-name">{d.name}</span>
-                    <span className="muted small">{d.content.split(/\s+/).filter(Boolean).length.toLocaleString()} words</span>
-                    <button aria-label={`Remove ${d.name}`} onClick={() => setDocuments((ds) => ds.filter((_, j) => j !== i))}>
-                      <Icon name="x" size={12} />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <textarea
-              ref={inputRef}
-              className="chat-input"
-              rows={1}
-              value={draft}
-              placeholder="Ask about your dictation, or ask for a draft"
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-            />
-            <div className="chat-composer-bar">
-              <div className="chat-composer-left">
-                <button className="chat-chip icon-only" title="Attach documents" onClick={() => fileRef.current?.click()}>
-                  <Glyph name="clip" />
-                </button>
-                <button className="chat-chip icon-only" title="Paste a document" onClick={() => setPasteOpen(true)}>
-                  <Glyph name="doc" />
-                </button>
+        }
+      />
+      <div className="chat-body">
+        {historyVisible && (
+          <aside className="chat-history" aria-label="Chat history">
+            <div className="chat-history-head">
+              <span className="chat-history-title">Chats</span>
+              {historyCount > 0 && <span className="chat-history-count">{historyCount.toLocaleString()}</span>}
+              <span className="chat-history-spacer" />
+              <HeadButton label={searchOpen ? "Close search" : "Search chats"} icon="search" active={searchOpen} onClick={toggleSearch} />
+              <HeadButton label="New chat" icon="compose" onClick={newChat} />
+              <HeadButton label="Close chats" icon="x" onClick={() => toggleHistory(false)} />
+            </div>
+            {searchOpen && (
+              <div className="chat-search">
+                <Glyph name="search" />
                 <input
-                  ref={fileRef}
-                  type="file"
-                  multiple
-                  hidden
-                  accept=".txt,.md,.markdown,.csv,.tsv,.json,.log,.html,.xml,.yaml,.yml,.rtf,.tex,.srt,.vtt,text/*"
-                  onChange={(e) => {
-                    attachFiles(e.target.files);
-                    e.target.value = "";
-                  }}
+                  placeholder="Search chats"
+                  value={search}
+                  autoFocus
+                  spellCheck={false}
+                  onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(e) => e.key === "Escape" && toggleSearch()}
                 />
-                <div className="chat-menu-anchor">
-                  <button
-                    className="chat-chip"
-                    onClick={() => setMenu(menu === "mode" ? null : "mode")}
-                    title={hasTone ? "Chat mode" : "Chat mode. My Tone needs a Tone of Voice profile from Analytics."}
-                  >
-                    <Icon name={mode === "my_tone" ? "sparkle" : "assistant"} size={14} />
-                    {mode === "my_tone" ? "My Tone" : "Regular"}
-                    <Glyph name="chevron" size={11} />
-                  </button>
-                  {menu === "mode" && (
-                    <Popover onClose={() => setMenu(null)}>
-                      {(["regular", "my_tone"] as ChatMode[]).map((m) => (
-                        <button key={m} className={`chat-pop-item ${mode === m ? "on" : ""}`} onClick={() => (setMode(m), setMenu(null))}>
-                          <span>{m === "regular" ? "Regular" : "My Tone"}</span>
-                          <span className="muted small">
-                            {m === "regular" ? "A clear assistant voice" : hasTone ? "Writes like you" : "No tone profile yet: run Tone of Voice"}
-                          </span>
-                        </button>
-                      ))}
-                    </Popover>
-                  )}
-                </div>
-              </div>
-              <div className="chat-composer-right">
-                <div className="chat-menu-anchor">
-                  <button className="chat-chip" onClick={() => setMenu(menu === "engine" ? null : "engine")} title="Model, reply depth and thinking">
-                    {thinkingOn ? <Glyph name="brain" size={14} /> : <Icon name="bolt" size={14} />}
-                    <span className="chat-chip-model">{model || "Choose model"}</span>
-                    <span className="muted">{DEPTHS.find((d) => d.value === depth)?.label}</span>
-                    <Glyph name="chevron" size={11} />
-                  </button>
-                  {menu === "engine" && (
-                    <Popover onClose={() => setMenu(null)} align="right">
-                      <div className="chat-pop-section">Model</div>
-                      {models && models.length === 0 && <div className="chat-pop-note muted small">No chat models found</div>}
-                      {models === null && <div className="chat-pop-note"><Spinner /></div>}
-                      {models?.map((m) => (
-                        <button key={m.name} className={`chat-pop-item ${m.name === model ? "on" : ""}`} onClick={() => setModel(m.name)}>
-                          <span>{m.name}</span>
-                          {m.name === model && <Icon name="check" size={14} />}
-                        </button>
-                      ))}
-                      <div className="chat-pop-section">Reply depth</div>
-                      {DEPTHS.map((d) => (
-                        <button key={d.value} className={`chat-pop-item ${d.value === depth ? "on" : ""}`} onClick={() => setDepth(d.value)}>
-                          <span>{d.label}</span>
-                          <span className="muted small">{d.hint}</span>
-                        </button>
-                      ))}
-                      {supportsThinking && (
-                        <>
-                          <div className="chat-pop-divider" />
-                          <label className="chat-pop-toggle">
-                            <span>Thinking</span>
-                            <input type="checkbox" checked={think} onChange={(e) => setThink(e.target.checked)} />
-                          </label>
-                        </>
-                      )}
-                    </Popover>
-                  )}
-                </div>
-                {busy ? (
-                  <button className="chat-send stop" onClick={stop} aria-label="Stop" title="Stop generating">
-                    <Icon name="stop" size={16} />
-                  </button>
-                ) : (
-                  <button className="chat-send" disabled={!draft.trim()} onClick={() => send()} aria-label="Send" title="Send (Enter). Shift-Enter adds a new line.">
-                    <Icon name="send" size={16} />
+                {search && (
+                  <button title="Clear search" aria-label="Clear search" onClick={() => setSearch("")}>
+                    <Glyph name="xCircle" />
                   </button>
                 )}
               </div>
+            )}
+            <div className="chat-history-list">
+              {groups.map((g) => (
+                <section key={g.title} className="chat-group">
+                  <div className="chat-group-title">{g.title}</div>
+                  {g.conversations.map((c) => (
+                    <HistoryRow
+                      key={c.id}
+                      c={c}
+                      active={c.id === selected}
+                      live={info?.inflight.includes(c.id) || streaming?.conversationId === c.id}
+                      onOpen={() => openChat(c.id)}
+                      onRename={() => setRenaming(c)}
+                      onDelete={() => setDeleting(c)}
+                    />
+                  ))}
+                </section>
+              ))}
+              {groups.length === 0 && (
+                <div className="chat-history-empty">
+                  <Glyph name={search ? "search" : "bubbles"} size={22} />
+                  <p>{search ? `No chats match “${search}”` : "No chats yet"}</p>
+                </div>
+              )}
             </div>
-          </div>
-          {errorBanner && (
-            <div className="chat-error" role="alert">
-              <Icon name="alert" size={14} />
-              <span>{errorBanner}</span>
-              <button aria-label="Dismiss" onClick={() => setErrorBanner(null)}>
-                <Icon name="x" size={13} />
-              </button>
+          </aside>
+        )}
+
+        <section className="chat-surface">
+          {showEmpty ? (
+            <div className="chat-start">
+              <div className="chat-empty">
+                <div className="chat-empty-head">
+                  <SignalMark height={30} className="chat-mark" />
+                  <h2>{greeting()}</h2>
+                  <p>
+                    {hasTone
+                      ? "Draft, rewrite in your own voice, or ask how you write. Everything stays on this computer."
+                      : "Draft, rewrite, or ask about how you write. Everything stays on this computer."}
+                  </p>
+                </div>
+                {composer}
+                <div className="chat-starters">
+                  {starters(hasTone).map((s) => (
+                    <button key={s.title} className="chat-starter" onClick={() => pickStarter(s)} title={s.detail}>
+                      <Glyph name={s.icon} size={14} />
+                      {s.title}
+                    </button>
+                  ))}
+                </div>
+                {recents.length > 0 && !historyVisible && (
+                  <div className="chat-recents">
+                    <div className="chat-recents-title">Recent</div>
+                    {recents.map((c) => (
+                      <button key={c.id} className="chat-recent" onClick={() => openChat(c.id)}>
+                        <Glyph name="bubble" className="chat-recent-icon" />
+                        <span className="chat-recent-title">{c.title}</span>
+                        <span className="chat-recent-time">{relativeTime(c.updated_at)}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="chat-scroll" ref={scrollRef}>
+              <div className="chat-messages">
+                {messages.map((m) => (
+                  <MessageBubble key={m.id} m={m} />
+                ))}
+                {streamingHere && <ReplyInProgress s={streamingHere} now={now} thinking={thinkingOn} />}
+              </div>
+              <div className="chat-dock">
+                <div className="chat-dock-inner">{composer}</div>
+              </div>
             </div>
           )}
-        </div>
-      </section>
+        </section>
+      </div>
 
       <RenameModal
         conversation={renaming}
@@ -945,7 +1089,7 @@ export default function ChatAI() {
           chat
             .remove(id)
             .then(() => {
-              if (selected === id) newChat();
+              if (selected === id) setSelected(everyChat.find((c) => c.id !== id)?.id ?? null);
               refreshList();
             })
             .catch((e) => toast(String(e), "error"));
@@ -955,6 +1099,7 @@ export default function ChatAI() {
         open={pasteOpen}
         onClose={() => setPasteOpen(false)}
         onAdd={(doc) => {
+          setErrorBanner(null);
           setDocuments((d) => [...d, doc]);
           setPasteOpen(false);
         }}
@@ -965,6 +1110,16 @@ export default function ChatAI() {
 
 // ========================================================= components ===
 
+function HeadButton({ label, icon, active, onClick }: { label: string; icon: GlyphName; active?: boolean; onClick: () => void }) {
+  return (
+    <button className={`chat-head-btn ${active ? "active" : ""}`} onClick={onClick} title={label} aria-label={label}>
+      <Glyph name={icon} size={17} weight={1.6} />
+    </button>
+  );
+}
+
+/** One chat on one row: title and time. Hovering swaps the time for delete;
+ *  right-clicking offers rename and delete. */
 function HistoryRow({
   c,
   active,
@@ -980,21 +1135,67 @@ function HistoryRow({
   onRename: () => void;
   onDelete: () => void;
 }) {
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   return (
-    <div className={`chat-row ${active ? "active" : ""}`}>
-      <button className="chat-row-main" onClick={onOpen} title={c.title}>
-        <span className="chat-row-title">{c.title}</span>
-        <span className="chat-row-time">{live ? <Spinner size={11} /> : shortTimestamp(c.updated_at)}</span>
+    <div
+      className={`chat-row ${active ? "active" : ""}`}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setMenuAt({ x: e.clientX, y: e.clientY });
+      }}
+    >
+      <button className="chat-row-main" onClick={onOpen} aria-label={`${c.title}, ${shortTimestamp(c.updated_at)}`} />
+      <span className="chat-row-title">{c.title}</span>
+      <span className="chat-row-time">{live ? <Spinner size={11} /> : shortTimestamp(c.updated_at)}</span>
+      <button className="chat-row-delete" onClick={onDelete} title="Delete chat" aria-label="Delete chat">
+        <Glyph name="trash" size={12} />
       </button>
-      <span className="chat-row-actions">
-        <button aria-label="Rename chat" title="Rename" onClick={onRename}>
-          <Icon name="edit" size={13} />
-        </button>
-        <button aria-label="Delete chat" title="Delete" onClick={onDelete}>
-          <Icon name="trash" size={13} />
-        </button>
-      </span>
+      {menuAt && (
+        <Popover at={menuAt} onClose={() => setMenuAt(null)}>
+          <button
+            className="chat-pop-item"
+            onClick={() => {
+              setMenuAt(null);
+              onRename();
+            }}
+          >
+            Rename…
+          </button>
+          <div className="chat-pop-divider" />
+          <button
+            className="chat-pop-item danger"
+            onClick={() => {
+              setMenuAt(null);
+              onDelete();
+            }}
+          >
+            Delete…
+          </button>
+        </Popover>
+      )}
     </div>
+  );
+}
+
+/** Copies a whole reply as written (Markdown included). */
+function CopyReply({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef(0);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  return (
+    <button
+      className="chat-copy"
+      title={copied ? "Copied" : "Copy reply"}
+      aria-label="Copy reply"
+      onClick={() => {
+        navigator.clipboard?.writeText(text);
+        setCopied(true);
+        window.clearTimeout(timer.current);
+        timer.current = window.setTimeout(() => setCopied(false), 1500);
+      }}
+    >
+      <Glyph name={copied ? "check" : "copy"} />
+    </button>
   );
 }
 
@@ -1012,54 +1213,66 @@ function MessageBubble({ m }: { m: ChatMessage }) {
         <WaitingMark beating={false} />
         <span className="chat-status">ChatAI</span>
       </div>
-      {m.reasoning && <Reasoning text={m.reasoning} live={false} />}
-      <div className="chat-msg-body">
-        <Markdown text={m.content} />
-      </div>
+      {m.reasoning && <Reasoning text={m.reasoning} />}
+      <Markdown text={m.content} />
       <div className="chat-msg-foot">
-        <CopyButton text={m.content} compact />
+        <CopyReply text={m.content} />
         {m.sources.length > 0 && <Sources sources={m.sources} />}
       </div>
     </div>
   );
 }
 
-function Reasoning({ text, live }: { text: string; live: boolean }) {
-  const [open, setOpen] = useState(false);
-  const thought = latestThought(text);
+/** The reply being written: the beating mark with what it is doing, then its
+ *  words streaming straight onto the background. */
+function ReplyInProgress({ s, now, thinking }: { s: Streaming; now: number; thinking: boolean }) {
+  const line = s.content ? "ChatAI" : replyStatusLine((now - s.startedAt) / 1000, thinking, s.thought);
   return (
-    <div className={`chat-reasoning ${open ? "open" : ""}`}>
-      <button className="chat-reasoning-toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        <Glyph name="brain" size={13} />
-        <span>{live ? thought ?? "Thinking" : "Reasoning"}</span>
-        <span className="chat-reasoning-chev">
-          <Glyph name="chevron" size={11} />
+    <div className="chat-msg assistant">
+      <div className="chat-msg-head">
+        <WaitingMark beating />
+        <span className="chat-status" key={line}>
+          {line}
         </span>
+      </div>
+      {s.reasoning && <Reasoning text={s.reasoning} />}
+      {s.content && <Markdown text={s.content} />}
+    </div>
+  );
+}
+
+/** What a thinking model reasoned, folded away until asked for. */
+function Reasoning({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`chat-fold ${open ? "open" : ""}`}>
+      <button className="chat-fold-toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <Glyph name="brain" size={12} />
+        Reasoning
+        <Glyph name="chevron" size={8} weight={4} className="chat-fold-chevron" />
       </button>
       {open && <div className="chat-reasoning-body">{text.trim()}</div>}
     </div>
   );
 }
 
+/** The dictation a reply drew on. */
 function Sources({ sources }: { sources: ChatMessage["sources"] }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="chat-sources">
-      <button className="chat-sources-toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        <Icon name="dictionary" size={13} />
+    <div className={`chat-fold chat-sources ${open ? "open" : ""}`}>
+      <button className="chat-fold-toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <Glyph name="bookClosed" size={12} />
         {sources.length} from your dictation
-        <Glyph name="chevron" size={11} />
+        <Glyph name="chevron" size={8} weight={4} className="chat-fold-chevron" />
       </button>
       {open && (
         <ol className="chat-sources-list">
           {sources.map((s, i) => (
             <li key={`${s.transcription_id}-${i}`}>
               <div className="chat-source-meta">
-                <span>{s.app || "Unknown App"}</span>
-                <span>·</span>
-                <span>{new Date(s.created_at * 1000).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</span>
-                <span>·</span>
-                <span>{Math.round(s.score * 100)}% match</span>
+                {s.app || "Unknown App"} · {new Date(s.created_at * 1000).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })} ·{" "}
+                {Math.round(s.score * 100)}% match
               </div>
               <p>{s.text.length > 320 ? s.text.slice(0, 319) + "…" : s.text}</p>
             </li>
@@ -1070,8 +1283,82 @@ function Sources({ sources }: { sources: ChatMessage["sources"] }) {
   );
 }
 
-function Popover({ children, onClose, align = "left" }: { children: ReactNode; onClose: () => void; align?: "left" | "right" }) {
+/** Shown in place of the text while a voice message is recorded or transcribed:
+ *  a live level meter and the time, with how to finish. */
+function VoiceStrip({ phase, startedAt, level, onCancel }: { phase: VoicePhase; startedAt: number | null; level: number; onCancel: () => void }) {
+  const [t, setT] = useState(() => Date.now());
+  const recording = phase === "recording";
+  useEffect(() => {
+    if (!recording) return;
+    let frame = 0;
+    let last = 0;
+    const tick = (ms: number) => {
+      if (ms - last >= 1000 / 24) {
+        last = ms;
+        setT(Date.now());
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [recording]);
+
+  if (!recording) {
+    return (
+      <div className="chat-voice-strip" role="status">
+        <Spinner size={14} />
+        <span className="chat-voice-working">{phase === "starting" ? "Getting the microphone ready…" : "Transcribing your voice…"}</span>
+      </div>
+    );
+  }
+  const seconds = Math.max(0, Math.floor((t - (startedAt ?? t)) / 1000));
+  const boosted = Math.min(1, level * 2.5 + 0.08);
+  const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  return (
+    <div className="chat-voice-strip" role="status" aria-label="Recording your voice">
+      <span className="chat-voice-dot" />
+      <span className="chat-voice-time">{`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`}</span>
+      <span className="chat-voice-meter">
+        {Array.from({ length: 24 }, (_, i) => {
+          const wave = still ? 0.6 : 0.45 + 0.55 * Math.abs(Math.sin(i * 0.9 + (t / 1000) * 7));
+          return <i key={i} style={{ height: Math.max(3, 20 * boosted * wave) }} />;
+        })}
+      </span>
+      <span className="chat-voice-spacer" />
+      <span className="chat-voice-hint">Enter to finish · Esc to cancel</span>
+      <button className="chat-chip chat-voice-cancel" onClick={onCancel}>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+/** A menu below its button (above when there's no room), or at a point. */
+function Popover({
+  children,
+  onClose,
+  align = "left",
+  at,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+  align?: "left" | "right";
+  at?: { x: number; y: number };
+}) {
   const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    const a = at ? { left: at.x, right: at.x, top: at.y, bottom: at.y } : el.parentElement!.getBoundingClientRect();
+    const gap = at ? 0 : 4;
+    let top = a.bottom + gap;
+    if (top + h > window.innerHeight - 8) top = Math.max(8, a.top - h - gap);
+    const left = Math.min(Math.max(8, align === "right" ? a.right - w : a.left), window.innerWidth - w - 8);
+    setPos({ left, top });
+  }, [align, at]);
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
@@ -1085,7 +1372,7 @@ function Popover({ children, onClose, align = "left" }: { children: ReactNode; o
     };
   }, [onClose]);
   return (
-    <div ref={ref} className={`chat-pop ${align}`} role="menu">
+    <div ref={ref} className="chat-pop" role="menu" style={pos ?? { left: 0, top: 0, visibility: "hidden" }}>
       {children}
     </div>
   );
@@ -1160,4 +1447,3 @@ function PasteModal({ open, onClose, onAdd }: { open: boolean; onClose: () => vo
     </Modal>
   );
 }
-

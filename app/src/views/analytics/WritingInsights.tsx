@@ -300,7 +300,7 @@ export default function WritingInsights({ compact = false }: { compact?: boolean
             <p className="muted small">
               {info.uses_llm
                 ? `Analyzed by ${info.analyzer_name} with ${info.models.join(", then ")}.`
-                : "No local model is set for insights, so a quick on-device reading is used. Turn on Writing Insights in Settings → AI Features for a model's analysis."}
+                : "No local model is set for insights, so a quick on-device reading is used. Turn on Writing Insights in Model › AI Features for a model's analysis."}
             </p>
           )}
         </div>

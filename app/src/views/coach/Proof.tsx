@@ -110,7 +110,9 @@ function FeaturedHabit({ state, onStop }: { state: HabitState; onStop: () => voi
           <span className="coach-display" style={{ fontSize: 28, color: "var(--c-muted)" }}>
             {percent(v.before_share)}
           </span>
-          <span style={{ color: "var(--c-ink-3)" }}>→</span>
+          <span style={{ color: "var(--c-ink-3)" }}>
+            <Icon name="arrowRight" size={14} />
+          </span>
           <span className="coach-display" style={{ fontSize: 30, color: v.status === "working" ? "var(--c-gain)" : "var(--c-ink)" }}>
             {percent(v.after_share)}
           </span>

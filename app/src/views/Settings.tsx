@@ -1,59 +1,48 @@
-// Settings shell — sections mirror the macOS Settings window:
-// General · Dictation · Audio · Text · AI Features · Coach · About.
-import { useState } from "react";
+// Settings (Mac HomeSettingsWorkspaceView): title, tab bar and one centred column.
+// Dictation · Text · Audio · Coach · General.
+import { useEffect, useState, type ReactNode } from "react";
 import { Button, ConfirmDialog, Icon, PageHeader, Segmented, useToast } from "../ui";
 import type { AppInfo } from "../types";
 import { call } from "../lib/api";
 import { useSettings } from "../lib/settings";
-import { phaseLabel, useUpdater } from "../lib/updater";
-import { Row, Section, ToggleRow, usePatch } from "../components/SettingsRows";
+import { Glyph, Row, Section, TabBar, ToggleRow, usePatch } from "../components/SettingsRows";
 import DictationSettings from "./settings/Dictation";
 import AudioSettings from "./settings/Audio";
 import TextSettings from "./settings/Text";
-import AISettings from "./settings/AI";
 import CoachSettings from "./settings/Coach";
 
-type Pane = "general" | "dictation" | "audio" | "text" | "ai" | "coach" | "about";
+type Pane = "dictation" | "text" | "audio" | "coach" | "general";
 
-const PANES: { id: Pane; label: string; icon: string }[] = [
-  { id: "general", label: "General", icon: "settings" },
-  { id: "dictation", label: "Dictation", icon: "keyboard" },
-  { id: "audio", label: "Audio", icon: "mic" },
-  { id: "text", label: "Text", icon: "edit" },
-  { id: "ai", label: "AI Features", icon: "sparkle" },
-  { id: "coach", label: "Coach", icon: "coach" },
-  { id: "about", label: "About", icon: "info" },
+const PANES: { value: Pane; label: string; icon: ReactNode }[] = [
+  { value: "dictation", label: "Dictation", icon: <Icon name="waveform" size={13} /> },
+  { value: "text", label: "Text", icon: <Glyph name="alignLeft" /> },
+  { value: "audio", label: "Audio", icon: <Icon name="mic" size={13} /> },
+  { value: "coach", label: "Coach", icon: <Icon name="scope" size={13} /> },
+  { value: "general", label: "General", icon: <Icon name="sliders" size={13} /> },
 ];
 
-export default function Settings(props: { info: AppInfo | null; onRunSetup: () => void }) {
-  const [pane, setPane] = useState<Pane>("general");
+export default function Settings(_props: { info: AppInfo | null; onRunSetup: () => void }) {
+  const [pane, setPane] = useState<Pane>("dictation");
+  // Each section opens at its top (the Mac rebuilds the scroll view per tab).
+  useEffect(() => {
+    document.querySelector(".content")?.scrollTo(0, 0);
+  }, [pane]);
   return (
     <div className="view">
-      <PageHeader title="Settings" desc="Every change saves instantly." />
-      <div className="settings-layout">
-        <nav className="settings-nav" aria-label="Settings sections">
-          {PANES.map((p) => (
-            <button key={p.id} className={pane === p.id ? "active" : ""} onClick={() => setPane(p.id)}>
-              <Icon name={p.icon} size={16} />
-              {p.label}
-            </button>
-          ))}
-        </nav>
-        <div className="settings-body">
-          {pane === "general" && <General onRunSetup={props.onRunSetup} />}
-          {pane === "dictation" && <DictationSettings />}
-          {pane === "audio" && <AudioSettings />}
-          {pane === "text" && <TextSettings />}
-          {pane === "ai" && <AISettings />}
-          {pane === "coach" && <CoachSettings />}
-          {pane === "about" && <AboutPane info={props.info} />}
-        </div>
+      <PageHeader title="Settings" leading={<TabBar tabs={PANES} value={pane} onChange={setPane} label="Settings sections" />} />
+      <div className="st-column">
+        {pane === "dictation" && <DictationSettings />}
+        {pane === "text" && <TextSettings />}
+        {pane === "audio" && <AudioSettings />}
+        {pane === "coach" && <CoachSettings />}
+        {pane === "general" && <General />}
       </div>
     </div>
   );
 }
 
-function General({ onRunSetup }: { onRunSetup: () => void }) {
+/** App-level behaviour and the destructive resets (Mac GeneralSettingsView). */
+function General() {
   const { settings } = useSettings();
   const save = usePatch();
   const toast = useToast();
@@ -61,63 +50,67 @@ function General({ onRunSetup }: { onRunSetup: () => void }) {
   if (!settings) return null;
   return (
     <>
-      <Section title="Appearance">
-        <Row label="Look" hint="Follow the system, or pick light or dark.">
+      <Section title="App">
+        <Row label="Appearance" hint="Light, dark, or whichever this computer is set to. The recording pill stays dark either way.">
           <Segmented
             value={settings.appearance}
             options={[
-              { value: "system", label: "System" },
+              { value: "system", label: "Match System" },
               { value: "light", label: "Light" },
               { value: "dark", label: "Dark" },
             ]}
             onChange={(v) => save({ appearance: v })}
           />
         </Row>
-      </Section>
-      <Section title="Startup">
-        <ToggleRow k="launch_at_login" label="Launch at login" hint="Start Orttaai in the tray when you sign in." />
+        <ToggleRow
+          k="launch_at_login"
+          label="Launch at Login"
+          hint="Starts Orttaai when you log in to this computer so dictation is always ready."
+        />
         <ToggleRow
           k="start_engine_on_launch"
-          label="Start dictation on launch"
-          hint="Load the speech model as soon as Orttaai opens, so the shortcut works right away."
+          label="Start Dictation on Launch"
+          hint="Loads the speech model as soon as Orttaai opens, so the shortcut works right away."
         />
-      </Section>
-      <Section title="Feedback">
         <ToggleRow
           k="show_processing_estimate"
-          label="Show processing estimate"
-          hint="The recording pill shows how long transcription should take."
+          label="Show Processing Estimate"
+          hint="Shows roughly how long transcription will take in the pill while it finishes a recording."
         />
-        <ToggleRow k="celebrate_milestones" label="Celebrate milestones" hint="A little celebration when you unlock a badge." />
-        <ToggleRow k="sound_cues" label="Sound cues" hint="Soft sounds when recording starts, stops, or fails." />
+        <ToggleRow
+          k="celebrate_milestones"
+          label="Celebrate Milestones"
+          hint="Shows a small card in the corner when a dictation earns a badge, and a celebration the next time you open Orttaai. Badges are still earned when this is off; see them in Milestones."
+        />
+        <ToggleRow k="sound_cues" label="Sound Cues" hint="Plays soft sounds when recording starts, stops, or fails." />
       </Section>
-      <Section title="Setup">
-        <Row label="Run setup again" hint="Walk through permissions, model and shortcut again.">
-          <Button onClick={onRunSetup}>Run Setup…</Button>
-        </Row>
-      </Section>
-      <Section title="Data">
-        <Row label="Clear history" hint="Delete every dictation and everything derived from them.">
-          <Button variant="danger" onClick={() => setConfirm("history")}>
+      <Section title="Danger Zone">
+        <Row
+          label="Clear History"
+          hint="Permanently deletes every saved transcription and what was derived from it. Settings, Personal Memory, and models are kept."
+        >
+          <Button size="sm" className="st-btn st-danger" onClick={() => setConfirm("history")}>
             Clear History…
           </Button>
         </Row>
-        <Row label="Reset app data" hint="Delete history, dictionary, snippets, chats and badges. Settings are kept.">
-          <Button variant="danger" onClick={() => setConfirm("reset")}>
+        <Row
+          label="Reset App Data"
+          hint="Clears history, Personal Memory, insights, conversations, badges and Coach progress. Settings and downloaded models are kept."
+        >
+          <Button size="sm" className="st-btn st-danger" onClick={() => setConfirm("reset")}>
             Reset App Data…
           </Button>
         </Row>
       </Section>
       <ConfirmDialog
         open={confirm !== null}
-        title={confirm === "history" ? "Clear all history?" : "Reset all app data?"}
+        title={confirm === "history" ? "Clear All History?" : "Reset App Data?"}
         body={
           confirm === "history"
-            ? "Every dictation, its insights and memory index will be deleted. This can't be undone."
-            : "History, dictionary, snippets, conversations, badges and Coach progress will be deleted. This can't be undone."
+            ? "This will permanently delete all transcriptions. This cannot be undone."
+            : "This clears history, Personal Memory, insights, conversations, badges and Coach progress. This cannot be undone."
         }
         confirmLabel={confirm === "history" ? "Clear History" : "Reset"}
-
         onCancel={() => setConfirm(null)}
         onConfirm={() => {
           const cmd = confirm === "history" ? "clear_history" : "reset_app_data";
@@ -127,28 +120,6 @@ function General({ onRunSetup }: { onRunSetup: () => void }) {
             .catch((e) => toast(String(e), "error"));
         }}
       />
-    </>
-  );
-}
-
-function AboutPane({ info }: { info: AppInfo | null }) {
-  const { settings } = useSettings();
-  const { phase, act } = useUpdater(settings?.auto_download_updates ?? true);
-  return (
-    <>
-      <Section title="Orttaai">
-        <Row label="Version" hint={`${info?.platform ?? "—"} · ${info?.session ?? "—"} · ${info?.gpu_backend ?? "cpu"} build`}>
-          <span className="mono">v{info?.version ?? "—"}</span>
-        </Row>
-      </Section>
-      <Section title="Updates">
-        <Row label="Software update" hint="Signed updates from GitHub Releases. Orttaai never restarts without your click.">
-          <Button onClick={act} disabled={phase.kind === "checking" || phase.kind === "installing"}>
-            {phaseLabel(phase)}
-          </Button>
-        </Row>
-        <ToggleRow k="auto_download_updates" label="Automatically download updates" hint="Download in the background; install when you choose." />
-      </Section>
     </>
   );
 }

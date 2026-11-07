@@ -13,7 +13,7 @@ import { MilestoneBadge } from "./ShareCardBadge";
 export default function WhatsNew() {
   const [release, setRelease] = useState<WhatsNewRelease | null>(null);
   const [index, setIndex] = useState(0);
-  const nextRef = useRef<HTMLButtonElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     call<WhatsNewRelease | null>("whats_new_pending")
@@ -32,13 +32,23 @@ export default function WhatsNew() {
     setRelease(null);
     whatsNewOpen.set(false);
   };
-  const closeRef = useRef(close);
-  closeRef.current = close;
+  const advance = () => {
+    if (!release) return;
+    if (index >= Math.min(release.items.length, 3) - 1) close();
+    else setIndex((i) => i + 1);
+  };
+  const keys = useRef({ close, advance });
+  keys.current = { close, advance };
 
   useEffect(() => {
     if (!release) return;
-    nextRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeRef.current();
+    cardRef.current?.focus();
+    // Escape and Return act as the Mac's cancel and default actions, unless a
+    // button was tabbed to, which then handles Return itself.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") keys.current.close();
+      else if (e.key === "Enter" && !(document.activeElement instanceof HTMLButtonElement)) keys.current.advance();
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [release]);
@@ -50,7 +60,7 @@ export default function WhatsNew() {
 
   return createPortal(
     <div className="celebration-overlay wn-overlay" role="presentation">
-      <div className="wn-card" role="dialog" aria-modal="true" aria-label={`What's new in Orttaai ${release.version}`}>
+      <div className="wn-card" ref={cardRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`What's new in Orttaai ${release.version}`}>
         <div className="wn-art">
           <span className="wn-glow" />
           <span className="wn-dots" />
@@ -81,7 +91,7 @@ export default function WhatsNew() {
                 Skip
               </button>
             )}
-            <button ref={nextRef} className="pill-btn primary small" onClick={() => (isLast ? close() : setIndex((i) => i + 1))}>
+            <button className="pill-btn primary wn-next" onClick={advance}>
               {isLast ? "Got it" : "Next"}
             </button>
           </div>
@@ -120,40 +130,50 @@ function Scene({ art }: { art: WhatsNewArt }) {
         <div className="wn-learning">
           <div className="wn-words">
             <span className="wn-chip struck">Orta</span>
-            <Icon name="arrowRight" size={14} />
+            <Icon name="arrowRight" size={15} />
             <span className="wn-chip">Orttaai</span>
           </div>
           <span className="wn-learned">
-            <Icon name="check" size={13} /> Learned a word <b>Review</b>
+            <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" fill="var(--accent)" />
+              <path d="m7.5 12.5 3 3 6-7" fill="none" stroke="var(--bg)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Learned a word <b>Review</b>
           </span>
         </div>
       );
     case "updates":
       return (
         <div className="wn-updates">
-          <svg width="92" height="92" viewBox="0 0 92 92" aria-hidden="true">
-            <circle cx="46" cy="46" r="40" fill="none" stroke="var(--line)" strokeWidth="7" />
+          <svg width="92" height="92" viewBox="0 0 92 92" aria-hidden="true" className="wn-update-ring">
+            <circle cx="46" cy="46" r="46" fill="none" className="wn-update-track" strokeWidth="7" />
             <circle
               cx="46"
               cy="46"
-              r="40"
+              r="46"
               fill="none"
               stroke="var(--accent)"
               strokeWidth="7"
               strokeLinecap="round"
-              strokeDasharray={`${2 * Math.PI * 40 * 0.72} 999`}
+              strokeDasharray={`${2 * Math.PI * 46 * 0.72} 999`}
               transform="rotate(-90 46 46)"
             />
+            <path d="M46 31v29M34 48l12 12 12-12" fill="none" stroke="var(--accent)" strokeWidth="4.4" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
-          <span className="wn-updates-icon">
-            <Icon name="download" size={26} />
-          </span>
           <div className="wn-update-rows">
             <span className="wn-update-row">
-              <Icon name="download" size={12} /> Downloading 72%
+              <span className="wn-update-dot">
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M5 1.5v7M2 5.6l3 3 3-3" />
+                </svg>
+              </span>
+              Downloading 72%
             </span>
             <span className="wn-update-row filled">
-              <Icon name="restart" size={12} /> Restart to update
+              <span className="wn-update-dot">
+                <Icon name="refresh" size={10} />
+              </span>
+              Restart to update
             </span>
           </div>
         </div>

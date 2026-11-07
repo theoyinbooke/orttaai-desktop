@@ -25,8 +25,11 @@ equivalent; behaviour, thresholds and copy follow the Mac.
 | Milestones + share cards | `core/src/milestones.rs`, `views/Milestones.tsx`, `components/ShareCard*` | 22 badges, PNG export |
 | What's New | `core/src/whatsnew.rs`, `components/WhatsNew.tsx` | Desktop release notes |
 | Coach (CoachCore + Coach UI) | `core/src/coach/`, `views/Coach.tsx` | Voices via WebView `speechSynthesis` |
-| Setup wizard, menu bar, floating panel | `views/Setup.tsx`, tray in `lib.rs`, `Panel.tsx` | Tray replaces the menu bar |
-| Settings (General, Dictation, Audio, Text, AI, Coach, About) | `core/src/settings.rs`, `views/Settings.tsx` + `views/settings/*` | Every Mac key has a field |
+| Setup window (`SetupView`, `SetupArtwork`, Permission/Download/Ready steps) | `views/Setup.tsx`, `components/SetupArt.tsx`, `open_setup_window` / `finish_setup` in `lib.rs` | Its own fixed 600 x 750 window, shown alone on first launch; same four steps, step track and animated scenes. Permissions = microphone, typing, shortcut |
+| Window shell (`HomeShellView`, `HomeNavigation`, `SectionRail`, `WorkspaceHeader`) | `App.tsx`, `App.css` (shell section), `PageHeader` in `ui.tsx` | Sidebar dark in both looks, same sections and order; integrated title strip with the page title, tabs and actions; window controls drawn by the app (undecorated window) |
+| Menu bar, floating panel | tray in `lib.rs`, `Panel.tsx` | Tray replaces the menu bar |
+| Settings (Dictation, Text, Audio, Coach, General) and About | `core/src/settings.rs`, `views/Settings.tsx` + `views/settings/*`, `views/About.tsx` | AI Features lives on the Model page, as on the Mac |
+| Model page (`ModelSettingsView`: Speech and AI Features) | `views/Models.tsx`, `components/ExpressCard.tsx`, `views/settings/AI.tsx` | Folder picker is a typed path (no native picker bundled) |
 | Sparkle updates (sidebar button) | `lib/updater.ts` + Tauri updater | Same phases; never restarts without a click |
 | Database (GRDB migrations v1–v24) | `core/src/store/schema.rs` | Same tables (minus CloudKit sync tables) |
 | Design system (`Orttaai/Design`) | `app/src/App.css` tokens | Mac colours and radii; Inter for SF Pro |

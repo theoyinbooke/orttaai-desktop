@@ -1,5 +1,5 @@
 // Analytics (Mac AnalyticsView + AnalyticsDashboardView): Dashboard, Tone of
-// Voice and History tabs; the dashboard's range lives in
+// Voice and History tabs in the title strip; the dashboard's range lives in
 // `settings.analytics_time_range`. Charts are hand-rolled SVG with hover
 // tooltips. Owned by the analytics/home area.
 import {
@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import "../styles/analytics.css";
-import { Icon, PageHeader, Segmented, Spinner, Tabs, useToast } from "../ui";
+import { Icon, PageHeader, useToast } from "../ui";
 import { call, useEvent } from "../lib/api";
 import { useSettings } from "../lib/settings";
 import {
@@ -41,10 +41,10 @@ import History from "./History";
 import ToneOfVoice from "./analytics/ToneOfVoice";
 import WritingInsights from "./analytics/WritingInsights";
 
-const TABS: { value: AnalyticsTab; label: string }[] = [
-  { value: "dashboard", label: "Dashboard" },
-  { value: "tone", label: "Tone of Voice" },
-  { value: "history", label: "History" },
+const TABS: { value: AnalyticsTab; label: string; icon: string }[] = [
+  { value: "dashboard", label: "Dashboard", icon: "barsAxis" },
+  { value: "tone", label: "Tone of Voice", icon: "pulse" },
+  { value: "history", label: "History", icon: "clockArrow" },
 ];
 
 export default function Analytics() {
@@ -70,21 +70,38 @@ export default function Analytics() {
   );
 
   return (
-    <div className="view an-view">
+    <div className={`view an-view ${tab === "history" ? "an-fill" : ""}`}>
       <PageHeader
         title="Analytics"
+        leading={
+          <div className="an-tabbar" role="tablist" aria-label="Analytics sections">
+            {TABS.map((t) => (
+              <button key={t.value} role="tab" aria-selected={tab === t.value} className={`an-tabbar-btn ${tab === t.value ? "active" : ""}`} onClick={() => setTab(t.value)}>
+                <Icon name={t.icon} size={13} />
+                {t.label}
+              </button>
+            ))}
+          </div>
+        }
         actions={
           // Only the dashboard has a range to pick.
           tab === "dashboard" ? (
-            <Segmented
-              value={range}
-              options={RANGES.map((r) => ({ value: r.value, label: r.label }))}
-              onChange={(v) => patch({ analytics_time_range: v }).catch((e) => toast(String(e), "error"))}
-            />
+            <div className="an-picker" role="radiogroup" aria-label="Time range">
+              {RANGES.map((r) => (
+                <button
+                  key={r.value}
+                  role="radio"
+                  aria-checked={range === r.value}
+                  className={`an-picker-btn ${range === r.value ? "active" : ""}`}
+                  onClick={() => patch({ analytics_time_range: r.value }).catch((e) => toast(String(e), "error"))}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
           ) : undefined
         }
       />
-      <Tabs value={tab} tabs={TABS} onChange={setTab} />
       <div className="an-tab-body">
         {tab === "dashboard" && <Dashboard range={range} />}
         {tab === "tone" && <ToneOfVoice />}
@@ -99,11 +116,9 @@ export default function Analytics() {
 function Dashboard({ range }: { range: TimeRange }) {
   const [snap, setSnap] = useState<AnalyticsSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
   const gen = useRef(0);
   const load = useCallback(() => {
     const g = ++gen.current;
-    setLoading(true);
     call<AnalyticsSnapshot>("analytics_dashboard", { range })
       .then((s) => {
         // An older refresh never replaces a newer one's numbers.
@@ -111,69 +126,69 @@ function Dashboard({ range }: { range: TimeRange }) {
         setSnap(s);
         setError(null);
       })
-      .catch((e) => g === gen.current && setError(String(e)))
-      .finally(() => g === gen.current && setLoading(false));
+      .catch((e) => g === gen.current && setError(String(e)));
   }, [range]);
   useEffect(load, [load]);
   useEvent("history-changed", load);
 
+  // Drawn once the numbers are in: before them it reads as an empty archive.
   if (!snap) {
-    return error ? <div className="an-error">Failed to load analytics. {error}</div> : <div className="ms-loading"><Spinner /></div>;
+    return error ? <div className="an-error">Failed to load analytics. {error}</div> : null;
   }
   const meta = RANGES.find((r) => r.value === range) ?? RANGES[0];
   const today = snap.payload.today;
   const trend = snap.trend_points;
   const prev = snap.previous;
   const vs = range === "all" ? "" : ` vs prev ${meta.short}`;
+  // The change on the last period lives in the card's tooltip: the Mac's cards
+  // have no room set aside for it.
+  const hint = (change: number | null | undefined) => {
+    const text = changeText(change);
+    return text ? `${text}${vs}` : undefined;
+  };
 
   return (
-    <div className={`an-dash ${loading ? "is-refreshing" : ""}`}>
+    <div className="an-dash">
       {error && <div className="an-error">Failed to refresh analytics. {error}</div>}
 
       <div className="an-summary">
         <SummaryMetric
           warm
-          icon="dictionary"
+          icon={<WordsGlyph />}
           title="Words"
           value={fmt(snap.total_words)}
           detail={snap.active_days > 0 ? `${fmt(snap.total_words / snap.active_days)} per active day` : "No dictation yet"}
-          change={changeText(prev?.words_change)}
-          changeHint={vs}
+          change={hint(prev?.words_change)}
           series={trend.map((p) => p.words)}
         />
         <SummaryMetric
-          icon="mic"
+          icon={<Icon name="waveform" size={13} />}
           title="Sessions"
           value={fmt(snap.total_sessions)}
           detail={`${fmt(today.sessions)} today`}
-          change={changeText(prev?.sessions_change)}
-          changeHint={vs}
+          change={hint(prev?.sessions_change)}
           series={trend.map((p) => p.sessions)}
         />
         <SummaryMetric
-          icon="history"
+          icon={<Icon name="clock" size={13} />}
           title="Active Time"
           value={formatMinutes(snap.total_recording_minutes, snap.total_sessions > 0)}
           detail={`${formatMinutes(today.active_minutes, today.sessions > 0)} today`}
-          change={changeText(prev?.active_minutes_change)}
-          changeHint={vs}
+          change={hint(prev?.active_minutes_change)}
           series={snap.daily_active_seconds}
         />
         <SummaryMetric
-          icon="bolt"
+          icon={<Icon name="speedometer" size={13} />}
           title="Avg WPM"
           value={snap.average_wpm > 0 ? fmt(snap.average_wpm) : "–"}
           detail={snap.active_days === 1 ? "over 1 active day" : `over ${fmt(snap.active_days)} active days`}
-          change={changeText(prev?.wpm_change)}
-          changeHint={vs}
+          change={hint(prev?.wpm_change)}
           // Quiet days have no speed, so they'd only draw dips.
           series={trend.filter((p) => p.sessions > 0).map((p) => p.average_wpm)}
         />
       </div>
 
       <TrendCard title={meta.trendTitle} points={trend} axisTicks={meta.ticks} emptyMessage="No activity in this range yet." />
-
-      <ActivityCard snap={snap} rangeLabel={meta.short} />
 
       <div className="an-pair">
         <WeekdayCard snap={snap} />
@@ -186,8 +201,19 @@ function Dashboard({ range }: { range: TimeRange }) {
 
       <PerformanceCard health={snap.payload.performance} />
 
+      <ActivityCard snap={snap} rangeLabel={meta.short} />
+
       <WritingInsights />
     </div>
+  );
+}
+
+/** The Mac's `character.cursor.ibeam`: a capital A beside a text cursor. */
+function WordsGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2.5 19 8.5 5l6 14M4.6 14.5h7.8M19 4v16M16.5 4h5M16.5 20h5" />
+    </svg>
   );
 }
 
@@ -199,33 +225,30 @@ function SummaryMetric({
   series,
   warm,
   change,
-  changeHint,
 }: {
   title: string;
   value: string;
   detail: string;
-  icon: string;
+  icon: ReactNode;
   series: number[];
   warm?: boolean;
-  change: string | null;
-  changeHint: string;
+  change?: string;
 }) {
-  const up = change?.startsWith("+");
-  const down = change?.startsWith("−");
+  // Long values shrink to fit, as the Mac's minimumScaleFactor.
+  const fontSize = value.length <= 5 ? 30 : value.length === 6 ? 28 : value.length === 7 ? 25 : 21;
   return (
-    <div className={`card an-metric ${warm ? "warm" : ""}`} aria-label={`${title}: ${value}, ${detail}`}>
+    <div className={`card an-metric ${warm ? "warm" : ""}`} title={change} aria-label={`${title}: ${value}, ${detail}${change ? `, ${change}` : ""}`}>
       <div className="an-metric-head">
-        <CardIcon name={icon} />
+        <span className="card-icon" aria-hidden="true">
+          {icon}
+        </span>
         <span>{title}</span>
-        {change && (
-          <span className={`an-change ${up ? "up" : down ? "down" : ""}`} title={`${change}${changeHint}`}>
-            {change}
-          </span>
-        )}
       </div>
       <div className="an-metric-row">
         <div className="an-metric-text">
-          <span className="an-metric-value">{value}</span>
+          <span className="an-metric-value" style={{ fontSize }}>
+            {value}
+          </span>
           <span className="an-metric-detail">{detail}</span>
         </div>
         <Sparkline values={series} />
@@ -335,12 +358,14 @@ function monotonePath(pts: [number, number][]): string {
   return d;
 }
 
-function niceMax(v: number): number {
-  if (v <= 0) return 10;
-  const exp = Math.pow(10, Math.floor(Math.log10(v)));
-  const f = v / exp;
-  const nice = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
-  return nice * exp;
+/** Round axis steps of 1, 2 or 5 × 10ⁿ, about four to the chart, as Swift Charts picks. */
+function niceScale(v: number): { top: number; step: number } {
+  if (v <= 0) return { top: 10, step: 2.5 };
+  const raw = v / 4;
+  const exp = Math.pow(10, Math.floor(Math.log10(raw)));
+  const f = raw / exp;
+  const step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * exp;
+  return { top: Math.ceil(v / step) * step, step };
 }
 
 const shortDay = (d: Date) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -363,31 +388,33 @@ export function TrendCard({
   const [hover, setHover] = useState<number | null>(null);
   const empty = points.every((p) => p.words === 0 && p.sessions === 0);
   const H = 210;
-  const pad = { l: 44, r: 8, t: 10, b: 24 };
+  const { top, step } = niceScale(Math.max(1, ...points.map((p) => Math.max(p.words, p.average_wpm))));
+  const pad = { l: fmt(top).length * 6.4 + 8, r: 0, t: 6, b: 22 };
   const iw = Math.max(1, w - pad.l - pad.r);
   const ih = H - pad.t - pad.b;
-  const max = niceMax(Math.max(1, ...points.map((p) => Math.max(p.words, p.average_wpm))));
-  const x = (i: number) => pad.l + (points.length > 1 ? (iw * i) / (points.length - 1) : iw / 2);
-  const y = (v: number) => pad.t + ih * (1 - v / max);
+  // Each day owns a band of the axis; its point sits mid-band, as a mark with `unit: .day`.
+  const band = iw / Math.max(1, points.length);
+  const tickX = (i: number) => Math.round(pad.l + band * i) + 0.5;
+  const x = (i: number) => pad.l + band * (i + 0.5);
+  const y = (v: number) => pad.t + ih * (1 - v / top);
   const words = points.map((p, i) => [x(i), y(p.words)] as [number, number]);
   const wpm = points.map((p, i) => [x(i), y(p.average_wpm)] as [number, number]);
   const wordsPath = monotonePath(words);
-  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * max);
+  const yTicks = Array.from({ length: Math.round(top / step) + 1 }, (_, i) => i * step);
   const stride = Math.max(1, Math.ceil(points.length / axisTicks));
   const gradId = useRef(`trend-${Math.random().toString(36).slice(2)}`).current;
   const hp = hover != null ? points[hover] : null;
 
   const onMove = (e: ReactMouseEvent<SVGRectElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const i = points.length > 1 ? Math.round((px / rect.width) * (points.length - 1)) : 0;
+    const i = Math.floor(((e.clientX - rect.left) / rect.width) * points.length);
     setHover(Math.max(0, Math.min(points.length - 1, i)));
   };
   const totalWords = points.reduce((a, p) => a + p.words, 0);
   const spoken = points.filter((p) => p.sessions > 0);
 
   return (
-    <div className="card an-card">
+    <div className="card an-card an-trend-card">
       <div className="an-card-head">
         <h3>{title}</h3>
         {allTime && allTime.active_days > 0 && (
@@ -416,17 +443,23 @@ export function TrendCard({
                 </defs>
                 {yTicks.map((t) => (
                   <g key={t}>
-                    <line x1={pad.l} x2={w - pad.r} y1={y(t)} y2={y(t)} className="an-grid" />
-                    <text x={pad.l - 8} y={y(t) + 4} textAnchor="end" className="an-axis">
+                    <line x1={pad.l} x2={w - pad.r} y1={Math.round(y(t)) + 0.5} y2={Math.round(y(t)) + 0.5} className="an-grid" />
+                    <text x={pad.l - 6} y={y(t) + 4} textAnchor="end" className="an-axis">
                       {fmt(t)}
                     </text>
                   </g>
                 ))}
                 {points.map((p, i) =>
                   i % stride === 0 ? (
-                    <text key={p.day} x={x(i)} y={H - 6} textAnchor="middle" className="an-axis">
-                      {shortDay(dayDate(p.day))}
-                    </text>
+                    <g key={p.day}>
+                      <line x1={tickX(i)} x2={tickX(i)} y1={pad.t} y2={pad.t + ih} className="an-grid" />
+                      <line x1={tickX(i)} x2={tickX(i)} y1={pad.t + ih} y2={pad.t + ih + 4} className="an-tick" />
+                      {tickX(i) + 36 <= w && (
+                        <text x={tickX(i)} y={H - 4} textAnchor="start" className="an-axis">
+                          {shortDay(dayDate(p.day))}
+                        </text>
+                      )}
+                    </g>
                   ) : null,
                 )}
                 <path d={`${wordsPath} L${x(points.length - 1)},${y(0)} L${x(0)},${y(0)}Z`} fill={`url(#${gradId})`} />
@@ -435,8 +468,8 @@ export function TrendCard({
                 {hp && hover != null && (
                   <g>
                     <line x1={x(hover)} x2={x(hover)} y1={pad.t} y2={pad.t + ih} className="an-rule" />
-                    <circle cx={x(hover)} cy={y(hp.words)} r="4.5" fill="var(--accent)" fillOpacity="0.6" stroke="var(--surface)" strokeWidth="2" />
-                    <circle cx={x(hover)} cy={y(hp.average_wpm)} r="5" fill="var(--accent)" stroke="var(--surface)" strokeWidth="2" />
+                    <circle cx={x(hover)} cy={y(hp.words)} r="3.4" fill="var(--accent)" fillOpacity="0.6" />
+                    <circle cx={x(hover)} cy={y(hp.average_wpm)} r="3.9" fill="var(--accent)" />
                   </g>
                 )}
                 <rect
@@ -458,10 +491,14 @@ export function TrendCard({
                 ) : (
                   <>
                     <span className="tip-row">
-                      <i className="dot soft" /> <b>{fmt(hp.words)}</b> {hp.words === 1 ? "word" : "words"}
+                      <i className="dot soft" />
+                      <b>{fmt(hp.words)}</b>
+                      <small>{hp.words === 1 ? "word" : "words"}</small>
                     </span>
                     <span className="tip-row">
-                      <i className="dot" /> <b>{fmt(hp.average_wpm)}</b> WPM
+                      <i className="dot" />
+                      <b>{fmt(hp.average_wpm)}</b>
+                      <small>WPM</small>
                     </span>
                     <span className="tip-muted">{plural(hp.sessions, "session")}</span>
                   </>
@@ -506,7 +543,7 @@ function Bars({
 }: {
   items: { key: string; value: number }[];
   focus: string | null;
-  onHover: (key: string | null) => void;
+  onHover?: (key: string | null) => void;
   showCounts?: boolean;
   label: (key: string) => string;
   tickFor?: (key: string) => boolean;
@@ -515,33 +552,25 @@ function Bars({
   ariaLabel: string;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
-  const max = Math.max(1, ...items.map((i) => i.value));
-  const top = showCounts ? 16 : 4;
-  const bottom = 18;
+  const { top: scaleTop } = niceScale(Math.max(1, ...items.map((i) => i.value)));
+  const top = showCounts ? 16 : 2;
+  const bottom = 20;
   const ih = height - top - bottom;
   const slot = w / Math.max(1, items.length);
-  const gap = Math.max(2, Math.min(10, slot * 0.25));
+  const gap = slot * 0.28;
   const bw = Math.max(2, slot - gap);
   return (
     <div className="an-bars" ref={ref}>
       {w > 0 && (
-        <svg width={w} height={height} role="img" aria-label={ariaLabel} onMouseLeave={() => onHover(null)}>
+        <svg width={w} height={height} role="img" aria-label={ariaLabel} onMouseLeave={() => onHover?.(null)}>
           {items.map((it, i) => {
-            const h = it.value > 0 ? Math.max(3, (ih * it.value) / max) : 0;
+            const h = (ih * it.value) / scaleTop;
             const bx = i * slot + gap / 2;
             const by = top + ih - h;
-            const on = it.key === focus;
             return (
-              <g key={it.key} onMouseEnter={() => onHover(it.key)}>
+              <g key={it.key} onMouseEnter={() => onHover?.(it.key)}>
                 <rect x={i * slot} y={0} width={slot} height={height} fill="transparent" />
-                {h > 0 ? (
-                  <path
-                    d={roundedTop(bx, by, bw, h, Math.min(radius, bw / 2, h))}
-                    className={`an-bar ${on ? "on" : ""}`}
-                  />
-                ) : (
-                  <rect x={bx} y={top + ih - 2} width={bw} height={2} rx={1} className="an-bar zero" />
-                )}
+                {it.value > 0 && <rect x={bx} y={by} width={bw} height={h} rx={Math.min(radius, bw / 2, h / 2)} className={`an-bar ${it.key === focus ? "on" : ""}`} />}
                 {showCounts && it.value > 0 && (
                   <text x={bx + bw / 2} y={by - 4} textAnchor="middle" className="an-axis">
                     {fmt(it.value)}
@@ -559,11 +588,6 @@ function Bars({
       )}
     </div>
   );
-}
-
-/** A bar rising from the baseline with rounded top corners. */
-function roundedTop(x: number, y: number, w: number, h: number, r: number): string {
-  return `M${x},${y + h} L${x},${y + r} Q${x},${y} ${x + r},${y} L${x + w - r},${y} Q${x + w},${y} ${x + w},${y + r} L${x + w},${y + h}Z`;
 }
 
 function AnCard({ title, detail, children }: { title: string; detail: string; children: ReactNode }) {
@@ -702,13 +726,7 @@ function DurationCard({ snap }: { snap: AnalyticsSnapshot }) {
             text={hover == null ? `Most last ${common.phrase}` : `${plural(focus.count, "session")} ${focus.phrase}`}
             detail={snap.median_duration_ms != null ? `Median ${formatDuration(snap.median_duration_ms)} · ${plural(total, "session")}` : plural(total, "session")}
           />
-          <Bars
-            items={buckets.map((b) => ({ key: b.label, value: b.count }))}
-            focus={focus.label}
-            onHover={setHover}
-            label={(k) => k}
-            ariaLabel="Sessions by length"
-          />
+          <Bars items={buckets.map((b) => ({ key: b.label, value: b.count }))} focus={focus.label} onHover={setHover} label={(k) => k} ariaLabel="Sessions by length" />
         </>
       )}
     </AnCard>
@@ -718,7 +736,6 @@ function DurationCard({ snap }: { snap: AnalyticsSnapshot }) {
 /** Streaks, typing time saved, and a day-by-day heatmap of the range. */
 function ActivityCard({ snap, rangeLabel }: { snap: AnalyticsSnapshot; rangeLabel: string }) {
   const [hover, setHover] = useState<TrendPoint | null>(null);
-  const [wrapRef, wrapW] = useWidth<HTMLDivElement>();
   const days = snap.trend_points;
   if (days.length === 0) return null;
   const first = dayDate(days[0].day);
@@ -729,52 +746,45 @@ function ActivityCard({ snap, rangeLabel }: { snap: AnalyticsSnapshot; rangeLabe
   const level = (w: number) => (w <= 0 ? 0 : Math.min(4, Math.ceil((w / peak) * 4)));
   const st = snap.streaks;
   const gap = 3;
-  // Cells grow to fill the card for short ranges; long ranges scroll.
-  const cell = Math.max(11, Math.min(30, Math.floor((wrapW || 600) / weeks) - gap));
+  const cell = 14;
+  const active = days.filter((d) => d.sessions > 0).length;
   return (
-    <div className="card an-card">
-      <div className="an-card-head">
-        <h3>Streaks & Activity</h3>
-        <span className="an-card-detail">Days with a dictation</span>
-      </div>
+    <AnCard title="Streaks & Activity" detail="Days with a dictation">
       <div className="an-activity">
         <div className="an-streaks">
           <StreakStat icon="flame" value={plural(st.current_days, "day")} label={st.dictated_today || st.current_days === 0 ? "current streak" : "current streak · dictate today to keep it"} />
           <StreakStat icon="trophy" value={plural(st.best_days, "day")} label="best streak" />
           <StreakStat icon="history" value={durationText(snap.minutes_saved)} label={`typing saved (${rangeLabel}) at 40 WPM`} />
         </div>
-        <div className="an-heat-wrap" ref={wrapRef}>
+        <div className="an-heat-wrap">
           <svg
             className="an-heat"
             width={weeks * (cell + gap)}
             height={7 * (cell + gap)}
             role="img"
-            aria-label={`Daily activity: ${days.filter((d) => d.sessions > 0).length} active days of ${days.length}`}
+            aria-label={`Daily activity: ${active} active days of ${days.length}`}
             onMouseLeave={() => setHover(null)}
           >
-            {cells.map((d, i) => {
-              if (!d) return null;
-              const col = Math.floor(i / 7);
-              const row = i % 7;
-              return (
+            {cells.map((d, i) =>
+              d ? (
                 <rect
                   key={d.day}
-                  x={col * (cell + gap)}
-                  y={row * (cell + gap)}
+                  x={Math.floor(i / 7) * (cell + gap)}
+                  y={(i % 7) * (cell + gap)}
                   width={cell}
                   height={cell}
                   rx={3}
                   className={`heat l${level(d.words)} ${hover?.day === d.day ? "on" : ""}`}
                   onMouseEnter={() => setHover(d)}
                 />
-              );
-            })}
+              ) : null,
+            )}
           </svg>
           <div className="an-heat-foot">
             <span className="an-headline-detail">
               {hover
                 ? `${dayDate(hover.day).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}: ${hover.sessions === 0 ? "no dictation" : `${plural(hover.words, "word")} · ${plural(hover.sessions, "session")}`}`
-                : `${fmt(days.filter((d) => d.sessions > 0).length)} of ${fmt(days.length)} days active`}
+                : `${fmt(active)} of ${fmt(days.length)} days active`}
             </span>
             <span className="an-heat-key" aria-hidden="true">
               Less {[0, 1, 2, 3, 4].map((l) => <i key={l} className={`heat l${l}`} />)} More
@@ -782,7 +792,7 @@ function ActivityCard({ snap, rangeLabel }: { snap: AnalyticsSnapshot; rangeLabe
           </div>
         </div>
       </div>
-    </div>
+    </AnCard>
   );
 }
 

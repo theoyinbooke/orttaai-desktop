@@ -1,12 +1,26 @@
-// Settings → AI Features (Mac ModelSettingsView, AI half). Owned by the ai area.
-// Provider + endpoint with a connection check, warm-up, Text Polish (S1-mini or
-// a local LLM), Writing Insights, Semantic Memory settings, Graph Insights and
-// curated one-click downloads. Everything runs on your own hardware.
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Button, Icon, Select, Spinner, useToast } from "../../ui";
+// Model → AI Features (Mac ModelSettingsView, AI half). Owned by the ai area.
+// AI Provider with a connection check and warm-up, Text Polish (S1-mini or a
+// local LLM), Writing Insights, Semantic Memory, Graph Insights and curated
+// one-click downloads. Everything runs on your own hardware.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ConfirmDialog, Select, Spinner } from "../../ui";
 import { useEvent } from "../../lib/api";
 import { useSettings, type Settings } from "../../lib/settings";
-import { Row, Section, SliderRow, ToggleRow, usePatch } from "../../components/SettingsRows";
+import { usePatch } from "../../components/SettingsRows";
+import {
+  Glyph,
+  MButton,
+  MCard,
+  MDivider,
+  MFootnote,
+  MNotice,
+  MProgress,
+  MRow,
+  MSliderRow,
+  MStepperRow,
+  MSwitch,
+  MToggleRow,
+} from "../../components/ExpressCard";
 import {
   ai,
   formatBytes,
@@ -17,36 +31,63 @@ import {
   type PullEvent,
   type S1MiniStatus,
 } from "../../lib/ai";
-import "../../styles/ai.css";
+import { semantic, useSemanticStatus } from "../../lib/semantic";
+import "../../styles/engine.css";
 
 const RECOMMENDED_EMBEDDING = "nomic-embed-text";
+const RECOMMENDED_EMBEDDING_LM = "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF";
+const RECOMMENDED_EMBEDDING_SIZE = "274 MB";
 const DEFAULTS: Record<Provider, string> = { ollama: "http://127.0.0.1:11434", lm_studio: "http://127.0.0.1:1234" };
+
+/** `all-minilm` and `all-minilm:latest` are the same model. */
+const canonical = (name: string) => {
+  const n = name.trim().toLowerCase();
+  return n.includes(":") ? n : `${n}:latest`;
+};
+
+/** The "Download this model?" question (Mac LocalModelDownloader). */
+type DownloadRequest = { model: string; download: string; purpose: string; size: string | null; then: () => void };
 
 export default function AISettings() {
   const { settings } = useSettings();
   const save = usePatch();
-  const toast = useToast();
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
   const [pulls, setPulls] = useState<Record<string, PullEvent>>({});
   const [s1, setS1] = useState<S1MiniStatus | null>(null);
   const [warming, setWarming] = useState(false);
   const [warmNote, setWarmNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [installNote, setInstallNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [s1Error, setS1Error] = useState<string | null>(null);
+  const [request, setRequest] = useState<DownloadRequest | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [indexMessage, setIndexMessage] = useState<string | null>(null);
+  const afterPull = useRef<Record<string, () => void>>({});
+  const index = useSemanticStatus();
 
   const check = useCallback(async () => {
     setChecking(true);
+    let st: AiStatus | null = null;
     try {
-      const st = await ai.status();
+      st = await ai.status();
       setStatus(st);
-      ai.catalog().then(setCatalog).catch(() => setCatalog([]));
+      setCatalogLoading(true);
+      ai.catalog()
+        .then(setCatalog)
+        .catch(() => setCatalog([]))
+        .finally(() => setCatalogLoading(false));
     } catch (e) {
-      toast(String(e), "error");
+      setStatus(null);
+      setWarmNote({ ok: false, text: String(e) });
     } finally {
       setChecking(false);
     }
     ai.s1Status().then(setS1).catch(() => {});
-  }, [toast]);
+    return st;
+  }, []);
 
   useEffect(() => {
     check();
@@ -56,14 +97,22 @@ export default function AISettings() {
   useEvent<PullEvent>("ai-pull-progress", (p) => {
     setPulls((m) => ({ ...m, [p.model]: p }));
     if (p.done) {
-      if (p.error) toast(`Couldn't download ${p.model}: ${p.error}`, "error");
-      else toast(`${p.purpose === "s1-mini" ? "S1-mini" : p.model} is ready.`, "success");
-      window.setTimeout(() => setPulls((m) => {
+      setPulls((m) => {
         const next = { ...m };
         delete next[p.model];
         return next;
-      }), 2500);
+      });
+      const then = afterPull.current[p.model];
+      delete afterPull.current[p.model];
+      if (p.purpose === "s1-mini") {
+        if (p.error) setS1Error(p.error);
+      } else if (p.purpose === "Semantic memory") {
+        if (p.error) setDownloadError(`Couldn't download ${p.model}: ${p.error}`);
+      } else {
+        setInstallNote(p.error ? { ok: false, text: `Install failed for ${p.model}: ${p.error}` } : { ok: true, text: `Installed ${p.model}.` });
+      }
       check();
+      if (!p.error) then?.();
     }
   });
 
@@ -71,20 +120,34 @@ export default function AISettings() {
   const provider = settings.llm_provider;
   const providerName = provider === "lm_studio" ? "LM Studio" : "Ollama";
   const endpointKey = provider === "lm_studio" ? "lmstudio_endpoint" : "ollama_endpoint";
+  const installed = (status?.models ?? []).map((m) => m.name);
   const chatModels = (status?.models ?? []).filter((m) => !m.embedding).map((m) => m.name);
   const embeddingModels = (status?.models ?? []).filter((m) => m.embedding).map((m) => m.name);
-  const installedRecommended = (status?.models ?? []).find((m) => m.name.toLowerCase().includes(RECOMMENDED_EMBEDDING))?.name;
+  const installedRecommended = installed.find((m) => m.toLowerCase().includes(RECOMMENDED_EMBEDDING));
+  const reachable = status ? status.reachable : null;
+  const recommendedDownload = provider === "lm_studio" ? RECOMMENDED_EMBEDDING_LM : RECOMMENDED_EMBEDDING;
+  const semanticPull = Object.values(pulls).find((p) => p.purpose === "Semantic memory");
+  const installPulls = Object.values(pulls).filter((p) => p.purpose !== "s1-mini" && p.purpose !== "Semantic memory");
+  const s1Pull = s1 ? pulls[s1.download] : undefined;
+  const pulling = Object.values(pulls).some((p) => !p.done);
 
-  const pull = (model: string, purpose: string, select?: Partial<Settings>) => {
+  const pull = (model: string, purpose: string, select?: Partial<Settings>, then?: () => void) => {
+    setInstallNote(null);
+    setDownloadError(null);
     ai.pull(model, purpose)
       .then(() => {
         setPulls((m) => ({
           ...m,
           [model]: { model, purpose, status: "Starting download…", completed: null, total: null, fraction: null, done: false, error: null },
         }));
+        if (then) afterPull.current[model] = then;
         if (select) save(select);
       })
-      .catch((e) => toast(String(e), "error"));
+      .catch((e) =>
+        purpose === "Semantic memory"
+          ? setDownloadError(`Couldn't download ${model}: ${String(e)}`)
+          : setInstallNote({ ok: false, text: `Install failed for ${model}: ${String(e)}` }),
+      );
   };
 
   const warm = async () => {
@@ -92,69 +155,132 @@ export default function AISettings() {
     setWarmNote(null);
     try {
       const r = await ai.warm();
-      setWarmNote({ ok: true, text: `Warmed ${r.map((x) => `${x.model} (${(x.ms / 1000).toFixed(1)} s)`).join(", ")}.` });
+      setWarmNote({ ok: true, text: `Warm-up complete: ${r.map((x) => `${x.model} (${x.ms} ms)`).join(", ")}` });
     } catch (e) {
-      setWarmNote({ ok: false, text: String(e) });
+      setWarmNote({ ok: false, text: `Warm-up failed: ${String(e)}` });
     } finally {
       setWarming(false);
     }
   };
 
-  return (
-    <>
-      <Section
-        title="AI Provider"
-        desc="Where AI features run. Everything stays on your own hardware: Ollama, or LM Studio. Cloud models are never used, even ones Ollama or LM Studio offer."
-      >
-        <Row label="Provider" hint={`${providerName} server address. It must be on this computer or your local network.`}>
-          <Select<Provider>
-            value={provider}
-            onChange={(v) => save({ llm_provider: v })}
-            options={[
-              { value: "ollama", label: "Ollama" },
-              { value: "lm_studio", label: "LM Studio" },
-            ]}
-            ariaLabel="AI provider"
-          />
-          <EndpointInput
-            key={provider}
-            value={settings[endpointKey]}
-            placeholder={DEFAULTS[provider]}
-            onCommit={(v) => save({ [endpointKey]: v.trim() || DEFAULTS[provider] } as Partial<Settings>)}
-          />
-          <Button size="sm" onClick={check} loading={checking} icon={status?.reachable ? "check" : "refresh"}>
-            {status?.reachable ? "Connected" : "Check"}
-          </Button>
-        </Row>
-        {status && (
-          <div className={`ai-row-notice ${status.reachable ? "ok" : "danger"}`}>
-            <Icon name={status.reachable ? "check" : "alert"} size={14} />
-            <span>{status.message}</span>
-          </div>
-        )}
-        <Row label="Warm Models" hint="Loads the enabled models into memory so the first polish after launch is fast.">
-          <Button size="sm" icon="bolt" onClick={warm} loading={warming} disabled={!status?.reachable}>
-            {warming ? "Warming…" : "Warm Now"}
-          </Button>
-        </Row>
-        {warmNote && (
-          <div className={`ai-row-notice ${warmNote.ok ? "ok" : "danger"}`}>
-            <Icon name={warmNote.ok ? "check" : "alert"} size={14} />
-            <span>{warmNote.text}</span>
-          </div>
-        )}
-      </Section>
+  const pickEmbedding = (model: string) => save({ semantic_embedding_model: model });
 
-      <Section
-        title="Text Polish"
-        desc="Fixes grammar and punctuation in each dictation with a language model before it's inserted. Voice editing uses the same model."
+  const downloadRecommended = () =>
+    setRequest({
+      model: RECOMMENDED_EMBEDDING,
+      download: recommendedDownload,
+      purpose: "Semantic memory",
+      size: provider === "ollama" ? RECOMMENDED_EMBEDDING_SIZE : null,
+      then: () => {
+        check().then((st) => {
+          const found = st?.models.map((m) => m.name).find((m) => m.toLowerCase().includes(RECOMMENDED_EMBEDDING));
+          if (found) pickEmbedding(found);
+        });
+      },
+    });
+
+  const runIndex = () => {
+    setIndexMessage(null);
+    semantic
+      .indexNow()
+      .then(index.refresh)
+      .catch((e) => setIndexMessage(String(e)));
+  };
+  const indexNow = () => {
+    const model = settings.semantic_embedding_model.trim();
+    const missing = reachable === true && model && !installed.some((m) => canonical(m) === canonical(model));
+    if (missing) {
+      const size = catalog.find((c) => canonical(c.name) === canonical(model))?.size;
+      setRequest({ model, download: model, purpose: "Semantic memory", size: size ? formatBytes(size) : null, then: runIndex });
+    } else {
+      runIndex();
+    }
+  };
+
+  const indexing = Boolean(index.status?.running) || index.progress !== null;
+  const stats = index.status?.index;
+  const indexStatusText =
+    indexMessage ??
+    (indexing
+      ? "Indexing…"
+      : !stats || stats.chunk_count === 0
+        ? "Nothing indexed yet"
+        : `${stats.embedded_chunk_count.toLocaleString()} of ${stats.chunk_count.toLocaleString()} notes · ${stats.active_model || "keywords"}`);
+
+  const connection = checking ? "Checking…" : reachable === true ? "Ready" : reachable === false ? "Retry" : "Check";
+  const connectionTone = checking ? "" : reachable === true ? "ok" : reachable === false ? "warn" : "";
+  const connectionGlyph = reachable === true ? "checkCircleFill" : reachable === false ? "alertCircleFill" : "bolt";
+
+  return (
+    <div className="mset settings-ai">
+      <MCard
+        title="AI Provider"
+        info="Where AI features run. Everything stays on your own hardware: Ollama, or LM Studio. Cloud models are never used, even ones Ollama or LM Studio offer."
+        accessory={
+          <span className="mset-accessory">
+            <Select<Provider>
+              value={provider}
+              onChange={(v) => save({ llm_provider: v })}
+              options={[
+                { value: "ollama", label: "Ollama" },
+                { value: "lm_studio", label: "LM Studio" },
+              ]}
+              ariaLabel="AI provider"
+              className="mset-dd w150"
+            />
+            <EndpointInput
+              key={provider}
+              value={settings[endpointKey]}
+              placeholder={DEFAULTS[provider]}
+              title={`${providerName} server address. It must be on this computer or your local network.`}
+              onCommit={(v) => save({ [endpointKey]: v.trim() || DEFAULTS[provider] } as Partial<Settings>)}
+            />
+            <button
+              type="button"
+              className={`mset-btn secondary mset-check ${connectionTone}`}
+              disabled={checking || pulling}
+              title={status?.message ?? "Check connection to validate local model availability."}
+              aria-label={`Connection: ${connection}`}
+              onClick={check}
+            >
+              {checking ? <Spinner size={11} /> : <Glyph name={connectionGlyph} size={13} />}
+              {connection}
+            </button>
+          </span>
+        }
       >
-        <ToggleRow
+        {reachable === false && status && <MNotice kind="error">{status.message}</MNotice>}
+        <MRow title="Warm Models" info="Loads the enabled models into memory so the first polish after launch is fast.">
+          {warming && (
+            <span className="mset-inline-status plain">
+              <Spinner size={13} /> Priming models...
+            </span>
+          )}
+          <MButton glyph="bolt" disabled={checking || warming || pulling} onClick={warm}>
+            {warming ? "Warming…" : "Warm Now"}
+          </MButton>
+        </MRow>
+        {warmNote && (
+          <MNotice kind={warmNote.ok ? "success" : "error"} onDismiss={() => setWarmNote(null)}>
+            {warmNote.text}
+          </MNotice>
+        )}
+      </MCard>
+
+      <MCard
+        title="Text Polish"
+        info="Fixes grammar and punctuation in each dictation with a language model before it's inserted. Voice editing uses the same model."
+      >
+        <MToggleRow
           k="polish_enabled"
-          label="Local Text Polish"
-          hint="Polishes each dictation on this computer before it's inserted, a paragraph at a time. Whatever can't be polished safely or in time is inserted unpolished."
+          title="Local Text Polish"
+          info="Polishes each dictation on this computer before it's inserted, a paragraph at a time. Whatever can't be polished safely or in time is inserted unpolished."
         />
-        <Row label="Polish Engine" hint="S1-mini is a small model trained only to clean up dictation, served by your local AI server. The local LLM option uses the model you pick below.">
+        <MDivider />
+        <MRow
+          title="Polish Engine"
+          info="S1-mini is a small model trained only to clean up dictation, served by your local AI server. The local LLM server uses the model you pick below."
+        >
           <Select
             value={settings.polish_engine}
             onChange={(v) => save({ polish_engine: v })}
@@ -163,183 +289,292 @@ export default function AISettings() {
               { value: "local_llm", label: "Local LLM server" },
             ]}
             ariaLabel="Polish engine"
+            className="mset-dd"
           />
-        </Row>
+        </MRow>
+        <MDivider />
         {settings.polish_engine === "local_llm" ? (
           <>
-            <Row label="Polish Model">
-              <ModelSelect value={settings.polish_model} models={chatModels} onChange={(v) => save({ polish_model: v })} />
-            </Row>
-            <SliderRow
-              label="Polish Timeout"
-              hint="How long to wait for polish before inserting the unpolished text."
+            <MRow title="Polish Model">
+              <ModelSelect label="Polish model" value={settings.polish_model} models={chatModels} onChange={(v) => save({ polish_model: v })} />
+            </MRow>
+            <MDivider />
+            <MSliderRow
+              title="Polish Timeout"
+              info="How long to wait for polish before inserting the unpolished text."
               value={settings.polish_timeout_ms}
               min={500}
-              max={8000}
-              step={100}
+              max={4000}
+              step={10}
               format={(v) => `${v} ms`}
               onCommit={(v) => save({ polish_timeout_ms: v })}
             />
-            <SliderRow
-              label="Max Characters"
-              hint="Longer dictations skip polish to stay responsive."
+            <MDivider />
+            <MStepperRow
+              title="Max Characters"
+              info="Longer dictations skip polish to stay responsive."
               value={settings.polish_max_chars}
               min={80}
               max={2000}
               step={20}
-              onCommit={(v) => save({ polish_max_chars: v })}
+              onChange={(v) => save({ polish_max_chars: v })}
             />
-            <div className="ai-row-notice">
-              <Icon name="info" size={14} />
-              <span>{polishRecommendation(settings)}</span>
-            </div>
+            <MFootnote>{polishRecommendation(settings)}</MFootnote>
           </>
         ) : (
-          <S1MiniRow s1={s1} pulls={pulls} onInstall={() => ai.s1Install().then(() => ai.s1Status().then(setS1)).catch((e) => toast(String(e), "error"))} />
+          <S1MiniRow
+            s1={s1}
+            pull={s1Pull}
+            error={s1Error}
+            onDismissError={() => setS1Error(null)}
+            onInstall={() => {
+              setS1Error(null);
+              ai.s1Install()
+                .then(() => ai.s1Status().then(setS1))
+                .catch((e) => setS1Error(String(e)));
+            }}
+          />
         )}
+        <MDivider />
         <PolishTry />
-      </Section>
+      </MCard>
 
-      <Section title="Writing Insights" desc="Uses a local model to surface speaking and writing patterns.">
-        <ToggleRow k="insights_enabled" label="Writing Insights" hint="Without a model, insights use a quick on-device reading of your history." />
+      <MCard
+        title="Writing Insights"
+        info="Uses a local model to surface speaking and writing patterns."
+        accessory={<MSwitch k="insights_enabled" title="Writing Insights" />}
+      >
         {settings.insights_enabled && (
           <>
-            <Row label="Insights Model">
-              <ModelSelect value={settings.insights_model || "gemma4:e2b"} models={chatModels} onChange={(v) => save({ insights_model: v })} />
-            </Row>
-            <SliderRow
-              label="Context Window"
-              hint="How much of your history the model reads at once. Larger windows need more memory."
+            <MRow title="Insights Model">
+              <ModelSelect
+                label="Insights model"
+                value={settings.insights_model || "gemma4:e2b"}
+                models={chatModels}
+                onChange={(v) => save({ insights_model: v })}
+              />
+            </MRow>
+            <MDivider />
+            <MStepperRow
+              title="Context Window"
+              info="How much of your history the model reads at once. Larger windows need more memory."
               value={Math.max(8192, settings.insights_context_tokens)}
               min={8192}
               max={131072}
               step={8192}
               format={(v) => `${v / 1024}K tokens`}
-              onCommit={(v) => save({ insights_context_tokens: v })}
+              onChange={(v) => save({ insights_context_tokens: v })}
             />
-            <ToggleRow
+            <MDivider />
+            <MToggleRow
               k="insights_thinking"
-              label="Thinking"
-              hint="Lets the model reason step by step for deeper analysis. Slower, and uses more tokens."
+              title="Thinking"
+              info="Lets the model reason step by step for deeper analysis. Slower, and uses more tokens."
             />
-            <div className="ai-row-notice">
-              <Icon name="info" size={14} />
-              <span>{insightsRecommendation(settings)}</span>
-            </div>
+            <MFootnote>{insightsRecommendation(settings)}</MFootnote>
           </>
         )}
-      </Section>
+      </MCard>
 
-      <Section
+      <MCard
         title="Semantic Memory"
-        desc="Indexes your dictations by meaning so ChatAI and Memory can find related notes, not only exact words."
+        info="Indexes your dictations by meaning so ChatAI and Memory can find related notes, not only exact words."
+        accessory={<MSwitch k="semantic_enabled" title="Semantic Memory" />}
       >
-        <ToggleRow k="semantic_enabled" label="Semantic Memory" />
         {settings.semantic_enabled && (
           <>
-            <Row label="Embedding Model" hint="Changing the model rebuilds the index.">
+            <MRow title="Embedding Model" info="Changing the model rebuilds the index.">
               <ModelSelect
+                label="Embedding model"
                 value={settings.semantic_embedding_model}
-                models={embeddingModels}
-                onChange={(v) => save({ semantic_embedding_model: v })}
+                models={embeddingModels.length > 0 ? embeddingModels : installed}
+                onChange={pickEmbedding}
               />
-            </Row>
-            <Row
-              label="Recommended"
-              hint={`nomic-embed-text finds related notes by meaning. It's optional: without it, semantic memory uses keywords. ${providerName} downloads, stores and serves it; Orttaai doesn't host models.`}
+            </MRow>
+            <MDivider />
+            <MRow
+              title="Recommended"
+              info={`nomic-embed-text finds related notes by meaning. It's optional: without it, semantic memory uses keywords. ${providerName} downloads, stores and serves it; Orttaai doesn't host models.`}
             >
+              <span className="mset-mono dim">{RECOMMENDED_EMBEDDING}</span>
               {installedRecommended ? (
-                settings.semantic_embedding_model === installedRecommended ? (
-                  <span className="ai-badge ok">In use</span>
+                canonical(settings.semantic_embedding_model) === canonical(installedRecommended) ? (
+                  <span className="mset-ready">
+                    <Glyph name="checkCircleFill" size={11} /> In use
+                  </span>
                 ) : (
-                  <Button size="sm" onClick={() => save({ semantic_embedding_model: installedRecommended })}>
-                    Use {installedRecommended}
-                  </Button>
+                  <MButton
+                    glyph="checkCircle"
+                    title={`Use ${installedRecommended} for semantic memory. The index rebuilds with it.`}
+                    onClick={() => pickEmbedding(installedRecommended)}
+                  >
+                    Use
+                  </MButton>
                 )
-              ) : status?.reachable ? (
-                <PullButton
-                  model={provider === "lm_studio" ? "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF" : RECOMMENDED_EMBEDDING}
-                  label={provider === "lm_studio" ? "Download" : "Download 274 MB"}
-                  pulls={pulls}
-                  onPull={(m) => pull(m, "Semantic memory", provider === "ollama" ? { semantic_embedding_model: RECOMMENDED_EMBEDDING } : undefined)}
-                />
+              ) : reachable ? (
+                <MButton
+                  glyph="downloadCircle"
+                  disabled={Boolean(semanticPull)}
+                  title={`${providerName} downloads it and serves it from this computer.`}
+                  onClick={downloadRecommended}
+                >
+                  {semanticPull ? "Downloading…" : provider === "ollama" ? `Download (${RECOMMENDED_EMBEDDING_SIZE})` : "Download"}
+                </MButton>
               ) : (
-                <span className="muted small">Start {providerName} to download</span>
+                <span className="mset-caption dim">Start {providerName} to download</span>
               )}
-            </Row>
-            <ToggleRow
+            </MRow>
+            {semanticPull && (
+              <MProgress
+                label={semanticPull.total ? `${providerName} is downloading ${semanticPull.model}: ${formatBytes(semanticPull.completed)} of ${formatBytes(semanticPull.total)}` : `${providerName} is downloading ${semanticPull.model}…`}
+                fraction={semanticPull.fraction}
+              />
+            )}
+            {downloadError && (
+              <MNotice kind="error" onDismiss={() => setDownloadError(null)}>
+                {downloadError}
+              </MNotice>
+            )}
+            <MDivider />
+            <MRow title="Index" info="Auto-index keeps this current; Index Now catches up straight away.">
+              <span className="mset-caption text2 mset-index-status" title={indexStatusText}>
+                {indexStatusText}
+              </span>
+              <MButton glyph="sync" disabled={indexing || Boolean(semanticPull)} onClick={indexNow}>
+                {indexing ? "Indexing…" : "Index Now"}
+              </MButton>
+            </MRow>
+            <MDivider />
+            <MToggleRow
               k="semantic_auto_index"
-              label="Auto-index for ChatAI"
-              hint="Indexes new dictations in the background so ChatAI can use them right away."
+              title="Auto-index for ChatAI"
+              info="Indexes new dictations in the background so ChatAI can use them right away."
             />
-            <ToggleRow
+            <MDivider />
+            <MToggleRow
               k="semantic_keyword_fallback"
-              label="Keyword Fallback"
-              hint="Falls back to keyword search when the embedding model isn't available."
+              title="Keyword Fallback"
+              info="Falls back to keyword search when the embedding model isn't available."
             />
+            <MDivider />
+            <MRow
+              title="Clear Index"
+              info="Deletes the index and the Memory Graph built from it. Your dictations stay; the index rebuilds from them."
+            >
+              <MButton kind="danger" glyph="trash" disabled={indexing || (stats?.chunk_count ?? 0) === 0} onClick={() => setConfirmClear(true)}>
+                Clear…
+              </MButton>
+            </MRow>
           </>
         )}
-      </Section>
+      </MCard>
 
-      <Section
+      <MCard
         title="Graph Insights"
-        desc="Memory Graph insights are computed from the connections between your notes. A local model phrases them; with it off, they use plain phrasing."
+        info="Memory Graph insights are computed from the connections between your notes. A local model phrases them; with it off, they use plain phrasing."
+        accessory={<MSwitch k="semantic_summary_enabled" title="Graph Insights Model" />}
       >
-        <ToggleRow k="semantic_summary_enabled" label="Graph Insights Model" />
         {settings.semantic_summary_enabled && (
-          <Row label="Insight Model" hint={`The model that phrases Memory Graph insights on ${providerName}.`}>
+          <MRow title="Insight Model" info={`If it isn't on ${providerName} yet, Generate Insights offers to download it first.`}>
             <ModelSelect
+              label="Insight model"
               value={settings.semantic_summary_model || "gemma4:e2b"}
               models={chatModels}
               onChange={(v) => save({ semantic_summary_model: v })}
             />
-          </Row>
+          </MRow>
         )}
-      </Section>
+      </MCard>
 
-      <Section
-        title="Model Downloads"
-        desc={`Curated lightweight models from ${providerName}. Installing one also selects it for that feature.`}
-      >
-        {provider === "lm_studio" ? (
-          <Row label="LM Studio" hint="LM Studio manages its own model library. Download models in LM Studio, then pick them above.">
-            <span className="muted small">{status?.models.length ?? 0} local models</span>
-          </Row>
-        ) : !status?.reachable ? (
-          <Row label="Curated models" hint={`${providerName} must be reachable before loading downloadable models.`}>
-            <Button size="sm" icon="refresh" onClick={check} loading={checking}>
-              Check again
-            </Button>
-          </Row>
-        ) : (
-          <>
-            <DownloadRow
-              title="Polish"
-              entries={catalog.filter((c) => c.kind === "chat")}
-              pulls={pulls}
-              onPull={(m) => pull(m, "Polish", { polish_model: m, polish_engine: "local_llm" })}
+      {provider === "ollama" && (
+        <MCard title="Model Downloads" info={`Curated lightweight models from ${providerName}. Installing one also selects it for that feature.`}>
+          {catalogLoading && catalog.length === 0 ? (
+            <span className="mset-inline-status plain mset-pad">
+              <Spinner size={13} /> Loading curated models…
+            </span>
+          ) : !reachable ? (
+            <MFootnote>{providerName} must be reachable before loading downloadable models.</MFootnote>
+          ) : catalog.length === 0 ? (
+            <MFootnote>No curated lightweight models configured.</MFootnote>
+          ) : (
+            <>
+              <DownloadRow
+                title="Polish"
+                current={settings.polish_model}
+                entries={catalog.filter((c) => c.kind === "chat")}
+                pulls={pulls}
+                busy={checking}
+                onPull={(m) => pull(m, "Polish", { polish_model: m, polish_engine: "local_llm" })}
+              />
+              <MDivider />
+              <DownloadRow
+                title="Insights"
+                current={settings.insights_model}
+                entries={catalog.filter((c) => c.kind === "chat")}
+                pulls={pulls}
+                busy={checking}
+                onPull={(m) => pull(m, "Insights", { insights_model: m })}
+              />
+              <MDivider />
+              <DownloadRow
+                title="Semantic"
+                current={settings.semantic_embedding_model}
+                entries={catalog.filter((c) => c.kind === "embedding")}
+                pulls={pulls}
+                busy={checking}
+                onPull={(m) => pull(m, "Semantic", { semantic_embedding_model: m })}
+              />
+            </>
+          )}
+          {installPulls.map((p) => (
+            <MProgress
+              key={p.model}
+              label={`${p.status || `Downloading ${p.model}...`}${p.fraction != null && p.total ? ` (${Math.round(p.fraction * 100)}% • ${formatBytes(p.completed)}/${formatBytes(p.total)})` : ""}`}
+              fraction={p.fraction}
             />
-            <DownloadRow
-              title="Insights"
-              entries={catalog.filter((c) => c.kind === "chat")}
-              pulls={pulls}
-              onPull={(m) => pull(m, "Insights", { insights_model: m })}
-            />
-            <DownloadRow
-              title="Semantic"
-              entries={catalog.filter((c) => c.kind === "embedding")}
-              pulls={pulls}
-              onPull={(m) => pull(m, "Semantic memory", { semantic_embedding_model: m })}
-            />
-          </>
-        )}
-        {Object.values(pulls)
-          .filter((p) => p.purpose !== "s1-mini")
-          .map((p) => (
-            <PullProgressRow key={p.model} p={p} />
           ))}
-      </Section>
-    </>
+          {installNote && (
+            <MNotice kind={installNote.ok ? "success" : "error"} onDismiss={() => setInstallNote(null)}>
+              {installNote.text}
+            </MNotice>
+          )}
+        </MCard>
+      )}
+
+      <ConfirmDialog
+        open={request !== null}
+        tone="primary"
+        title={`Download ${request?.model ?? "model"}?`}
+        body={
+          request &&
+          `${request.purpose} uses ${request.model}, which isn't in ${providerName} yet. ${providerName} will download it${
+            request.size ? ` (about ${request.size})` : ""
+          } and run it on this computer; Orttaai doesn't store models. Then ${request.purpose.toLowerCase()} continues.`
+        }
+        confirmLabel="Download and Continue"
+        onCancel={() => setRequest(null)}
+        onConfirm={() => {
+          const r = request;
+          setRequest(null);
+          if (r) pull(r.download, r.purpose, undefined, r.then);
+        }}
+      />
+      <ConfirmDialog
+        open={confirmClear}
+        title="Clear the semantic memory index?"
+        body="This deletes the index and the Memory Graph built from it. Your dictations stay, and the index rebuilds from them."
+        confirmLabel="Clear Index"
+        onCancel={() => setConfirmClear(false)}
+        onConfirm={() => {
+          setConfirmClear(false);
+          setIndexMessage(null);
+          semantic
+            .clearIndex()
+            .then(index.refresh)
+            .catch((e) => setIndexMessage(`Couldn't clear the index: ${String(e)}`));
+        }}
+      />
+    </div>
   );
 }
 
@@ -357,14 +592,25 @@ function insightsRecommendation(s: Settings): string {
   return "Thinking is off by default to keep insight runs lean.";
 }
 
-function EndpointInput({ value, placeholder, onCommit }: { value: string; placeholder: string; onCommit: (v: string) => void }) {
+function EndpointInput({
+  value,
+  placeholder,
+  title,
+  onCommit,
+}: {
+  value: string;
+  placeholder: string;
+  title: string;
+  onCommit: (v: string) => void;
+}) {
   const [v, setV] = useState(value);
   useEffect(() => setV(value), [value]);
   return (
     <input
-      className="text-input ai-endpoint"
+      className="mset-input mset-endpoint"
       value={v}
       placeholder={placeholder}
+      title={title}
       spellCheck={false}
       onChange={(e) => setV(e.target.value)}
       onBlur={() => v !== value && onCommit(v)}
@@ -377,144 +623,105 @@ function EndpointInput({ value, placeholder, onCommit }: { value: string; placeh
   );
 }
 
-function ModelSelect({ value, models, onChange }: { value: string; models: string[]; onChange: (v: string) => void }) {
+/** Installed models, with the stored value on top (flagged) when the server doesn't have it. */
+function ModelSelect({ label, value, models, onChange }: { label: string; value: string; models: string[]; onChange: (v: string) => void }) {
   const options = useMemo(() => {
-    // `all-minilm` and `all-minilm:latest` are the same model.
-    const same = (a: string, b: string) => {
-      const norm = (s: string) => (s.includes(":") ? s : `${s}:latest`).toLowerCase();
-      return norm(a) === norm(b);
-    };
     const names = [...models];
-    if (value && !names.some((n) => same(n, value))) names.unshift(value);
-    return names.map((n) => ({
-      value: n,
-      label: models.includes(n) ? n : `${n} (not installed)`,
-    }));
+    if (value && !names.some((n) => canonical(n) === canonical(value))) names.unshift(value);
+    return names.map((n) => ({ value: n, label: models.includes(n) ? n : `${n} (not installed)` }));
   }, [models, value]);
-  const selected = options.find((o) => o.value === value)
-    ? value
-    : (options.find((o) => o.value.toLowerCase() === `${value}:latest`.toLowerCase())?.value ?? value);
-  if (options.length === 0) return <span className="muted small">No models installed</span>;
-  return <Select value={selected} onChange={onChange} options={options} ariaLabel="Model" className="ai-model-select" />;
-}
-
-function PullButton({
-  model,
-  label,
-  pulls,
-  onPull,
-}: {
-  model: string;
-  label: string;
-  pulls: Record<string, PullEvent>;
-  onPull: (m: string) => void;
-}) {
-  const p = pulls[model];
-  if (p && !p.done) return <span className="muted small mono">{p.fraction != null ? `${Math.round(p.fraction * 100)}%` : <Spinner size={12} />}</span>;
-  return (
-    <Button size="sm" variant="primary" icon="download" onClick={() => onPull(model)}>
-      {label}
-    </Button>
-  );
-}
-
-function PullProgressRow({ p }: { p: PullEvent }) {
-  return (
-    <div className="ai-progress-row">
-      <div className="ai-progress-text">
-        <span className="mono small">{p.model}</span>
-        <span className="muted small">
-          {p.error ? p.error : p.status}
-          {p.fraction != null && !p.done ? ` · ${Math.round(p.fraction * 100)}%` : ""}
-          {p.total ? ` · ${formatBytes(p.completed)} of ${formatBytes(p.total)}` : ""}
-        </span>
-      </div>
-      <div className="ai-progress">
-        <span style={{ width: `${Math.round((p.done && !p.error ? 1 : p.fraction ?? 0) * 100)}%` }} className={p.error ? "failed" : ""} />
-      </div>
-    </div>
-  );
+  const selected = options.find((o) => canonical(o.value) === canonical(value))?.value ?? value;
+  return <Select value={selected} onChange={onChange} options={options} ariaLabel={label} className="mset-dd" placeholder="Select" />;
 }
 
 function DownloadRow({
   title,
+  current,
   entries,
   pulls,
+  busy,
   onPull,
 }: {
   title: string;
+  current: string;
   entries: CatalogEntry[];
   pulls: Record<string, PullEvent>;
+  busy: boolean;
   onPull: (model: string) => void;
 }) {
-  const [pick, setPick] = useState(entries.find((e) => !e.installed)?.name ?? entries[0]?.name ?? "");
+  const initial = entries.find((e) => canonical(e.name) === canonical(current))?.name ?? entries[0]?.name ?? "";
+  const [pick, setPick] = useState(initial);
   useEffect(() => {
-    if (!entries.some((e) => e.name === pick)) setPick(entries.find((e) => !e.installed)?.name ?? entries[0]?.name ?? "");
-  }, [entries, pick]);
+    if (!entries.some((e) => e.name === pick)) setPick(initial);
+  }, [entries, pick, initial]);
   const entry = entries.find((e) => e.name === pick);
+  const installing = Boolean(pulls[pick] && !pulls[pick].done);
   if (entries.length === 0) return null;
   return (
-    <Row label={title}>
+    <MRow title={title}>
       <Select
         value={pick}
         onChange={setPick}
-        options={entries.map((e) => ({
-          value: e.name,
-          label: `${e.name}${e.size ? ` · ${formatBytes(e.size)}` : ""}${e.installed ? " · Downloaded" : ""}`,
-        }))}
+        options={entries.map((e) => ({ value: e.name, label: e.size ? `${e.name} (${formatBytes(e.size)})` : e.name }))}
         ariaLabel={`${title} model to download`}
-        className="ai-download-select"
+        className="mset-dd w260"
       />
-      {entry?.installed ? (
-        <span className="ai-badge ok">Downloaded</span>
-      ) : (
-        <PullButton model={pick} label="Install" pulls={pulls} onPull={onPull} />
-      )}
-    </Row>
+      <MButton
+        className="mset-install"
+        glyph={entry?.installed ? "checkCircle" : "downloadCircle"}
+        disabled={!pick || busy || installing || entry?.installed}
+        onClick={() => onPull(pick)}
+      >
+        {installing ? "Installing…" : entry?.installed ? "Installed" : "Install"}
+      </MButton>
+    </MRow>
   );
 }
 
+/** S1-mini: its download, whether it's ready, and the credit its licence asks for. */
 function S1MiniRow({
   s1,
-  pulls,
+  pull,
+  error,
+  onDismissError,
   onInstall,
 }: {
   s1: S1MiniStatus | null;
-  pulls: Record<string, PullEvent>;
+  pull?: PullEvent;
+  error: string | null;
+  onDismissError: () => void;
   onInstall: () => void;
 }) {
-  const p = s1 ? pulls[s1.download] : undefined;
-  const downloading = (p && !p.done) || s1?.downloading;
+  const downloading = Boolean((pull && !pull.done) || s1?.downloading);
   const size = formatBytes(s1?.size ?? 484_219_808);
   return (
     <>
-      <Row
-        label="S1-mini"
-        hint={`A 0.6B model trained only to clean up dictation: it removes fillers, resolves self-corrections, punctuates and writes lists, without rewriting what you said. Downloaded once, ${size}.`}
+      <MRow
+        title="S1-mini"
+        info={`A 0.6B model trained only to clean up dictation: it removes fillers, resolves self-corrections, punctuates and writes lists, without rewriting what you said. Downloaded once, ${size}.`}
       >
         {!s1 ? (
-          <Spinner />
+          <Spinner size={13} />
         ) : s1.installed ? (
-          <span className="ai-badge ok">
-            <Icon name="check" size={12} /> Ready
+          <span className="mset-ready">
+            <Glyph name="checkCircleFill" size={11} /> Ready
           </span>
         ) : downloading ? (
-          <span className="muted small mono">{p?.fraction != null ? `${Math.round(p.fraction * 100)}%` : <Spinner size={12} />}</span>
+          <span className="mset-caption text2 mset-tabular">{pull?.fraction != null ? `${Math.round(pull.fraction * 100)}%` : <Spinner size={12} />}</span>
         ) : (
-          <Button size="sm" variant="primary" icon="download" onClick={onInstall} disabled={!s1.reachable}>
-            Install S1-mini · {size}
-          </Button>
+          <MButton kind="primary" disabled={!s1.reachable} onClick={onInstall}>
+            Download {size}
+          </MButton>
         )}
-      </Row>
-      {p && <PullProgressRow p={p} />}
-      {s1 && (
-        <div className={`ai-row-notice ${s1.reachable ? "" : "danger"}`}>
-          <Icon name={s1.reachable ? "info" : "alert"} size={14} />
-          <span>
-            {s1.message} {s1.credit}
-          </span>
-        </div>
+      </MRow>
+      {pull && !pull.done && <MProgress label={`Downloading S1-mini… ${Math.round((pull.fraction ?? 0) * 100)}%`} fraction={pull.fraction} />}
+      {s1 && !s1.reachable && <MNotice kind="error">{s1.message}</MNotice>}
+      {error && (
+        <MNotice kind="error" onDismiss={onDismissError}>
+          S1-mini couldn't start: {error}
+        </MNotice>
       )}
+      {s1 && <MFootnote>{s1.credit}</MFootnote>}
     </>
   );
 }
@@ -524,15 +731,10 @@ function PolishTry() {
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState<PolishOutcome | null>(null);
   return (
-    <div className="ai-try">
-      <div className="ai-try-head">
-        <span className="set-row-label">Try polish</span>
-        <span className="set-row-hint">Runs your current polish settings on this text. Nothing is typed anywhere.</span>
-      </div>
-      <div className="ai-try-body">
-        <input className="text-input" value={text} onChange={(e) => setText(e.target.value)} aria-label="Text to polish" />
-        <Button
-          size="sm"
+    <>
+      <MRow title="Try Polish" info="Runs your current polish settings on this text. Nothing is typed anywhere.">
+        <input className="mset-input mset-try-input" value={text} onChange={(e) => setText(e.target.value)} aria-label="Text to polish" />
+        <MButton
           loading={busy}
           onClick={() => {
             setBusy(true);
@@ -543,17 +745,13 @@ function PolishTry() {
           }}
         >
           Polish
-        </Button>
-      </div>
+        </MButton>
+      </MRow>
       {out && (
-        <div className={`ai-try-out ${out.polished ? "ok" : ""}`}>
-          <span>{out.text}</span>
-          <span className="muted small">
-            {out.polished ? `Polished in ${out.ms} ms` : out.error ? `Not polished: ${out.error}` : "No changes needed"}
-          </span>
-        </div>
+        <MNotice kind={out.polished ? "success" : out.error ? "error" : "info"} onDismiss={() => setOut(null)}>
+          {out.polished ? `${out.text} (${out.ms} ms)` : out.error ? `Not polished: ${out.error}` : "No changes needed."}
+        </MNotice>
       )}
-    </div>
+    </>
   );
 }
-

@@ -141,17 +141,22 @@ function CelebrationCard({
   onNext: () => void;
   onSeeAll: () => void;
 }) {
-  const shareRef = useRef<HTMLButtonElement>(null);
-  const laterRef = useRef(onLater);
-  laterRef.current = onLater;
+  const cardRef = useRef<HTMLDivElement>(null);
+  const keys = useRef({ onLater, onShare });
+  keys.current = { onLater, onShare };
   useEffect(() => {
-    shareRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && laterRef.current();
+    cardRef.current?.focus();
+    // Escape and Return act as the Mac's cancel and default actions, unless a
+    // button was tabbed to, which then handles Return itself.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") keys.current.onLater();
+      else if (e.key === "Enter" && !(document.activeElement instanceof HTMLButtonElement)) keys.current.onShare();
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
   return (
-    <div className="celebration-card" role="dialog" aria-modal="true" aria-labelledby="celebration-title">
+    <div className="celebration-card" ref={cardRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="celebration-title">
       <Burst badge={badge} />
       <span className="celebration-eyebrow">MILESTONE UNLOCKED</span>
       <h2 id="celebration-title">{badge.name}</h2>
@@ -160,7 +165,7 @@ function CelebrationCard({
         <button className="pill-btn" onClick={onLater}>
           Not now
         </button>
-        <button className="pill-btn primary" onClick={onShare} ref={shareRef}>
+        <button className="pill-btn primary" onClick={onShare}>
           <Icon name="share" size={15} /> Share card
         </button>
       </div>
@@ -171,7 +176,7 @@ function CelebrationCard({
         <span className="celebration-spacer" />
         {total > 1 && (
           <>
-            <span className="muted small">
+            <span className="celebration-count">
               {position} of {total} new
             </span>
             <span className="celebration-dots" aria-hidden="true">
@@ -180,7 +185,7 @@ function CelebrationCard({
               ))}
             </span>
             <button className="celebration-next" onClick={onNext} aria-label="Next milestone">
-              <Icon name="chevronRight" size={15} />
+              <Icon name="chevronRight" size={14} />
             </button>
           </>
         )}

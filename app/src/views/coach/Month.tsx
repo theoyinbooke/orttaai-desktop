@@ -18,6 +18,7 @@ import {
   type ShapedMode,
 } from "../../lib/coach";
 import { MonthShareSheet } from "./Cards";
+import { CoachIcon } from "./icons";
 import { Legend } from "./Today";
 import VoiceShape from "./VoiceShape";
 import { Btn, CoachPage, InfoButton, Lens, Loading, skillOf, STATUS_COLOR, Tag, trackOf, useCoach } from "./parts";
@@ -62,7 +63,7 @@ export default function Month({ onBack }: { onBack: () => void }) {
           </div>
           {report && !report.is_empty && (
             <Btn onClick={() => setSharing(true)}>
-              <Icon name="share" size={16} />
+              <CoachIcon name="shareUp" size={16} />
               Share
             </Btn>
           )}
@@ -216,7 +217,7 @@ function ShapeRow({ report, lens, setLens }: { report: MonthReport; lens: Shaped
         <h2 className="coach-h2">Your voice this month</h2>
         <InfoButton
           title="Your voice this month"
-          text="The month so far, or the whole month once it's over, against the month before as the dashed outline. Points marked with a check are judged by your local model; the rest are counted. Each needs 8 dictations in the month."
+          text="The month so far, or the whole month once it's over, against the month before as the dashed outline. Points marked with a bubble are judged by your local model; the rest are counted. Each needs 8 dictations in the month."
         />
         <span className="coach-spacer" />
         <Lens
@@ -229,7 +230,7 @@ function ShapeRow({ report, lens, setLens }: { report: MonthReport; lens: Shaped
       </div>
       <div className="coach-month-shape">
         <div className="shape">
-          <VoiceShape shape={shape} />
+          <VoiceShape shape={shape} width={400} height={360} />
         </div>
         <MovesList moves={moves} shape={shape} />
       </div>

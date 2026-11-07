@@ -102,6 +102,7 @@ function CardFrame({
   stats,
   footer,
   headlineSize,
+  shapeSize: wantedShape,
 }: {
   cardRef?: React.Ref<SVGSVGElement>;
   right: string;
@@ -110,14 +111,14 @@ function CardFrame({
   stats: [string, string][];
   footer: string;
   headlineSize: number;
+  shapeSize: number;
 }) {
   const top = 80;
   const headY = top + 36 + 40 + headlineSize;
-  const shapeY = headY + headlineHeight(headline, headlineSize) - headlineSize * 0.2 + 30;
-  const shapeSize = 540;
-  const shapeW = shapeSize * (620 / 440);
-  const shapeH = shapeSize * (480 / 440);
-  const statsY = shapeY + shapeH + 30;
+  const shapeY = headY + headlineHeight(headline, headlineSize) - headlineSize * 0.2 + 40;
+  // A long headline takes its room from the shape, so nothing runs into the footer.
+  const shapeFits = Math.min(wantedShape, CARD_H - 80 - 24 - 40 - 108 - 40 - shapeY);
+  const statsY = shapeY + shapeFits + 40;
   return (
     <svg ref={cardRef} xmlns="http://www.w3.org/2000/svg" viewBox={`0 0 ${CARD_W} ${CARD_H}`} width={CARD_W} height={CARD_H}>
       <rect width={CARD_W} height={CARD_H} fill={C.ground} />
@@ -131,10 +132,12 @@ function CardFrame({
       <Headline parts={headline} y={headY} size={headlineSize} />
       <VoiceShape
         shape={shape}
+        width={shapeFits}
+        height={shapeFits}
         labelSize={20}
         palette={SHAPE_PALETTE}
         fontFamily={FONT}
-        frame={{ x: (CARD_W - shapeW) / 2, y: shapeY, width: shapeW, height: shapeH }}
+        at={{ x: (CARD_W - shapeFits) / 2, y: shapeY }}
       />
       {stats.map(([value, label], i) => {
         const x = 80 + i * ((CARD_W - 160) / 3);
@@ -192,6 +195,7 @@ export function WeekCard({ cardRef }: { cardRef?: React.Ref<SVGSVGElement> }) {
       right={`Week of ${monthDay(weekStart)}`}
       headline={headline}
       headlineSize={76}
+      shapeSize={600}
       shape={snapshot.all_shape}
       stats={[
         [String(snapshot.dictations_this_week), "dictations"],
@@ -220,6 +224,7 @@ export function MonthCard({ report, cardRef }: { report: MonthReport; cardRef?: 
       right={monthYear(report.month.start)}
       headline={headline}
       headlineSize={72}
+      shapeSize={580}
       shape={shape}
       stats={[
         [String(report.dictations), "dictations"],
@@ -278,14 +283,14 @@ export function CardShareSheet({
           <h2 id="coach-share-title" className="coach-h2" style={{ flex: 1 }}>
             {title}
           </h2>
-          <button type="button" className="coach-link quiet" onClick={onClose}>
+          <button type="button" className="coach-share-done" onClick={onClose}>
             Done
           </button>
         </div>
         <div className="coach-share-preview" aria-label="Card preview" role="img">
           {render(ref)}
         </div>
-        <div className="coach-row">
+        <div className="coach-share-actions">
           <Btn onClick={save} disabled={busy}>
             Save image…
           </Btn>

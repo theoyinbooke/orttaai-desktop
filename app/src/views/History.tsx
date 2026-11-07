@@ -1,21 +1,18 @@
-// History (Mac HistoryView): search, app and kind filters, pages of 50, a
-// detail view with the final text beside what was heard, every timing and how
-// it was inserted; copy, use as a snippet, delete. Analytics/home area.
-import { useCallback, useEffect, useState } from "react";
+// History (Mac HistoryView): a search over transcript, app and model, then the
+// whole archive in one scrolling table. A row opens the transcript; copy, use
+// as a snippet, delete. Analytics/home area.
+import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from "react";
 import "../styles/analytics.css";
-import { Button, ConfirmDialog, EmptyState, Icon, Modal, Select, Spinner, useToast } from "../ui";
+import { Button, ConfirmDialog, Icon, Modal, Select, useToast } from "../ui";
 import { call, useEvent } from "../lib/api";
-import {
-  clockDuration,
-  copyText,
-  fmt,
-  modelDisplayName,
-  relativeTime,
-  type HistoryPage,
-  type TranscriptionRecord,
-} from "../lib/analytics";
+import { comboToString, useSettings } from "../lib/settings";
+import { clockDuration, copyText, fmt, modelDisplayName, relativeTime, type HistoryPage, type TranscriptionRecord } from "../lib/analytics";
 
-const PAGE = 50;
+/** The most the backend hands over at once. */
+const FETCH = 1000;
+/** Rows drawn at a time; more as the table nears its end (the Mac's LazyVStack). */
+const DRAW = 80;
+
 type Kind = "" | "dictation" | "edit";
 const KINDS: { value: Kind; label: string }[] = [
   { value: "", label: "All kinds" },
@@ -31,55 +28,107 @@ const INJECTION: Record<string, string> = {
   blocked: "Blocked (secure field)",
 };
 
+const flatten = (text: string) => text.replace(/[\r\n]+/g, " ").trim();
 const preview = (text: string, limit = 140) => {
-  const single = text.replace(/[\r\n]+/g, " ").trim();
+  const single = flatten(text);
   return single.length > limit ? `${single.slice(0, limit)}...` : single;
 };
 const appName = (r: TranscriptionRecord) => (r.app && r.app.trim()) || "Unknown App";
+const modelName = (r: TranscriptionRecord) => r.model_id.trim() || "Not set";
 const rawDiffers = (r: TranscriptionRecord) => !!r.raw_text && r.raw_text.trim() !== "" && r.raw_text.trim() !== r.text.trim();
+
+/** The Mac's `laptopcomputer`, marking the device a dictation came from. */
+function LaptopGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4.5" y="5" width="15" height="11" rx="1.5" />
+      <path d="M2 19h20" />
+    </svg>
+  );
+}
+
+/** The Mac's `text.badge.plus`. */
+function SnippetGlyph() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h12M3 12h9M3 18h7M18 11v8M14 15h8" />
+    </svg>
+  );
+}
 
 export default function History() {
   const toast = useToast();
+  const { settings } = useSettings();
   const [search, setSearch] = useState("");
-  const [query, setQuery] = useState("");
   const [app, setApp] = useState("");
   const [kind, setKind] = useState<Kind>("");
-  const [page, setPage] = useState(0);
-  const [data, setData] = useState<HistoryPage | null>(null);
-  const [allTotal, setAllTotal] = useState(0);
   const [apps, setApps] = useState<string[]>([]);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filtersRef = useRef<HTMLDivElement>(null);
+  const [records, setRecords] = useState<TranscriptionRecord[] | null>(null);
+  const [drawn, setDrawn] = useState(DRAW);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [detail, setDetail] = useState<TranscriptionRecord | null>(null);
   const [pendingDelete, setPendingDelete] = useState<TranscriptionRecord | null>(null);
   const [snippet, setSnippet] = useState<TranscriptionRecord | null>(null);
   const [copied, setCopied] = useState<number | null>(null);
+  const gen = useRef(0);
+
+  const load = useCallback(async () => {
+    const g = ++gen.current;
+    try {
+      const all: TranscriptionRecord[] = [];
+      for (;;) {
+        const page = await call<HistoryPage>("history_page", { query: { limit: FETCH, offset: all.length } });
+        all.push(...page.items);
+        if (page.items.length === 0 || all.length >= page.total) break;
+      }
+      // An older load never replaces a newer one's rows.
+      if (g !== gen.current) return;
+      setRecords(all);
+      setError(null);
+    } catch {
+      if (g === gen.current) setError("Couldn't load history.");
+    }
+    call<string[]>("history_apps").then(setApps).catch(() => {});
+  }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
+  useEvent("history-changed", load);
 
   useEffect(() => {
-    const t = window.setTimeout(() => {
-      setQuery(search.trim());
-      setPage(0);
-    }, 200);
-    return () => window.clearTimeout(t);
-  }, [search]);
+    if (!filtersOpen) return;
+    const away = (e: MouseEvent) => {
+      if (!filtersRef.current?.contains(e.target as Node)) setFiltersOpen(false);
+    };
+    document.addEventListener("mousedown", away);
+    return () => document.removeEventListener("mousedown", away);
+  }, [filtersOpen]);
 
-  const load = useCallback(() => {
-    call<HistoryPage>("history_page", {
-      query: { search: query || null, app: app || null, entry_kind: kind || null, limit: PAGE, offset: page * PAGE },
-    })
-      .then((p) => {
-        // Deleting the last row of the last page steps back a page.
-        if (p.items.length === 0 && page > 0 && p.total > 0) setPage(Math.max(0, Math.ceil(p.total / PAGE) - 1));
-        else setData(p);
-        setError(null);
-      })
-      .catch((e) => setError(`Couldn't load history. ${e}`));
-    call<HistoryPage>("history_page", { query: { limit: 1, offset: 0 } })
-      .then((p) => setAllTotal(p.total))
-      .catch(() => {});
-    call<string[]>("history_apps").then(setApps).catch(() => {});
-  }, [query, app, kind, page]);
-  useEffect(load, [load]);
-  useEvent("history-changed", load);
+  const query = search.trim().toLowerCase();
+  const filtered = useMemo(() => {
+    if (!records) return [];
+    return records.filter(
+      (r) =>
+        (!app || (r.app ?? "").trim() === app) &&
+        (!kind || r.entry_kind === kind) &&
+        (!query || flatten(r.text).toLowerCase().includes(query) || appName(r).toLowerCase().includes(query) || modelName(r).toLowerCase().includes(query)),
+    );
+  }, [records, query, app, kind]);
+  useEffect(() => setDrawn(DRAW), [query, app, kind]);
+  const filtering = !!(app || kind);
+  const clearAll = () => {
+    setSearch("");
+    setApp("");
+    setKind("");
+  };
+
+  const onScroll = (e: UIEvent<HTMLDivElement>) => {
+    const t = e.currentTarget;
+    if (t.scrollHeight - t.scrollTop - t.clientHeight < 400) setDrawn((d) => (d < filtered.length ? d + DRAW : d));
+  };
 
   const copy = async (r: TranscriptionRecord) => {
     try {
@@ -96,86 +145,85 @@ export default function History() {
     if (r.id == null) return;
     try {
       await call("delete_transcription", { id: r.id });
+      setError(null);
       if (detail?.id === r.id) setDetail(null);
       load();
-    } catch (e) {
-      toast(`Couldn't delete dictation. ${e}`, "error");
+    } catch {
+      setError("Couldn't delete dictation.");
     }
   };
-
-  const filtered = !!(query || app || kind);
-  const pages = data ? Math.max(1, Math.ceil(data.total / PAGE)) : 1;
 
   return (
     <div className="hist">
       <div className="hist-head">
+        <div className="hist-title">
+          <h2>History</h2>
+          <span className="hist-count mono-num">
+            {filtered.length} / {records?.length ?? 0}
+          </span>
+        </div>
         <div className="hist-search">
-          <Icon name="search" size={15} />
+          <Icon name="search" size={13} />
           <input
             className="hist-search-input"
-            placeholder="Search transcripts"
+            placeholder="Search transcript, app, or model"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            aria-label="Search transcripts"
+            aria-label="Search transcript, app, or model"
           />
           {search && (
             <button className="hist-clear" onClick={() => setSearch("")} aria-label="Clear search" title="Clear search">
-              <Icon name="x" size={13} />
+              <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" fill="currentColor" />
+                <path d="m8.5 8.5 7 7m0-7-7 7" fill="none" stroke="var(--bg)" strokeWidth="2.2" strokeLinecap="round" />
+              </svg>
             </button>
           )}
+          <div className="hist-filters" ref={filtersRef}>
+            <button
+              className={`hist-filter-btn ${filtering ? "on" : ""}`}
+              onClick={() => setFiltersOpen((o) => !o)}
+              aria-expanded={filtersOpen}
+              aria-label="Filter by app or kind"
+              title="Filter by app or kind"
+            >
+              <Icon name="filter" size={13} />
+            </button>
+            {filtersOpen && (
+              <div className="hist-filter-pop">
+                <Select value={app} onChange={setApp} options={[{ value: "", label: "All apps" }, ...apps.map((a) => ({ value: a, label: a }))]} ariaLabel="Filter by app" />
+                <Select value={kind} onChange={setKind} options={KINDS} ariaLabel="Filter by kind" />
+              </div>
+            )}
+          </div>
         </div>
-        <Select
-          className="hist-filter"
-          value={app}
-          onChange={(v) => {
-            setApp(v);
-            setPage(0);
-          }}
-          options={[{ value: "", label: "All apps" }, ...apps.map((a) => ({ value: a, label: a }))]}
-          ariaLabel="Filter by app"
-        />
-        <Select
-          className="hist-filter"
-          value={kind}
-          onChange={(v) => {
-            setKind(v);
-            setPage(0);
-          }}
-          options={KINDS}
-          ariaLabel="Filter by kind"
-        />
-        <span className="hist-count mono-num">
-          {fmt(data?.total ?? 0)} / {fmt(allTotal)}
-        </span>
       </div>
 
       {error && <div className="an-error">{error}</div>}
+      {info && <div className="hist-info">{info}</div>}
 
-      {!data ? (
-        <div className="ms-loading">
-          <Spinner />
+      {records === null ? null : records.length === 0 ? (
+        <div className="hist-state">
+          <svg className="hist-state-mark" viewBox="0 0 100 84" aria-hidden="true">
+            <rect x="0" y="44" width="18" height="36" rx="9" />
+            <rect x="25" y="28" width="18" height="52" rx="9" />
+            <rect x="50" y="12" width="18" height="68" rx="9" />
+            <rect x="85" y="3" width="6" height="78" rx="3" />
+            <rect x="77" y="0" width="22" height="6" rx="3" />
+            <rect x="77" y="78" width="22" height="6" rx="3" />
+          </svg>
+          <p className="hist-state-title">No transcriptions yet.</p>
+          <p className="hist-state-hint">Press {comboToString(settings?.push_to_talk)} to start dictating.</p>
         </div>
-      ) : allTotal === 0 ? (
-        <EmptyState icon="mic" title="No transcriptions yet." desc="Hold your dictation shortcut and speak to get started." />
-      ) : data.items.length === 0 ? (
-        <EmptyState
-          icon="search"
-          title={query ? `No results for “${query}”` : "No dictations match these filters"}
-          action={
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setSearch("");
-                setApp("");
-                setKind("");
-              }}
-            >
-              Clear filters
-            </Button>
-          }
-        />
+      ) : filtered.length === 0 ? (
+        <div className="hist-state tight">
+          <p className="hist-none">{query ? `No results for "${search}"` : "No dictations match these filters"}</p>
+          <Button variant="ghost" onClick={clearAll}>
+            {filtering ? "Clear Filters" : "Clear Search"}
+          </Button>
+        </div>
       ) : (
-        <div className="card hist-table" role="table" aria-label="Dictation history">
+        <div className="card hist-table" role="table" aria-label="Dictation history" onScroll={onScroll}>
           <div className="hist-row hist-header" role="row">
             <span className="c-time">Time</span>
             <span className="c-app">App</span>
@@ -186,7 +234,7 @@ export default function History() {
             <span className="c-model">Model</span>
             <span className="c-act">Actions</span>
           </div>
-          {data.items.map((r) => (
+          {filtered.slice(0, drawn).map((r) => (
             <div
               key={r.id ?? r.created_at}
               className="hist-row"
@@ -194,31 +242,36 @@ export default function History() {
               tabIndex={0}
               onClick={() => setDetail(r)}
               onKeyDown={(e) => e.key === "Enter" && setDetail(r)}
-              aria-label={`${appName(r)}, ${preview(r.text, 80)}, ${r.word_count} words`}
+              aria-label={`${appName(r)}, ${preview(r.text, 80)}, duration ${clockDuration(r.duration_ms)}, ${r.word_count} words, ${Math.max(0, r.processing_ms)} milliseconds.`}
             >
               <span className="c-time" title={new Date(r.created_at * 1000).toLocaleString()}>
                 {relativeTime(r.created_at)}
               </span>
-              <span className="c-app">{appName(r)}</span>
+              <span className="c-app">
+                <span className="c-app-icon">
+                  <LaptopGlyph />
+                </span>
+                <span className="c-app-name">{appName(r)}</span>
+              </span>
               <span className="c-text">
                 {r.entry_kind === "edit" && (
-                  <span className="edit-chip" title={r.edit_instruction ? `Voice edit: ${r.edit_instruction}` : "Voice edit"}>
-                    <Icon name="edit" size={10} /> EDIT
+                  <span className="edit-chip" title={r.edit_instruction ? `Voice edit: ${r.edit_instruction}` : "Voice edit"} aria-label="Voice edit command">
+                    <Icon name="edit" size={9} /> EDIT
                   </span>
                 )}
                 <span className="c-text-body">{preview(r.text)}</span>
               </span>
               <span className="c-dur mono-num">{clockDuration(r.duration_ms)}</span>
               <span className="c-words mono-num">{r.word_count}</span>
-              <span className="c-lat mono-num">{fmt(Math.max(0, r.processing_ms))} ms</span>
+              <span className="c-lat mono-num">{Math.max(0, r.processing_ms)} ms</span>
               <span className="c-model mono" title={r.model_id}>
-                {r.model_id.trim() || "Not set"}
+                {modelName(r)}
               </span>
-              <span className="c-act" onClick={(e) => e.stopPropagation()}>
+              <span className="c-act" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
                 <button className="row-icon" onClick={() => setSnippet(r)} title="Create Snippet" aria-label="Create Snippet">
-                  <Icon name="plus" size={14} />
+                  <SnippetGlyph />
                 </button>
-                <button className={`row-icon ${copied === r.id ? "ok" : ""}`} onClick={() => copy(r)} title={copied === r.id ? "Copied" : "Copy"} aria-label="Copy">
+                <button className={`row-icon ${copied === r.id ? "ok" : ""}`} onClick={() => copy(r)} title={copied === r.id ? "Copied" : "Copy"} aria-label={copied === r.id ? "Copied" : "Copy"}>
                   <Icon name={copied === r.id ? "check" : "copy"} size={14} />
                 </button>
                 <button className="row-icon danger" onClick={() => setPendingDelete(r)} title="Delete" aria-label="Delete">
@@ -227,21 +280,6 @@ export default function History() {
               </span>
             </div>
           ))}
-        </div>
-      )}
-
-      {data && data.total > PAGE && (
-        <div className="pager">
-          <Button variant="ghost" size="sm" icon="chevronLeft" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
-            Newer
-          </Button>
-          <span className="pager-info">
-            Page {page + 1} of {pages} · {fmt(page * PAGE + 1)}–{fmt(Math.min(data.total, (page + 1) * PAGE))} of {fmt(data.total)}
-            {filtered ? " matching" : ""}
-          </span>
-          <Button variant="ghost" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>
-            Older <Icon name="chevronRight" size={15} />
-          </Button>
         </div>
       )}
 
@@ -255,7 +293,6 @@ export default function History() {
               setSnippet(detail);
               setDetail(null);
             }}
-            onDelete={() => setPendingDelete(detail)}
             onClose={() => setDetail(null)}
           />
         )}
@@ -270,7 +307,20 @@ export default function History() {
         onCancel={() => setPendingDelete(null)}
       />
 
-      {snippet && <SnippetSheet record={snippet} onClose={() => setSnippet(null)} />}
+      {snippet && (
+        <SnippetSheet
+          record={snippet}
+          onClose={() => setSnippet(null)}
+          onSaved={(trigger) => {
+            setInfo(`Saved snippet "${trigger}" to Memory.`);
+            setError(null);
+          }}
+          onFailed={(message) => {
+            setInfo(null);
+            setError(message);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -280,14 +330,12 @@ export function HistoryDetail({
   copied,
   onCopy,
   onSnippet,
-  onDelete,
   onClose,
 }: {
   record: TranscriptionRecord;
   copied: boolean;
   onCopy: () => void;
   onSnippet?: () => void;
-  onDelete?: () => void;
   onClose: () => void;
 }) {
   const timings: [string, number | null][] = [
@@ -303,7 +351,7 @@ export function HistoryDetail({
       <header className="hist-detail-top">
         <div>
           <h2 id="hist-detail-title">Transcript</h2>
-          <p className="muted">
+          <p>
             {appName(r)} • {new Date(r.created_at * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
           </p>
         </div>
@@ -314,84 +362,104 @@ export function HistoryDetail({
 
       {r.entry_kind === "edit" && r.edit_instruction && (
         <div className="hist-edit-note">
-          <Icon name="edit" size={13} /> Voice edit: “{r.edit_instruction}”
+          <Icon name="edit" size={11} /> Voice edit: “{r.edit_instruction}”
         </div>
       )}
 
       <div className="hist-detail-scroll">
-        <div className="hist-final">
-          <span className="overline">{r.polished ? "Final text · polished" : "Final text"}</span>
-          <p className="hist-final-text">{r.text}</p>
-        </div>
+        <p className="hist-final-text">{r.text}</p>
         {rawDiffers(r) && (
           <div className="hist-raw">
-            <span className="overline">You said</span>
+            <span>You said</span>
             <p>{r.raw_text}</p>
           </div>
         )}
-        <div className="hist-timings">
-          {timings.map(([label, ms]) => (
-            <div key={label} className="hist-timing">
-              <span className="hist-timing-label">{label}</span>
-              <span className="hist-timing-value mono-num">{ms == null ? "–" : label === "Spoke for" ? clockDuration(ms) : `${fmt(ms)} ms`}</span>
+        <details className="hist-more">
+          <summary>Timings and details</summary>
+          <div className="hist-timings">
+            {timings.map(([label, ms]) => (
+              <div key={label} className="hist-timing">
+                <span className="hist-timing-label">{label}</span>
+                <span className="hist-timing-value mono-num">{ms == null ? "–" : label === "Spoke for" ? clockDuration(ms) : `${fmt(ms)} ms`}</span>
+              </div>
+            ))}
+          </div>
+          <dl className="hist-facts">
+            <div>
+              <dt>Inserted</dt>
+              <dd>{r.injection_method ? INJECTION[r.injection_method] ?? r.injection_method : "–"}</dd>
             </div>
-          ))}
-        </div>
-        <dl className="hist-facts">
-          <div>
-            <dt>Inserted</dt>
-            <dd>{r.injection_method ? INJECTION[r.injection_method] ?? r.injection_method : "–"}</dd>
-          </div>
-          <div>
-            <dt>Model</dt>
-            <dd title={r.model_id}>{r.model_id ? modelDisplayName(r.model_id) : "Not set"}</dd>
-          </div>
-          <div>
-            <dt>Microphone</dt>
-            <dd>{r.audio_device || "Default"}</dd>
-          </div>
-          <div>
-            <dt>Words</dt>
-            <dd>{fmt(r.word_count)}</dd>
-          </div>
-        </dl>
+            <div>
+              <dt>Model</dt>
+              <dd title={r.model_id}>{r.model_id ? modelDisplayName(r.model_id) : "Not set"}</dd>
+            </div>
+            <div>
+              <dt>Microphone</dt>
+              <dd>{r.audio_device || "Default"}</dd>
+            </div>
+            <div>
+              <dt>Text</dt>
+              <dd>{r.polished ? "Polished" : "As transcribed"}</dd>
+            </div>
+          </dl>
+        </details>
       </div>
 
       <footer className="hist-detail-actions">
-        {onDelete && (
-          <Button variant="ghost" icon="trash" onClick={onDelete}>
-            Delete
+        <span className="hist-fact">
+          <Icon name="dictionary" size={13} /> {fmt(r.word_count)} words
+        </span>
+        <span className="celebration-spacer" />
+        <span className="hist-fact faint">
+          <Icon name="clock" size={13} /> {clockDuration(r.duration_ms)}
+        </span>
+        <span className="hist-fact faint">
+          <Icon name="speedometer" size={13} /> {Math.max(0, r.processing_ms)} ms
+        </span>
+        {copied ? (
+          <Button variant="ghost" className="hist-copied" icon="check" onClick={onCopy}>
+            Copied
+          </Button>
+        ) : (
+          <Button variant="primary" icon="copy" onClick={onCopy}>
+            Copy
           </Button>
         )}
-        <span className="celebration-spacer" />
         {onSnippet && (
           <Button variant="ghost" icon="plus" onClick={onSnippet}>
             Use as Snippet
           </Button>
         )}
-        <Button variant="primary" icon={copied ? "check" : "copy"} onClick={onCopy}>
-          {copied ? "Copied" : "Copy"}
-        </Button>
       </footer>
     </div>
   );
 }
 
-function SnippetSheet({ record, onClose }: { record: TranscriptionRecord; onClose: () => void }) {
-  const toast = useToast();
+function SnippetSheet({
+  record,
+  onClose,
+  onSaved,
+  onFailed,
+}: {
+  record: TranscriptionRecord;
+  onClose: () => void;
+  onSaved: (trigger: string) => void;
+  onFailed: (message: string) => void;
+}) {
   const suggested = record.text.trim().split(/\s+/).slice(0, 4).join(" ").toLowerCase();
   const [trigger, setTrigger] = useState(suggested);
   const [saving, setSaving] = useState(false);
   const save = async () => {
+    const phrase = trigger.trim();
     setSaving(true);
     try {
-      await call("save_snippet", { id: null, trigger: trigger.trim(), expansion: record.text, active: true });
-      toast(`Saved snippet “${trigger.trim()}” to Memory.`, "success");
-      onClose();
+      await call("save_snippet", { id: null, trigger: phrase, expansion: record.text, active: true });
+      onSaved(phrase);
     } catch (e) {
-      toast(String(e), "error");
+      onFailed(String(e));
     } finally {
       setSaving(false);
+      onClose();
     }
   };
   return (
@@ -400,16 +468,16 @@ function SnippetSheet({ record, onClose }: { record: TranscriptionRecord; onClos
         <header className="hist-detail-top">
           <div>
             <h2 id="snippet-title">Create Snippet</h2>
-            <p className="muted">Save as a reusable snippet.</p>
+            <p>Save as a reusable snippet.</p>
           </div>
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
         </header>
-        <label className="field">
-          <span className="field-label">Trigger phrase</span>
+        <label className="snippet-field">
+          <span>Trigger phrase</span>
           <input
-            className="text-input"
+            className="hist-input"
             value={trigger}
             autoFocus
             placeholder="Type a short phrase like meeting recap"
@@ -417,8 +485,8 @@ function SnippetSheet({ record, onClose }: { record: TranscriptionRecord; onClos
             onKeyDown={(e) => e.key === "Enter" && trigger.trim() && save()}
           />
         </label>
-        <div className="field">
-          <span className="field-label">Expansion preview</span>
+        <div className="snippet-field grow">
+          <span>Expansion preview</span>
           <p className="hist-final-text snippet-preview">{record.text}</p>
         </div>
         <footer className="hist-detail-actions">
