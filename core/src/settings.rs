@@ -212,6 +212,11 @@ pub struct Settings {
     pub analytics_time_range: String,
     /// Version whose What's New card was last shown.
     pub last_whats_new_version: Option<String>,
+    // Analytics/home: Home's "Enjoying Orttaai?" GitHub star prompt (Mac
+    // `githubStarPrompt*`): done for good, times shown, last shown (Unix s).
+    pub github_star_prompt_completed: bool,
+    pub github_star_prompt_shown_count: u32,
+    pub github_star_prompt_last_shown_at: i64,
 }
 
 impl Default for Settings {
@@ -296,6 +301,9 @@ impl Default for Settings {
             auto_download_updates: true,
             analytics_time_range: "30d".to_string(),
             last_whats_new_version: None,
+            github_star_prompt_completed: false,
+            github_star_prompt_shown_count: 0,
+            github_star_prompt_last_shown_at: 0,
         }
     }
 }

@@ -34,5 +34,6 @@ pub fn save_record(record: &TranscriptionRecord) -> Option<i64> {
 fn after_save(_store: &Store, _id: i64) {
     // == semantic: enqueue for indexing ==
     // == milestones: evaluate unlocks ==
+    crate::insights::after_save(_store, _id);
     // == coach: record metrics ==
 }
