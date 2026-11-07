@@ -11,26 +11,36 @@ Durable logic lives in `core/` (the `orttaai-core` crate), which has **no GUI de
 ```
 app/ (Tauri)  ──┐
 cli/          ──┼──►  orttaai-core
-                │       ├─ coordinator      the press→speak→inject state machine
+                │       ├─ coordinator      hold/tap → record → transcribe → pipeline → deliver
                 │       ├─ traits (OS-isolated):
-                │       │    Transcriber   → whisper.cpp (feature `whisper`)
-                │       │    AudioCapture  → cpal + resample (feature `cpal-audio`)
-                │       │    TextInjector  → SendInput / xdotool / wtype
-                │       │    HotkeyManager → RegisterHotKey / XGrabKey / portal
-                │       │    Clipboard     → arboard
+                │       │    Transcriber   → whisper.cpp (`whisper`) · Parakeet/sherpa-onnx (`express`)
+                │       │    AudioCapture  → cpal + resample (`cpal-audio`)
+                │       │    TextInjector  → SendInput / XTest / RemoteDesktop portal / wtype
+                │       │    HotkeyManager → RegisterHotKey / XGrabKey / GlobalShortcuts portal
+                │       │    Clipboard     → arboard (+ wl-copy)
+                │       │    VoiceDetector → Silero (whisper.cpp VAD) / adaptive RMS
+                │       │    LlmClient     → Ollama · LM Studio (`ollama`), MockLlm in tests
                 │       └─ portable services:
-                │            Store (rusqlite) · Settings (serde+directories) ·
-                │            MemoryService · LlmClient (Ollama) · Analytics
+                │            Store (rusqlite, versioned migrations) · Settings ·
+                │            text pipeline · polish · edit · chat · writing ·
+                │            semantic memory · analytics · milestones · coach · whatsnew
 ```
+
+The Tauri shell is split by area (`engine`, `pipeline`, `memory`, `ai`, `semantic`,
+`insights`, `coach`, `express_cmds`, `settings_cmds`); every completed dictation goes
+through `persist::save_record`, whose `after_save` hook fans out to semantic indexing,
+milestones and Coach metrics.
 
 ## The dictation loop
 
-1. Hotkey **down** → `AudioCapture.start()` (background thread fills a ring buffer; `level()` drives the meter).
-2. Hotkey **up** → `samples = AudioCapture.stop()`.
-3. `text = Transcriber.transcribe(samples, opts)`.
-4. `text = MemoryService.apply(text)` (dictionary replacements + snippet expansion).
-5. `Clipboard.save()` → set transcript → `TextInjector.inject(text)` → `Clipboard.restore()`.
-6. Persist a `TranscriptionRecord`; emit an event to the UI.
+1. Hotkey **down** → start capture. A short tap promotes the session to hands-free.
+2. Release (or tap / silence / cap in hands-free) → stop, keep every sample heard.
+3. `raw = Transcriber.transcribe(samples)` (vocabulary-bias prompt for Whisper).
+4. `TranscriptPipeline.process(raw)` → dictionary → fuzzy → snippets → filler cleanup →
+   spoken formatting → paragraphs → optional Polish (local LLM, never fails).
+5. An armed Coach practice rep takes the text instead of typing it; otherwise check the
+   secure field, deliver (type or paste + clipboard restore), and record the method.
+6. Persist the full `TranscriptionRecord` (per-stage timings) and emit UI events.
 
 ## Backend selection
 

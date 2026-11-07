@@ -40,3 +40,9 @@ The Mac's Silero runs as a 256 ms streaming Core ML model. Here Silero v5 runs t
 - Tray needs a user-installed extension on GNOME.
 - No model migration from macOS (`.mlmodelc` → GGUF re-download; model IDs stay stable).
 - The custom models folder is entered as a path (no native folder picker is bundled).
+
+## Not portable from macOS
+- **iCloud sync** with the iPhone keyboard: CloudKit encrypted fields can't be read off
+  Apple devices. Sync would need a Mac relay or an app-encrypted CloudKit Web Services field.
+- **Apple Intelligence polish** and **CoreML coach voices** — replaced by S1-mini / local
+  models and the WebView's speech voices.
