@@ -4,11 +4,9 @@
 //! pipeline and other windows refresh.
 
 use crate::err;
-use orttaai_core::error::{CoreError, Result as CoreResult};
-use orttaai_core::llm::{
-    policy, ChatDelta, ChatMessage, ChatOptions, ChatReply, LlmClient, LlmModel, Role,
-};
-use orttaai_core::settings::{LlmProvider, Settings, SpeechEngine};
+use orttaai_core::error::CoreError;
+use orttaai_core::llm::{policy, LlmClient};
+use orttaai_core::settings::{Settings, SpeechEngine};
 use orttaai_core::store::{
     AiAnalyzer, DictionaryEntry, EditCheck, ImportSummary, LearningRunResult, LearningSuggestion,
     SnippetEntry, Store, STATUS_PENDING,
@@ -211,10 +209,10 @@ pub async fn analyze_history(app: AppHandle) -> Result<AnalysisReport, String> {
         let store = store()?;
         let client = settings
             .ai_suggestions
-            .then(|| LocalModelClient::for_settings(&settings))
+            .then(|| ai_client_for(&settings))
             .flatten();
         let ai = client.as_ref().map(|(c, model)| AiAnalyzer {
-            llm: c,
+            llm: c.as_ref(),
             model: model.clone(),
         });
         store.analyze_history(ai, 120).map_err(err)
@@ -322,170 +320,23 @@ pub async fn preview_text_pipeline(
 
 // ---- Local model for AI suggestions ------------------------------------------------
 
-/// A one-shot client for the configured local LLM host (Ollama's
-/// `/api/generate`, or LM Studio's OpenAI-compatible chat endpoint), used by
-/// AI suggestions. Only local endpoints and non-cloud models are allowed.
-struct LocalModelClient {
-    provider: LlmProvider,
-    endpoint: String,
-}
-
-impl LocalModelClient {
-    /// The client and model for AI suggestions, or `None` when no model is
-    /// configured or the endpoint is not local.
-    fn for_settings(settings: &Settings) -> Option<(Self, String)> {
-        let model = [
-            &settings.insights_model,
-            &settings.chat_model,
-            &settings.polish_model,
-        ]
-        .into_iter()
-        .map(|m| m.trim())
-        .find(|m| !m.is_empty())?
-        .to_string();
-        let endpoint = settings.llm_endpoint().to_string();
-        if !policy::is_local_endpoint(&endpoint) || policy::is_cloud_model(&model) {
-            return None;
-        }
-        Some((
-            Self {
-                provider: settings.llm_provider,
-                endpoint,
-            },
-            model,
-        ))
+/// The shared local LLM client (Ollama / LM Studio, local endpoints only) and
+/// the model AI suggestions use, or `None` when no model is configured or the
+/// endpoint/model isn't local.
+fn ai_client_for(settings: &Settings) -> Option<(std::sync::Arc<dyn LlmClient>, String)> {
+    let model = [
+        &settings.insights_model,
+        &settings.chat_model,
+        &settings.polish_model,
+    ]
+    .into_iter()
+    .map(|m| m.trim())
+    .find(|m| !m.is_empty())?
+    .to_string();
+    if !policy::is_local_endpoint(settings.llm_endpoint()) || policy::is_cloud_model(&model) {
+        return None;
     }
-
-    fn base(&self) -> &str {
-        self.endpoint.trim_end_matches('/')
-    }
-}
-
-impl LlmClient for LocalModelClient {
-    fn provider_name(&self) -> &str {
-        match self.provider {
-            LlmProvider::Ollama => "ollama",
-            LlmProvider::LmStudio => "lmstudio",
-        }
-    }
-
-    fn list_models(&self) -> CoreResult<Vec<LlmModel>> {
-        match self.provider {
-            LlmProvider::Ollama => Ok(orttaai_core::llm::list_models(&self.endpoint)?
-                .into_iter()
-                .map(|name| LlmModel {
-                    name,
-                    size: None,
-                    embedding: false,
-                })
-                .collect()),
-            LlmProvider::LmStudio => {
-                #[derive(serde::Deserialize)]
-                struct Model {
-                    id: String,
-                }
-                #[derive(serde::Deserialize)]
-                struct Models {
-                    data: Vec<Model>,
-                }
-                let parsed: Models = ureq::get(&format!("{}/v1/models", self.base()))
-                    .call()
-                    .map_err(|e| {
-                        CoreError::Llm(format!("request failed (is LM Studio running?): {e}"))
-                    })?
-                    .into_body()
-                    .read_json()
-                    .map_err(|e| CoreError::Llm(format!("bad response: {e}")))?;
-                Ok(parsed
-                    .data
-                    .into_iter()
-                    .map(|m| LlmModel {
-                        name: m.id,
-                        size: None,
-                        embedding: false,
-                    })
-                    .collect())
-            }
-        }
-    }
-
-    fn chat(
-        &self,
-        messages: &[ChatMessage],
-        opts: &ChatOptions,
-        on_delta: Option<&mut dyn FnMut(ChatDelta)>,
-    ) -> CoreResult<ChatReply> {
-        let content = match self.provider {
-            LlmProvider::Ollama => {
-                let prompt = messages
-                    .iter()
-                    .map(|m| m.content.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
-                orttaai_core::llm::generate(&self.endpoint, &opts.model, &prompt)?
-            }
-            LlmProvider::LmStudio => {
-                #[derive(serde::Deserialize)]
-                struct Message {
-                    content: String,
-                }
-                #[derive(serde::Deserialize)]
-                struct Choice {
-                    message: Message,
-                }
-                #[derive(serde::Deserialize)]
-                struct Reply {
-                    choices: Vec<Choice>,
-                }
-                let msgs: Vec<serde_json::Value> = messages
-                    .iter()
-                    .map(|m| {
-                        let role = match m.role {
-                            Role::System => "system",
-                            Role::Assistant => "assistant",
-                            Role::User => "user",
-                        };
-                        serde_json::json!({ "role": role, "content": m.content })
-                    })
-                    .collect();
-                let mut payload = serde_json::json!({
-                    "model": opts.model,
-                    "messages": msgs,
-                    "stream": false,
-                });
-                if let Some(t) = opts.temperature {
-                    payload["temperature"] = serde_json::json!(t);
-                }
-                let parsed: Reply = ureq::post(&format!("{}/v1/chat/completions", self.base()))
-                    .send_json(payload)
-                    .map_err(|e| {
-                        CoreError::Llm(format!("request failed (is LM Studio running?): {e}"))
-                    })?
-                    .into_body()
-                    .read_json()
-                    .map_err(|e| CoreError::Llm(format!("bad response: {e}")))?;
-                parsed
-                    .choices
-                    .into_iter()
-                    .next()
-                    .map(|c| c.message.content)
-                    .unwrap_or_default()
-            }
-        };
-        if let Some(cb) = on_delta {
-            cb(ChatDelta::Content(content.clone()));
-        }
-        Ok(ChatReply {
-            content,
-            reasoning: None,
-        })
-    }
-
-    fn embed(&self, _model: &str, _inputs: &[String]) -> CoreResult<Vec<Vec<f32>>> {
-        Err(CoreError::Llm(
-            "embeddings are not used by AI suggestions".into(),
-        ))
-    }
+    Some((orttaai_core::llm::client_from_settings(settings), model))
 }
 
 #[cfg(test)]
@@ -503,11 +354,11 @@ mod tests {
     #[test]
     fn ai_client_needs_a_local_endpoint_and_a_model() {
         let mut s = Settings::default();
-        let (_, model) = LocalModelClient::for_settings(&s).expect("default polish model");
+        let (_, model) = ai_client_for(&s).expect("default polish model");
         assert_eq!(model, s.polish_model);
         s.insights_model = "qwen3:4b".into();
-        assert_eq!(LocalModelClient::for_settings(&s).unwrap().1, "qwen3:4b");
+        assert_eq!(ai_client_for(&s).unwrap().1, "qwen3:4b");
         s.ollama_endpoint = "https://api.example.com".into();
-        assert!(LocalModelClient::for_settings(&s).is_none());
+        assert!(ai_client_for(&s).is_none());
     }
 }
