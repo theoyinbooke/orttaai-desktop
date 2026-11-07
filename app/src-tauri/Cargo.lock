@@ -3081,11 +3081,13 @@ version = "0.2.4"
 dependencies = [
  "anyhow",
  "ashpd",
+ "chrono",
  "cpal",
  "directories",
  "enigo",
  "futures-util",
  "global-hotkey",
+ "regex",
  "rubato",
  "rusqlite",
  "serde",

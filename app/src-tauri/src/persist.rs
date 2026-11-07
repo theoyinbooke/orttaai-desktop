@@ -35,4 +35,5 @@ fn after_save(_store: &Store, _id: i64) {
     // == semantic: enqueue for indexing ==
     // == milestones: evaluate unlocks ==
     // == coach: record metrics ==
+    orttaai_core::coach::after_save(_store, _id);
 }

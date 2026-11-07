@@ -81,6 +81,14 @@ export type Settings = {
   coach_app_overrides: Record<string, string>;
   coach_partner_model: string;
   coach_judge_model: string;
+  // Coach: note writer ("" = automatic), coach per way of talking, read-aloud,
+  // hands-free scenes, setup card seen, preferred speech voice ("" = automatic).
+  coach_model: string;
+  coach_personas: Record<string, string>;
+  coach_read_aloud: boolean;
+  coach_hands_free: boolean;
+  coach_model_setup_seen: boolean;
+  coach_voice: string;
 
   appearance: "system" | "light" | "dark";
   launch_at_login: boolean;
