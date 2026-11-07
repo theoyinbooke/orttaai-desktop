@@ -65,46 +65,25 @@ pub struct MemoryPipeline(pub MemoryService);
 impl TranscriptPipeline for MemoryPipeline {
     fn process(&self, raw: &str, _app: Option<&str>) -> PipelineOutput {
         let started = Instant::now();
-        let text = self.0.apply(raw);
-        // MemoryService keeps its maps private; its serialized form exposes the
-        // (lowercased) keys, which is all the hit accounting needs.
-        let (dict, snip) = match serde_json::to_value(&self.0) {
-            Ok(v) => (key_set(&v, "dictionary"), key_set(&v, "snippets")),
-            Err(_) => Default::default(),
-        };
-        let mut dictionary_hits = Vec::new();
-        let mut snippet_hits = Vec::new();
-        for token in raw.split_whitespace() {
-            let core = token
-                .trim_matches(|c: char| !c.is_alphanumeric())
-                .to_lowercase();
-            if core.is_empty() {
-                continue;
-            }
-            if dict.contains(&core) {
-                if !dictionary_hits.contains(&core) {
-                    dictionary_hits.push(core);
-                }
-            } else if snip.contains(&core) && !snippet_hits.contains(&core) {
-                snippet_hits.push(core);
+        let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        let pass = self.0.apply_dictionary(&normalized);
+        let (text, snippet_hits) = self.0.expand_inline_snippets(&pass.text);
+        let mut dictionary_hits: Vec<String> = Vec::new();
+        for hit in pass.hits {
+            let key = hit.source.to_lowercase();
+            if !dictionary_hits.contains(&key) {
+                dictionary_hits.push(key);
             }
         }
         PipelineOutput {
             text,
             dictionary_hits,
-            snippet_hits,
+            snippet_hits: snippet_hits.into_iter().map(|t| t.to_lowercase()).collect(),
             polished: false,
             text_ms: started.elapsed().as_millis() as i64,
             polish_ms: 0,
         }
     }
-}
-
-fn key_set(v: &serde_json::Value, field: &str) -> std::collections::HashSet<String> {
-    v.get(field)
-        .and_then(|m| m.as_object())
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default()
 }
 
 /// Voice edit: apply a spoken instruction to the selected text. Must return an
