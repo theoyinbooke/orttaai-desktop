@@ -33,6 +33,7 @@ pub fn save_record(record: &TranscriptionRecord) -> Option<i64> {
 /// Post-save hooks. Areas append their own calls here (one line each).
 fn after_save(_store: &Store, _id: i64) {
     // == semantic: enqueue for indexing ==
+    crate::semantic::after_save(_store, _id);
     // == milestones: evaluate unlocks ==
     // == coach: record metrics ==
 }
