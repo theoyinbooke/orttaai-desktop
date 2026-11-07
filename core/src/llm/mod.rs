@@ -7,15 +7,19 @@
 //! are allowed — see [`policy`].
 
 use crate::error::{CoreError, Result};
+use crate::settings::{LlmProvider, Settings};
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
+pub mod catalog;
+#[cfg(feature = "ollama")]
+mod http;
+pub mod lmstudio;
+pub mod ollama;
 pub mod policy;
-
-#[cfg(feature = "ollama")]
-mod ollama_legacy;
-#[cfg(feature = "ollama")]
-pub use ollama_legacy::{generate, list_models};
+#[cfg(all(test, feature = "ollama"))]
+mod test_server;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -129,6 +133,351 @@ pub trait LlmClient: Send + Sync {
         }
         msgs.push(ChatMessage::user(user));
         Ok(self.chat(&msgs, opts, None)?.content)
+    }
+
+    // ---- Additions (all defaulted, so existing implementations keep working) ----
+
+    /// The server address this client talks to (empty for test clients).
+    fn endpoint(&self) -> &str {
+        ""
+    }
+
+    /// Reachability + installed models, with a user-facing message (Mac `checkHealth`).
+    fn health(&self) -> LlmHealth {
+        match self.list_models() {
+            Ok(models) => LlmHealth::reachable(self.provider_name(), models),
+            Err(e) => LlmHealth::unreachable(self.provider_name(), &e),
+        }
+    }
+
+    /// What a model can do as the server reports it (`completion`, `thinking`,
+    /// `embedding`, …), or `None` when the server doesn't say.
+    fn model_capabilities(&self, _model: &str) -> Option<Vec<String>> {
+        None
+    }
+
+    /// Prompt-only generation (Mac `generate`). `raw` sends the prompt exactly
+    /// as written (already in the model's chat format, e.g. S1-mini); otherwise
+    /// the server applies the model's template. Defaults to a one-message chat.
+    fn generate(&self, req: &GenerateRequest, opts: &ChatOptions) -> Result<String> {
+        self.complete("", &req.prompt, opts)
+    }
+
+    /// [`LlmClient::chat`] that stops early (with an error carrying
+    /// [`CANCELLED`]) once `cancel` is set. Defaults to an uncancellable chat.
+    fn chat_cancellable(
+        &self,
+        messages: &[ChatMessage],
+        opts: &ChatOptions,
+        on_delta: Option<&mut dyn FnMut(ChatDelta)>,
+        _cancel: &AtomicBool,
+    ) -> Result<ChatReply> {
+        self.chat(messages, opts, on_delta)
+    }
+
+    /// Ask the server to download `model` (Ollama pull / LM Studio download),
+    /// reporting progress until it's done.
+    fn pull_model(&self, model: &str, _on_progress: &mut dyn FnMut(PullProgress)) -> Result<()> {
+        Err(CoreError::Llm(format!(
+            "{} can't download {model} from Orttaai.",
+            provider_display(self.provider_name())
+        )))
+    }
+
+    /// Load a model into memory with a tiny request; returns elapsed ms.
+    fn warm(&self, model: &str, timeout_ms: u64) -> Result<u64> {
+        let started = std::time::Instant::now();
+        let opts = ChatOptions {
+            temperature: Some(0.0),
+            think: Some(false),
+            max_tokens: Some(8),
+            timeout_ms: Some(timeout_ms),
+            ..ChatOptions::model(model)
+        };
+        self.generate(&GenerateRequest::new("Reply with OK."), &opts)?;
+        Ok(started.elapsed().as_millis() as u64)
+    }
+}
+
+/// A prompt-only request for [`LlmClient::generate`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GenerateRequest {
+    pub prompt: String,
+    /// Send the prompt verbatim, without the server's chat template.
+    pub raw: bool,
+    /// Extra stop sequences.
+    pub stop: Vec<String>,
+}
+
+impl GenerateRequest {
+    pub fn new(prompt: impl Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            ..Default::default()
+        }
+    }
+    pub fn raw(prompt: impl Into<String>, stop: &[&str]) -> Self {
+        Self {
+            prompt: prompt.into(),
+            raw: true,
+            stop: stop.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+}
+
+/// Download progress for [`LlmClient::pull_model`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PullProgress {
+    pub model: String,
+    pub status: String,
+    pub completed: Option<u64>,
+    pub total: Option<u64>,
+}
+
+impl PullProgress {
+    /// 0..=1 when both byte counts are known.
+    pub fn fraction(&self) -> Option<f64> {
+        match (self.completed, self.total) {
+            (Some(c), Some(t)) if t > 0 => Some((c as f64 / t as f64).clamp(0.0, 1.0)),
+            _ => None,
+        }
+    }
+}
+
+/// Mac `OllamaHealthStatus`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LlmHealth {
+    pub reachable: bool,
+    /// Installed model names, sorted.
+    pub models: Vec<String>,
+    pub message: String,
+}
+
+impl LlmHealth {
+    pub fn reachable(provider: &str, models: Vec<LlmModel>) -> Self {
+        let mut names: Vec<String> = models.into_iter().map(|m| m.name).collect();
+        names.sort();
+        let server = provider_display(provider);
+        let message = if names.is_empty() {
+            if provider == "lmstudio" {
+                format!("{server} is reachable, but no local models are downloaded yet. Add models in LM Studio.")
+            } else {
+                format!("{server} is reachable, but no local models are installed yet.")
+            }
+        } else {
+            format!(
+                "{server} is reachable. {} local model{} available.",
+                names.len(),
+                if names.len() == 1 { "" } else { "s" }
+            )
+        };
+        Self {
+            reachable: true,
+            models: names,
+            message,
+        }
+    }
+
+    pub fn unreachable(provider: &str, e: &CoreError) -> Self {
+        let server = provider_display(provider);
+        let detail = error_text(e);
+        let message = if provider == "lmstudio" {
+            format!("{server} unreachable: {detail} Start the server from LM Studio's Developer tab, or run `lms server start`.")
+        } else {
+            format!("{server} unreachable: {detail}")
+        };
+        Self {
+            reachable: false,
+            models: Vec::new(),
+            message,
+        }
+    }
+}
+
+/// `"ollama"` → `"Ollama"`, `"lmstudio"` → `"LM Studio"`.
+pub fn provider_display(provider: &str) -> &'static str {
+    match provider {
+        "ollama" => "Ollama",
+        "lmstudio" => "LM Studio",
+        "mock" => "Mock",
+        _ => "Local AI",
+    }
+}
+
+/// Display name for a configured provider.
+pub fn provider_display_name(p: LlmProvider) -> &'static str {
+    match p {
+        LlmProvider::Ollama => "Ollama",
+        LlmProvider::LmStudio => "LM Studio",
+    }
+}
+
+/// The message inside an LLM error, without the `llm error:` prefix.
+pub fn error_text(e: &CoreError) -> String {
+    match e {
+        CoreError::Llm(m) => m.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Marker carried by the error a cancelled generation returns.
+pub const CANCELLED: &str = "generation stopped";
+
+/// Why a request failed, so callers pick the right circuit-breaker action
+/// (Mac `LLMRequestErrorClassifier`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmFailure {
+    /// The server is up but slow.
+    Timeout,
+    /// No server is listening (connection refused / host down).
+    Unreachable,
+    /// The server is up but the model isn't installed (HTTP 404).
+    ModelMissing,
+    /// Stopped by the user.
+    Cancelled,
+    Other,
+}
+
+/// Classify an error produced by the HTTP clients (or `MockLlm`).
+pub fn classify_error(e: &CoreError) -> LlmFailure {
+    let m = error_text(e).to_ascii_lowercase();
+    if m.contains(CANCELLED) {
+        LlmFailure::Cancelled
+    } else if m.contains("timed out") || m.contains("timeout") {
+        LlmFailure::Timeout
+    } else if m.contains("unreachable")
+        || m.contains("connection refused")
+        || m.contains("could not connect")
+        || m.contains("host not found")
+    {
+        LlmFailure::Unreachable
+    } else if m.contains("error 404") || m.contains("isn't a local model") {
+        LlmFailure::ModelMissing
+    } else {
+        LlmFailure::Other
+    }
+}
+
+/// Every balanced top-level `{…}` in `text`, string-aware (Mac
+/// `extractJSONObjects`) — models sometimes wrap JSON in prose or emit two.
+pub fn extract_json_objects(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let (mut depth, mut start, mut escaped, mut in_string) = (0usize, None, false, false);
+    for (i, &c) in chars.iter().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' && in_string {
+            escaped = true;
+            continue;
+        }
+        if c == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        if c == '{' {
+            if depth == 0 {
+                start = Some(i);
+            }
+            depth += 1;
+        } else if c == '}' && depth > 0 {
+            depth -= 1;
+            if depth == 0 {
+                if let Some(s) = start.take() {
+                    out.push(chars[s..=i].iter().collect());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Remove `<think>…</think>` blocks (reasoning some models inline in the
+/// reply). An unclosed `<think>` hides everything after it.
+pub fn strip_think_tags(text: &str) -> String {
+    split_inline_thinking(text).0
+}
+
+/// Split a (possibly partial) reply with inline `<think>` tags into the
+/// visible text and the reasoning (Mac `ChatAIReplyStatus.splitInlineThinking`,
+/// extended to several blocks).
+pub fn split_inline_thinking(text: &str) -> (String, Option<String>) {
+    if !text.contains("<think>") {
+        return (text.to_string(), None);
+    }
+    let mut visible = String::new();
+    let mut thought = String::new();
+    let mut rest = text;
+    while let Some(open) = rest.find("<think>") {
+        visible.push_str(&rest[..open]);
+        let after = &rest[open + "<think>".len()..];
+        match after.find("</think>") {
+            Some(close) => {
+                thought.push_str(&after[..close]);
+                rest = &after[close + "</think>".len()..];
+            }
+            None => {
+                thought.push_str(after);
+                rest = "";
+            }
+        }
+    }
+    visible.push_str(rest);
+    (visible, Some(thought))
+}
+
+/// The client used when this binary has no local-AI support compiled in.
+#[cfg(not(feature = "ollama"))]
+struct UnavailableClient;
+
+#[cfg(not(feature = "ollama"))]
+impl LlmClient for UnavailableClient {
+    fn provider_name(&self) -> &str {
+        "unavailable"
+    }
+    fn list_models(&self) -> Result<Vec<LlmModel>> {
+        Err(CoreError::Llm(
+            "local AI isn't built into this binary (feature `ollama`)".into(),
+        ))
+    }
+    fn chat(
+        &self,
+        _messages: &[ChatMessage],
+        _opts: &ChatOptions,
+        _on_delta: Option<&mut dyn FnMut(ChatDelta)>,
+    ) -> Result<ChatReply> {
+        self.list_models().map(|_| ChatReply::default())
+    }
+    fn embed(&self, _model: &str, _inputs: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.list_models().map(|_| Vec::new())
+    }
+}
+
+/// The client for the configured provider and endpoint (Ollama or LM Studio).
+/// Only local endpoints and local models are ever used ([`policy`]).
+pub fn client_from_settings(s: &Settings) -> Arc<dyn LlmClient> {
+    client_for(s.llm_provider, s.llm_endpoint())
+}
+
+/// A client for an explicit provider + endpoint (e.g. a connection test
+/// before saving).
+pub fn client_for(provider: LlmProvider, endpoint: &str) -> Arc<dyn LlmClient> {
+    #[cfg(feature = "ollama")]
+    {
+        match provider {
+            LlmProvider::Ollama => Arc::new(ollama::OllamaClient::new(endpoint)),
+            LlmProvider::LmStudio => Arc::new(lmstudio::LmStudioClient::new(endpoint)),
+        }
+    }
+    #[cfg(not(feature = "ollama"))]
+    {
+        let _ = (provider, endpoint);
+        Arc::new(UnavailableClient)
     }
 }
 
