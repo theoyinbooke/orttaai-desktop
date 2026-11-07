@@ -32,6 +32,10 @@ tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
+# Analytics/home: share-card PNGs arrive base64-encoded and are saved to the
+# user's Pictures folder.
+base64 = "0.22"
+directories = "5"
 
 # Native Wayland typing via the RemoteDesktop portal is Linux-only; Cargo unions
 # these features with the base dependency, so Windows builds never pull in ashpd.

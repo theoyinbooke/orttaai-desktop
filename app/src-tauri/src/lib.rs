@@ -213,6 +213,22 @@ pub fn run() {
             insights::dashboard_stats,
             insights::delete_transcription,
             insights::recent_history,
+            insights::home_summary,
+            insights::analytics_dashboard,
+            insights::github_prompt_check,
+            insights::history_page,
+            insights::history_apps,
+            insights::get_transcription,
+            insights::copy_transcription,
+            insights::milestones_overview,
+            insights::milestones_pending,
+            insights::milestones_evaluate,
+            insights::milestones_mark_celebrated,
+            insights::whats_new_pending,
+            insights::whats_new_mark_seen,
+            insights::save_share_card,
+            insights::copy_share_card,
+            insights::reveal_share_card,
             // == coach ==
         ])
         .run(tauri::generate_context!())

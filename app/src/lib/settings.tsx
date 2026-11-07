@@ -91,6 +91,10 @@ export type Settings = {
   auto_download_updates: boolean;
   analytics_time_range: string;
   last_whats_new_version: string | null;
+  // Analytics/home: Home's GitHub star prompt state.
+  github_star_prompt_completed: boolean;
+  github_star_prompt_shown_count: number;
+  github_star_prompt_last_shown_at: number;
 };
 
 type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> | T[K] : T[K] };
