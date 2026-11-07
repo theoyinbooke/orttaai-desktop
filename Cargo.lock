@@ -1702,6 +1702,8 @@ dependencies = [
  "futures-util",
  "global-hotkey",
  "hound",
+ "miniz_oxide",
+ "regex",
  "rubato",
  "rusqlite",
  "serde",
