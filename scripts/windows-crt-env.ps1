@@ -7,3 +7,6 @@ $env:CMAKE_C_FLAGS_RELWITHDEBINFO = "/MT /O2 /Ob1 /DNDEBUG"
 $env:CMAKE_CXX_FLAGS_RELWITHDEBINFO = "/MT /O2 /Ob1 /DNDEBUG"
 $env:CMAKE_C_FLAGS_DEBUG = "/MT /Od"
 $env:CMAKE_CXX_FLAGS_DEBUG = "/MT /Od"
+# CUDA builds: nvcc's host compiler must use /MT too.
+$env:CMAKE_CUDA_FLAGS_RELEASE = "-O3 -DNDEBUG -Xcompiler=/MT"
+$env:CMAKE_CUDA_FLAGS_RELWITHDEBINFO = "-O2 -DNDEBUG -Xcompiler=/MT"

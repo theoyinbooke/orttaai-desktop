@@ -7,3 +7,6 @@ export CMAKE_C_FLAGS_RELWITHDEBINFO="/MT /O2 /Ob1 /DNDEBUG"
 export CMAKE_CXX_FLAGS_RELWITHDEBINFO="/MT /O2 /Ob1 /DNDEBUG"
 export CMAKE_C_FLAGS_DEBUG="/MT /Od"
 export CMAKE_CXX_FLAGS_DEBUG="/MT /Od"
+# CUDA builds: nvcc's host compiler must use /MT too.
+export CMAKE_CUDA_FLAGS_RELEASE="-O3 -DNDEBUG -Xcompiler=/MT"
+export CMAKE_CUDA_FLAGS_RELWITHDEBINFO="-O2 -DNDEBUG -Xcompiler=/MT"
