@@ -315,22 +315,41 @@ impl InjectionService {
             }
         }
         self.clipboard.set_text(text)?;
+        // Shift+Insert pastes the PRIMARY selection, not the clipboard, in xterm
+        // and others: without this they'd paste whatever was last highlighted.
+        let primary = (chord == PasteChord::ShiftInsert).then(|| {
+            let held = self.clipboard.get_primary().unwrap_or(None);
+            if let Err(e) = self.clipboard.set_primary(Some(text)) {
+                tracing::warn!("couldn't stage the selection: {e}");
+            }
+            held
+        });
         (self.sleep)(Duration::from_millis(CLIPBOARD_SETTLE_MS));
         if let Err(e) = self.injector.paste_chord(chord) {
             if preserve {
                 let _ = self.clipboard.restore();
             }
+            if let Some(held) = &primary {
+                let _ = self.clipboard.set_primary(held.as_deref());
+            }
             return Err(e);
         }
-        if preserve {
+        if preserve || primary.is_some() {
             let delay = if self.config.low_latency {
                 LOW_LATENCY_RESTORE_DELAY_MS
             } else {
                 RESTORE_DELAY_MS
             };
             (self.sleep)(Duration::from_millis(delay));
+        }
+        if preserve {
             if let Err(e) = self.clipboard.restore() {
                 tracing::warn!("couldn't restore the clipboard: {e}");
+            }
+        }
+        if let Some(held) = &primary {
+            if let Err(e) = self.clipboard.set_primary(held.as_deref()) {
+                tracing::warn!("couldn't restore the selection: {e}");
             }
         }
         Ok(())
@@ -858,6 +877,35 @@ mod tests {
         assert_eq!(d.method, InjectionMethod::Paste);
         assert_eq!(log.last().as_deref(), Some("hello world"));
         assert_eq!(clip.get_text().unwrap().as_deref(), Some("user's copy"));
+    }
+
+    #[test]
+    fn terminal_paste_stages_and_restores_the_primary_selection() {
+        let clip = Arc::new(MockClipboard::new());
+        clip.set_primary(Some("highlighted")).unwrap();
+        let inj = MockTextInjector::new().with_clipboard(clip.clone());
+        let mut s = service(inj, clip.clone());
+        s.set_config(cfg(InjectionMode::Paste, true));
+        s.deliver("dictated", Some("xterm"));
+        assert_eq!(
+            clip.primary_history(),
+            vec![
+                Some("highlighted".to_string()),
+                Some("dictated".to_string()),
+                Some("highlighted".to_string()),
+            ],
+            "terminals paste PRIMARY on Shift+Insert, so it must hold the text"
+        );
+    }
+
+    #[test]
+    fn ordinary_paste_leaves_the_primary_selection_alone() {
+        let clip = Arc::new(MockClipboard::new());
+        let inj = MockTextInjector::new().with_clipboard(clip.clone());
+        let mut s = service(inj, clip.clone());
+        s.set_config(cfg(InjectionMode::Paste, true));
+        s.deliver("dictated", Some("firefox"));
+        assert!(clip.primary_history().is_empty());
     }
 
     #[test]

@@ -161,7 +161,11 @@ fn strict_secure_blocks_when_field_status_unknown() {
     r.coord.on_press().unwrap();
     let outcome = r.coord.on_release().unwrap();
     assert_eq!(outcome.result, InjectionResult::BlockedSecureField);
-    assert!(outcome.transcript.is_none());
+    assert_eq!(
+        outcome.transcript.as_deref(),
+        Some("my secret"),
+        "the field may be ordinary text, so the dictation must survive"
+    );
     assert!(
         r.log.all().is_empty(),
         "must not type when unsure and strict"

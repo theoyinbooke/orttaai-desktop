@@ -19,6 +19,15 @@ pub trait Clipboard: Send + Sync {
     fn get_text(&self) -> Result<Option<String>>;
     /// Restore the clipboard to the last `save()` (clears it when it was empty).
     fn restore(&self) -> Result<()>;
+    /// The X11/Wayland PRIMARY selection (what's highlighted). Terminals paste it
+    /// on Shift+Insert. Platforms without one report nothing.
+    fn get_primary(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
+    /// Set the PRIMARY selection, or clear it. A no-op where there is none.
+    fn set_primary(&self, _text: Option<&str>) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// In-memory clipboard for tests and `demo`.
@@ -28,6 +37,9 @@ pub struct MockClipboard {
     saved: Mutex<Option<String>>,
     /// Every value written by `set_text`/`restore`, for assertions.
     history: Mutex<Vec<Option<String>>>,
+    primary: Mutex<Option<String>>,
+    /// Every value written by `set_primary`, for assertions.
+    primary_history: Mutex<Vec<Option<String>>>,
 }
 
 impl MockClipboard {
@@ -44,6 +56,10 @@ impl MockClipboard {
 
     pub fn history(&self) -> Vec<Option<String>> {
         self.history.lock().unwrap().clone()
+    }
+
+    pub fn primary_history(&self) -> Vec<Option<String>> {
+        self.primary_history.lock().unwrap().clone()
     }
 }
 
@@ -69,6 +85,19 @@ impl Clipboard for MockClipboard {
         self.history.lock().unwrap().push(saved);
         Ok(())
     }
+
+    fn get_primary(&self) -> Result<Option<String>> {
+        Ok(self.primary.lock().unwrap().clone())
+    }
+
+    fn set_primary(&self, text: Option<&str>) -> Result<()> {
+        *self.primary.lock().unwrap() = text.map(str::to_string);
+        self.primary_history
+            .lock()
+            .unwrap()
+            .push(text.map(str::to_string));
+        Ok(())
+    }
 }
 
 /// `Arc<C>` is a clipboard too, so a test can keep a handle to a mock it gave away.
@@ -84,6 +113,12 @@ impl<C: Clipboard + ?Sized> Clipboard for std::sync::Arc<C> {
     }
     fn restore(&self) -> Result<()> {
         (**self).restore()
+    }
+    fn get_primary(&self) -> Result<Option<String>> {
+        (**self).get_primary()
+    }
+    fn set_primary(&self, text: Option<&str>) -> Result<()> {
+        (**self).set_primary(text)
     }
 }
 
@@ -171,6 +206,29 @@ impl SystemClipboard {
         })
     }
 
+    #[cfg(all(feature = "injection", target_os = "linux"))]
+    fn board_primary_get(&self) -> Result<Option<String>> {
+        use arboard::{GetExtLinux, LinuxClipboardKind};
+        self.with_board(
+            |b| match b.get().clipboard(LinuxClipboardKind::Primary).text() {
+                Ok(t) => Ok(Some(t)),
+                Err(arboard::Error::ContentNotAvailable) => Ok(None),
+                Err(e) => Err(CoreError::Injection(format!("read selection: {e}"))),
+            },
+        )
+    }
+
+    #[cfg(all(feature = "injection", target_os = "linux"))]
+    fn board_primary_set(&self, text: Option<&str>) -> Result<()> {
+        use arboard::{LinuxClipboardKind, SetExtLinux};
+        self.with_board(|b| {
+            b.set()
+                .clipboard(LinuxClipboardKind::Primary)
+                .text(text.unwrap_or_default().to_string())
+                .map_err(|e| CoreError::Injection(format!("write selection: {e}")))
+        })
+    }
+
     #[cfg(not(feature = "injection"))]
     fn board_get(&self) -> Result<Option<String>> {
         Err(CoreError::NotImplemented(
@@ -199,6 +257,28 @@ impl Clipboard for SystemClipboard {
         // leaving it behind.
         let current = self.read().unwrap_or(None);
         *self.saved.lock().unwrap() = Some(current);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn get_primary(&self) -> Result<Option<String>> {
+        if self.wayland_tools {
+            return wl::paste_primary();
+        }
+        #[cfg(feature = "injection")]
+        return self.board_primary_get();
+        #[cfg(not(feature = "injection"))]
+        Ok(None)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_primary(&self, text: Option<&str>) -> Result<()> {
+        if self.wayland_tools {
+            return wl::copy_primary(text);
+        }
+        #[cfg(feature = "injection")]
+        return self.board_primary_set(text);
+        #[cfg(not(feature = "injection"))]
         Ok(())
     }
 
@@ -252,8 +332,16 @@ mod wl {
     const READ_LIMIT: Duration = Duration::from_millis(1000);
 
     pub fn paste() -> Result<Option<String>> {
+        read(&["--no-newline", "--type", "text"])
+    }
+
+    pub fn paste_primary() -> Result<Option<String>> {
+        read(&["--primary", "--no-newline", "--type", "text"])
+    }
+
+    fn read(args: &[&str]) -> Result<Option<String>> {
         let mut child = Command::new("wl-paste")
-            .args(["--no-newline", "--type", "text"])
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -289,7 +377,18 @@ mod wl {
     }
 
     pub fn copy(text: Option<&str>) -> Result<()> {
+        write(text, false)
+    }
+
+    pub fn copy_primary(text: Option<&str>) -> Result<()> {
+        write(text, true)
+    }
+
+    fn write(text: Option<&str>, primary: bool) -> Result<()> {
         let mut cmd = Command::new("wl-copy");
+        if primary {
+            cmd.arg("--primary");
+        }
         if text.is_none() {
             cmd.arg("--clear");
         }

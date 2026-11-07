@@ -1198,6 +1198,23 @@ impl DictationCoordinator {
             tracing::info!("injection blocked: focused field is (or may be) a password field");
             out.result = InjectionResult::BlockedSecureField;
             out.injection_method = Some(InjectionMethod::Blocked);
+            // "Never type into password fields" refused a field it can't check
+            // (every field, on Linux). That may be ordinary text, so the dictation
+            // is kept in History and left on the clipboard, as Settings promises.
+            // A field known to be a password keeps nothing.
+            if self.injection.secure_status() == crate::types::SecureFieldStatus::Unknown {
+                let on_clipboard = self.injection.leave_on_clipboard(&text);
+                out.transcript = Some(text);
+                self.fail(
+                    &mut out,
+                    if on_clipboard {
+                        "Didn't type: this field can't be checked. It's on your clipboard."
+                    } else {
+                        "Didn't type: this field can't be checked. It's saved in History."
+                    },
+                );
+                return out;
+            }
             self.fail(&mut out, "Can't dictate into password fields");
             return out;
         }
