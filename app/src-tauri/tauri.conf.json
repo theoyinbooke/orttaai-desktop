@@ -23,8 +23,8 @@
       {
         "label": "panel",
         "url": "index.html",
-        "width": 220,
-        "height": 64,
+        "width": 320,
+        "height": 60,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,

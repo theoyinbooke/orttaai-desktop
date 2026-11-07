@@ -9,6 +9,79 @@
 //!   `Shell.Introspect.GetWindows` returns `AccessDenied`, and no portal exists).
 //!   So this returns `None` there, and the dictation is stored without a source.
 
+use crate::injection::edit_watch::FieldRead;
+
+/// The focused text field's full value, for learn-from-edits. `None` when it
+/// can't be read (Linux has no portable API; password fields are never read).
+pub fn focused_field_text() -> Option<String> {
+    match focused_field_read() {
+        FieldRead::Text(t) => Some(t),
+        _ => None,
+    }
+}
+
+/// Read the focused field: its text, `Secure` for a password field (never
+/// read), or `Unreadable`.
+///
+/// - **Windows**: UI Automation — `ValuePattern.CurrentValue`, falling back to
+///   `TextPattern.DocumentRange.GetText` (rich edits, browsers).
+/// - **Linux / others**: no API a normal client may use (AT-SPI is unreliable
+///   and absent under Wayland sandboxes), so always `Unreadable`.
+#[cfg(target_os = "windows")]
+pub fn focused_field_read() -> FieldRead {
+    uia_field::read()
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn focused_field_read() -> FieldRead {
+    FieldRead::Unreadable
+}
+
+/// NOTE: `#[cfg(windows)]`-only; verified by the Windows cross-check build.
+/// Every step fails safe to `Unreadable`.
+#[cfg(target_os = "windows")]
+mod uia_field {
+    use crate::injection::edit_watch::FieldRead;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    };
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationValuePattern,
+        UIA_TextPatternId, UIA_ValuePatternId,
+    };
+
+    /// Fields longer than this are not worth diffing (a whole document).
+    const MAX_CHARS: i32 = 20_000;
+
+    pub fn read() -> FieldRead {
+        unsafe { read_inner() }.unwrap_or(FieldRead::Unreadable)
+    }
+
+    unsafe fn read_inner() -> windows::core::Result<FieldRead> {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let automation: IUIAutomation =
+            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+        let focused = automation.GetFocusedElement()?;
+        if focused.CurrentIsPassword()?.as_bool() {
+            return Ok(FieldRead::Secure);
+        }
+        if let Ok(value) =
+            focused.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+        {
+            if let Ok(v) = value.CurrentValue() {
+                return Ok(FieldRead::Text(v.to_string()));
+            }
+        }
+        if let Ok(text) = focused.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+        {
+            let range = text.DocumentRange()?;
+            let v = range.GetText(MAX_CHARS)?;
+            return Ok(FieldRead::Text(v.to_string()));
+        }
+        Ok(FieldRead::Unreadable)
+    }
+}
+
 /// The focused app's name, or `None` when it can't be determined (e.g. Wayland).
 #[cfg(target_os = "linux")]
 pub fn focused_app() -> Option<String> {

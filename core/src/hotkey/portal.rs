@@ -1,20 +1,28 @@
-//! Wayland push-to-talk via the XDG `GlobalShortcuts` portal.
+//! Wayland hotkeys via the XDG `GlobalShortcuts` portal.
 //!
 //! GNOME's Wayland compositor doesn't deliver X11 key grabs to clients, so the
 //! `global-hotkey` (XGrabKey) backend never fires there. The GlobalShortcuts
-//! portal lets us register a shortcut the user binds once (in GNOME's dialog /
+//! portal lets us register shortcuts the user binds once (in GNOME's dialog /
 //! Settings) and then receive `Activated`/`Deactivated` (press/release) events
-//! even when our window isn't focused — exactly what push-to-talk needs.
+//! even when our window isn't focused — exactly what push-to-talk needs. Both
+//! of the app's shortcuts (push-to-talk and edit-selection) are bound in one
+//! session.
 
 use crate::error::{CoreError, Result};
-use crate::hotkey::{HotkeyCallback, HotkeyManager};
+use crate::hotkey::{HotkeyBinding, HotkeyManager, PressFilter};
 use crate::types::{HotkeyCombo, Modifier};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-const SHORTCUT_ID: &str = "push-to-talk";
+/// Once autorepeat is seen, a gap this long with no further `Activated` means
+/// the key was released (covers a missed `Deactivated`).
+const WATCHDOG_GAP: Duration = Duration::from_millis(1200);
+/// Stop a hold after this long regardless (a dropped release can never strand
+/// recording on; the coordinator's own caps are shorter).
+const MAX_HOLD: Duration = Duration::from_secs(330);
 
-/// Push-to-talk backed by the GlobalShortcuts portal (GNOME/Wayland).
+/// Hotkeys backed by the GlobalShortcuts portal (GNOME/KDE Wayland).
 pub struct PortalHotkeyManager {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -35,18 +43,54 @@ impl Default for PortalHotkeyManager {
     }
 }
 
+/// Per-shortcut hold tracking.
+struct Held {
+    binding: HotkeyBinding,
+    filter: PressFilter,
+    started_at: Option<Instant>,
+    last_activated: Option<Instant>,
+    repeats: u32,
+}
+
+impl Held {
+    fn activated(&mut self, now: Instant) {
+        self.last_activated = Some(now);
+        if self.filter.down() {
+            self.started_at = Some(now);
+            self.repeats = 0;
+            (self.binding.on_down)();
+        } else {
+            self.repeats += 1; // autorepeat while held — ignore
+        }
+    }
+
+    fn deactivated(&mut self) {
+        if self.filter.up() {
+            self.started_at = None;
+            (self.binding.on_up)();
+        }
+    }
+
+    fn tick(&mut self, now: Instant) {
+        let Some(start) = self.started_at else { return };
+        let gap = self.last_activated.map(|t| now.duration_since(t));
+        if now.duration_since(start) > MAX_HOLD
+            || (self.repeats >= 1 && gap.is_some_and(|g| g > WATCHDOG_GAP))
+        {
+            tracing::info!("portal hotkey {}: release inferred", self.binding.id);
+            self.deactivated();
+        }
+    }
+}
+
 impl HotkeyManager for PortalHotkeyManager {
-    fn register(
-        &mut self,
-        combo: HotkeyCombo,
-        on_down: HotkeyCallback,
-        on_up: HotkeyCallback,
-    ) -> Result<()> {
+    fn register_all(&mut self, bindings: Vec<HotkeyBinding>) -> Result<()> {
         use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
         use futures_util::StreamExt;
 
-        let stop = self.stop.clone();
-        let trigger = combo_to_trigger(&combo);
+        self.unregister()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        self.stop = stop.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
 
         let handle = std::thread::Builder::new()
@@ -97,28 +141,33 @@ impl HotkeyManager for PortalHotkeyManager {
                             return;
                         }
                     };
-                    let shortcut =
-                        NewShortcut::new(SHORTCUT_ID, "Dictate — hold to talk, release to insert")
-                            .preferred_trigger(Some(trigger.as_str()));
+                    let triggers: Vec<String> =
+                        bindings.iter().map(|b| combo_to_trigger(&b.combo)).collect();
+                    let shortcuts: Vec<NewShortcut> = bindings
+                        .iter()
+                        .zip(&triggers)
+                        .map(|(b, t)| {
+                            NewShortcut::new(b.id, b.description).preferred_trigger(Some(t.as_str()))
+                        })
+                        .collect();
                     match gs
-                        .bind_shortcuts(&session, &[shortcut], None)
+                        .bind_shortcuts(&session, &shortcuts, None)
                         .await
                         .and_then(|r| r.response())
                     {
                         Ok(resp) => {
                             // GNOME often ignores `preferred_trigger` and binds no
-                            // usable trigger (the user must assign the key in
-                            // Settings → Keyboard). Log exactly what it bound so a
+                            // usable trigger (the user assigns the key in
+                            // Settings → Keyboard). Log what it bound so a
                             // non-firing shortcut can be diagnosed.
                             if resp.shortcuts().is_empty() {
-                                eprintln!("orttaai: GlobalShortcuts bind returned NO shortcuts");
+                                tracing::warn!("GlobalShortcuts bind returned no shortcuts");
                             }
                             for sc in resp.shortcuts() {
-                                eprintln!(
-                                    "orttaai: bound shortcut id={:?} trigger={:?} desc={:?}",
+                                tracing::info!(
+                                    "bound shortcut id={:?} trigger={:?}",
                                     sc.id(),
-                                    sc.trigger_description(),
-                                    sc.description()
+                                    sc.trigger_description()
                                 );
                             }
                         }
@@ -130,71 +179,45 @@ impl HotkeyManager for PortalHotkeyManager {
                     }
                     let _ = ready_tx.send(Ok(()));
 
-                    // Hold-to-talk. Verified against mutter / gnome-shell /
-                    // xdg-desktop-portal-gnome source: the portal emits one
-                    // `Activated` on press, then REPEATS it at the key auto-repeat
-                    // rate while held, then one `Deactivated` on release. So the
-                    // FIRST Activated starts recording, repeats are ignored, and
-                    // Deactivated stops + inserts. Because it's a global shortcut,
-                    // pressing it never steals focus, so the text lands in the
-                    // user's target app.
-                    //
-                    // Two safety nets guarantee a dropped release can never strand
-                    // recording "on":
-                    //   * watchdog — once autorepeat is seen, a gap with no further
-                    //     Activated means the key was released (covers a missed
-                    //     Deactivated). Only armed once repeats are actually
-                    //     arriving, so it can't false-stop a genuine hold when the
-                    //     user has key-repeat disabled.
-                    //   * hard cap — stop after MAX_HOLD regardless.
-                    const WATCHDOG_GAP: std::time::Duration = std::time::Duration::from_millis(1200);
-                    const MAX_HOLD: std::time::Duration = std::time::Duration::from_secs(60);
-                    let mut active = false;
-                    let mut started_at: Option<std::time::Instant> = None;
-                    let mut last_activated: Option<std::time::Instant> = None;
-                    let mut repeats: u32 = 0;
+                    // Hold-to-talk. The portal emits one `Activated` on press,
+                    // REPEATS it at the key auto-repeat rate while held, then one
+                    // `Deactivated` on release. The first Activated is the press;
+                    // repeats are ignored. Safety nets (watchdog + hard cap)
+                    // guarantee a dropped release can't strand a key "down".
+                    let mut held: Vec<Held> = bindings
+                        .into_iter()
+                        .map(|binding| Held {
+                            binding,
+                            filter: PressFilter::default(),
+                            started_at: None,
+                            last_activated: None,
+                            repeats: 0,
+                        })
+                        .collect();
                     loop {
                         if stop.load(Ordering::Relaxed) {
                             break;
                         }
                         tokio::select! {
                             ev = activated.next() => {
-                                if matches!(&ev, Some(e) if e.shortcut_id() == SHORTCUT_ID) {
-                                    let now = std::time::Instant::now();
-                                    last_activated = Some(now);
-                                    if active {
-                                        repeats += 1; // autorepeat while held — ignore
-                                    } else {
-                                        active = true;
-                                        started_at = Some(now);
-                                        repeats = 0;
-                                        eprintln!("orttaai: hotkey DOWN — recording");
-                                        on_down();
+                                if let Some(e) = ev {
+                                    let now = Instant::now();
+                                    if let Some(h) = held.iter_mut().find(|h| h.binding.id == e.shortcut_id()) {
+                                        h.activated(now);
                                     }
                                 }
                             }
                             ev = deactivated.next() => {
-                                if matches!(&ev, Some(e) if e.shortcut_id() == SHORTCUT_ID) && active {
-                                    eprintln!("orttaai: hotkey UP — stop + insert");
-                                    active = false;
-                                    on_up();
+                                if let Some(e) = ev {
+                                    if let Some(h) = held.iter_mut().find(|h| h.binding.id == e.shortcut_id()) {
+                                        h.deactivated();
+                                    }
                                 }
                             }
-                            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
-                                if active {
-                                    let now = std::time::Instant::now();
-                                    if started_at.is_some_and(|t| now.duration_since(t) > MAX_HOLD) {
-                                        eprintln!("orttaai: hotkey max-hold reached — stop");
-                                        active = false;
-                                        on_up();
-                                    } else if repeats >= 1
-                                        && last_activated
-                                            .is_some_and(|t| now.duration_since(t) > WATCHDOG_GAP)
-                                    {
-                                        eprintln!("orttaai: release inferred (missed Deactivated) — stop");
-                                        active = false;
-                                        on_up();
-                                    }
+                            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                                let now = Instant::now();
+                                for h in held.iter_mut() {
+                                    h.tick(now);
                                 }
                             }
                         }

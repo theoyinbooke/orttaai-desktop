@@ -128,6 +128,8 @@ pub struct Settings {
     pub low_latency: bool,
     /// Keep the model resident and run a silent warm-up decode at start.
     pub warm_models: bool,
+    /// Custom folder for speech models; `None` = `<data-dir>/models`.
+    pub models_dir: Option<String>,
 
     // ---- Dictation ---------------------------------------------------------
     pub push_to_talk: HotkeyCombo,
@@ -230,6 +232,7 @@ impl Default for Settings {
             express_word_boost: true,
             low_latency: false,
             warm_models: true,
+            models_dir: None,
 
             push_to_talk: HotkeyCombo::default(),
             hands_free_enabled: true,
