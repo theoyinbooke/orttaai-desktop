@@ -36,6 +36,8 @@ tauri-plugin-autostart = "2"
 # user's Pictures folder.
 base64 = "0.22"
 directories = "5"
+# Local LLM HTTP for semantic memory (Ollama / LM Studio); same version as the core.
+ureq = { version = "3.2.1", features = ["json"] }
 
 # Native Wayland typing via the RemoteDesktop portal is Linux-only; Cargo unions
 # these features with the base dependency, so Windows builds never pull in ashpd.

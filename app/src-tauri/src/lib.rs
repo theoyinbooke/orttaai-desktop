@@ -39,6 +39,8 @@ pub(crate) fn err(e: impl std::fmt::Display) -> String {
 pub(crate) fn on_settings_changed(app: &AppHandle, old: &Settings, new: &Settings) {
     // == engine: live-apply dictation settings ==
     engine::on_settings_changed(app, old, new);
+    // == semantic: index on enable / embedding-model change ==
+    semantic::on_settings_changed(app, old, new);
     // == general: launch at login ==
 }
 
@@ -270,6 +272,25 @@ pub fn run() {
             ai::tone_get,
             ai::tone_sample_count,
             // == semantic ==
+            semantic::semantic_status,
+            semantic::semantic_llm_status,
+            semantic::semantic_search,
+            semantic::semantic_index_now,
+            semantic::semantic_clear_index,
+            semantic::semantic_rebuild_graph,
+            semantic::semantic_concept_graph,
+            semantic::semantic_concept_detail,
+            semantic::semantic_concept_brief,
+            semantic::semantic_activity,
+            semantic::semantic_activity_start,
+            semantic::semantic_activity_stop,
+            semantic::semantic_insight_report,
+            semantic::semantic_generate_insights,
+            semantic::semantic_findings,
+            semantic::semantic_open_loops,
+            semantic::semantic_set_finding_status,
+            semantic::semantic_signals,
+            semantic::semantic_home_insights,
             // == insights ==
             insights::dashboard_stats,
             insights::delete_transcription,
