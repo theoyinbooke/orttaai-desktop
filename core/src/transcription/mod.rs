@@ -49,3 +49,8 @@ impl Transcriber for MockTranscriber {
 mod whisper;
 #[cfg(feature = "whisper")]
 pub use whisper::WhisperTranscriber;
+
+#[cfg(feature = "express")]
+pub mod express;
+#[cfg(feature = "express")]
+pub use express::ExpressTranscriber;
