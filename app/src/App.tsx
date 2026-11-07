@@ -1,50 +1,47 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { runUpdate } from "./lib/updater";
 import "./App.css";
-import {
-  Icon,
-  ThemeProvider,
-  ToastProvider,
-  useTheme,
-  useToast,
-} from "./ui";
-import {
-  STATE_LABEL,
-  type AppInfo,
-  type EngineState,
-  type HistoryItem,
-  type ModelInfo,
-  type Settings,
-  type Tab,
-} from "./types";
-import Dictate from "./views/Dictate";
-import History from "./views/History";
-import Insights from "./views/Insights";
-import Dictionary from "./views/Dictionary";
+import { Icon, ThemeProvider, ToastProvider, useTheme, useToast } from "./ui";
+import { TABS, type AppInfo, type Tab } from "./types";
+import { call, useEvent } from "./lib/api";
+import { SettingsProvider, useSettings } from "./lib/settings";
+import { EngineProvider, STATE_LABEL, useEngine } from "./lib/engine";
+import { phaseLabel, useUpdater } from "./lib/updater";
+import Home from "./views/Home";
+import ChatAI from "./views/ChatAI";
+import MemoryGraph from "./views/MemoryGraph";
+import Memory from "./views/Memory";
+import Analytics from "./views/Analytics";
+import Milestones from "./views/Milestones";
+import Coach from "./views/Coach";
 import Models from "./views/Models";
-import Assistant from "./views/Assistant";
 import SettingsView from "./views/Settings";
 import About from "./views/About";
+import Setup from "./views/Setup";
+import WhatsNew from "./components/WhatsNew";
+import Celebrations from "./components/Celebrations";
 
 const NAV: { group: string; items: { tab: Tab; label: string; icon: string }[] }[] = [
   {
     group: "Workspace",
     items: [
-      { tab: "dictate", label: "Dictate", icon: "dictate" },
-      { tab: "history", label: "History", icon: "history" },
-      { tab: "insights", label: "Insights", icon: "insights" },
+      { tab: "home", label: "Home", icon: "home" },
+      { tab: "chat", label: "Chat AI", icon: "assistant" },
+      { tab: "graph", label: "Memory Graph", icon: "graph" },
+      { tab: "memory", label: "Memory", icon: "dictionary" },
+    ],
+  },
+  {
+    group: "Progress",
+    items: [
+      { tab: "analytics", label: "Analytics", icon: "insights" },
+      { tab: "milestones", label: "Milestones", icon: "trophy" },
+      { tab: "coach", label: "Coach", icon: "coach" },
     ],
   },
   {
     group: "Library",
-    items: [
-      { tab: "dictionary", label: "Dictionary", icon: "dictionary" },
-      { tab: "models", label: "Models", icon: "models" },
-      { tab: "assistant", label: "Assistant", icon: "assistant" },
-    ],
+    items: [{ tab: "models", label: "Models", icon: "models" }],
   },
 ];
 
@@ -59,127 +56,113 @@ function BrandMark() {
   );
 }
 
-function AppShell() {
-  const [tab, setTab] = useState<Tab>("dictate");
-  const [collapsed, setCollapsed] = useState(
-    () => localStorage.getItem("orttaai-rail") === "1",
-  );
-  const [info, setInfo] = useState<AppInfo | null>(null);
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [models, setModels] = useState<ModelInfo[]>([]);
-  const [progress, setProgress] = useState<Record<string, number>>({});
-  const [engine, setEngine] = useState<EngineState>("off");
-  const [lastTranscript, setLastTranscript] = useState("");
-  const [historyVersion, setHistoryVersion] = useState(0);
-  const [level, setLevel] = useState(0);
+/** Keep the CSS theme in sync with `settings.appearance` (the source of truth). */
+function AppearanceSync() {
+  const { settings } = useSettings();
   const { choice, setChoice } = useTheme();
+  useEffect(() => {
+    if (settings && settings.appearance !== choice) setChoice(settings.appearance);
+  }, [settings?.appearance]); // eslint-disable-line react-hooks/exhaustive-deps
+  return null;
+}
+
+function UpdateButton({ collapsed }: { collapsed: boolean }) {
+  const { settings } = useSettings();
+  const { phase, act, checkNow } = useUpdater(settings?.auto_download_updates ?? true);
+  const toast = useToast();
+  useEvent<string>("navigate", (r) => {
+    if (r === "check-updates") checkNow(false);
+  });
+  useEffect(() => {
+    if (phase.kind === "uptodate") toast("You're on the latest version.", "success");
+    if (phase.kind === "failed") toast(`Update check failed: ${phase.message}`, "warn");
+  }, [phase.kind]); // eslint-disable-line react-hooks/exhaustive-deps
+  const highlight = phase.kind === "available" || phase.kind === "ready";
+  const label = phaseLabel(phase);
+  return (
+    <button
+      className={`nav-item update-btn ${highlight ? "update-ready" : ""}`}
+      onClick={act}
+      title={collapsed ? label : undefined}
+      disabled={phase.kind === "checking" || phase.kind === "installing"}
+    >
+      <Icon name={phase.kind === "ready" ? "restart" : "refresh"} size={19} />
+      <span className="nav-label">{label}</span>
+      {phase.kind === "downloading" && (
+        <span className="update-progress" style={{ width: `${Math.round(phase.fraction * 100)}%` }} />
+      )}
+    </button>
+  );
+}
+
+function AppShell() {
+  const [tab, setTab] = useState<Tab>("home");
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("orttaai-rail") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [info, setInfo] = useState<AppInfo | null>(null);
+  const { settings, patch } = useSettings();
+  const { engine } = useEngine();
   const toast = useToast();
 
-  const refreshSettings = () =>
-    invoke<Settings>("get_settings").then(setSettings).catch((e) => toast(String(e), "error"));
-  const refreshModels = () =>
-    invoke<ModelInfo[]>("list_models").then(setModels).catch((e) => toast(String(e), "error"));
-
   useEffect(() => {
-    invoke<AppInfo>("app_info").then(setInfo).catch((e) => toast(String(e), "error"));
-    refreshSettings();
-    refreshModels();
-    const unlisten = [
-      listen<string>("engine-state", (e) => setEngine(e.payload as EngineState)),
-      listen<string>("transcript", (e) => setLastTranscript(e.payload)),
-      listen<string>("engine-error", (e) => toast(e.payload, "error")),
-      listen<string>("engine-warning", (e) => toast(e.payload, "warn")),
-      listen("history-changed", () => setHistoryVersion((v) => v + 1)),
-      listen<number>("audio-level", (e) => setLevel(e.payload)),
-      listen<{ id: string; fraction: number }>("model-progress", (e) =>
-        setProgress((p) => ({ ...p, [e.payload.id]: e.payload.fraction })),
-      ),
-      listen<{ id: string }>("model-done", (e) => {
-        setProgress((p) => {
-          const next = { ...p };
-          delete next[e.payload.id];
-          return next;
-        });
-        refreshModels();
-      }),
-      listen<{ error: string }>("model-error", (e) => toast(e.payload.error, "error")),
-    ];
+    call<AppInfo>("app_info").then(setInfo).catch((e) => toast(String(e), "error"));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Auto-check for updates shortly after launch. Silent: stays quiet when
-    // already up to date (or in a dev build with no updater), and only surfaces
-    // UI once an update is actually found. Safe to install + relaunch here — the
-    // engine is always "off" at startup, so nothing is mid-dictation.
-    const updateTimer = setTimeout(() => {
-      runUpdate(
-        (s) => {
-          if (s.kind === "available") toast(`Update ${s.version} found — installing…`, "info");
-          else if (s.kind === "installed") toast(`Updated to ${s.version} — restarting…`, "success");
-          else if (s.kind === "error") toast(`Update failed: ${s.message}`, "warn");
-        },
-        { silent: true },
-      );
-    }, 3000);
-
-    return () => {
-      clearTimeout(updateTimer);
-      unlisten.forEach((p) => p.then((off) => off()));
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
+  // First run → the setup wizard.
   useEffect(() => {
-    if (tab === "history") {
-      // Fetch the full set (backend clamps at 500) so the History page can
-      // paginate through everything, 20 per page — not just the recent few.
-      invoke<HistoryItem[]>("recent_history", { limit: 500 })
-        .then(setHistory)
-        .catch((e) => toast(String(e), "error"));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, historyVersion]);
+    if (settings && !settings.has_completed_setup) setSetupOpen(true);
+  }, [settings?.has_completed_setup]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const activeModel = models.find((m) => m.id === settings?.model_id);
-  const canStart = !!activeModel?.downloaded;
+  useEvent<string>("engine-error", (m) => toast(m, "error"));
+  useEvent<string>("engine-warning", (m) => toast(m, "warn"));
+  useEvent<string>("navigate", (route) => {
+    if (route === "setup") setSetupOpen(true);
+    else if ((TABS as readonly string[]).includes(route)) setTab(route as Tab);
+  });
 
-  const toggleRail = () => {
+  const toggleRail = () =>
     setCollapsed((c) => {
-      localStorage.setItem("orttaai-rail", c ? "0" : "1");
+      try {
+        localStorage.setItem("orttaai-rail", c ? "0" : "1");
+      } catch {
+        /* storage unavailable */
+      }
       return !c;
     });
-  };
 
+  const appearance = settings?.appearance ?? "system";
   const cycleTheme = () =>
-    setChoice(choice === "dark" ? "light" : choice === "light" ? "system" : "dark");
-  const themeIcon = choice === "dark" ? "moon" : choice === "light" ? "sun" : "monitor";
-
-  async function checkUpdates() {
-    await runUpdate((s) => {
-      switch (s.kind) {
-        case "checking":
-          return toast("Checking for updates…", "info");
-        case "uptodate":
-          return toast("You're on the latest version.", "success");
-        case "downloading":
-          return toast(`Downloading ${s.version}…`, "info");
-        case "installed":
-          return toast("Update installed — restarting…", "success");
-        case "error":
-          return toast(`Update check failed: ${s.message}`, "error");
-      }
-    });
-  }
+    patch({ appearance: appearance === "dark" ? "light" : appearance === "light" ? "system" : "dark" }).catch(
+      (e) => toast(String(e), "error"),
+    );
+  const themeIcon = appearance === "dark" ? "moon" : appearance === "light" ? "sun" : "monitor";
 
   function openFeedback() {
-    // Open a prefilled "new issue" on GitHub, stamped with the build so reports
-    // are easy to triage. opener:default already permits https URLs.
-    const body = `<!-- Describe your feedback, bug, or feature request below. -->\n\n\n---\nOrttaai v${info?.version ?? "?"} · ${info?.platform ?? "?"}`;
+    const body = `<!-- Describe your feedback, bug, or feature request below. -->\n\n\n---\nOrttaai v${info?.version ?? "?"} · ${info?.platform ?? "?"} · ${info?.session ?? "?"} · ${info?.gpu_backend ?? "?"}`;
     const url = `https://github.com/theoyinbooke/orttaai-desktop/issues/new?body=${encodeURIComponent(body)}`;
     openUrl(url).catch((e) => toast(String(e), "error"));
   }
 
+  if (setupOpen) {
+    return (
+      <Setup
+        onDone={() => {
+          setSetupOpen(false);
+          setTab("home");
+        }}
+      />
+    );
+  }
+
   return (
     <div className={`app ${collapsed ? "rail-collapsed" : ""}`}>
+      <AppearanceSync />
       <aside className="sidebar">
         <div className="brand">
           <button
@@ -191,12 +174,7 @@ function AppShell() {
             <BrandMark />
           </button>
           <span className="brand-name">Orttaai</span>
-          <button
-            className="icon-btn rail-toggle"
-            onClick={toggleRail}
-            aria-label="Collapse sidebar"
-            title="Collapse sidebar"
-          >
+          <button className="icon-btn rail-toggle" onClick={toggleRail} aria-label="Collapse sidebar" title="Collapse sidebar">
             <Icon name="chevronLeft" size={18} />
           </button>
         </div>
@@ -211,26 +189,23 @@ function AppShell() {
             <div key={section.group} className="nav-group">
               <span className="nav-group-label">{section.group}</span>
               {section.items.map((it) => (
-                <button
-                  key={it.tab}
-                  className={`nav-item ${tab === it.tab ? "active" : ""}`}
-                  onClick={() => setTab(it.tab)}
-                  title={collapsed ? it.label : undefined}
-                >
-                  <Icon name={it.icon} size={19} />
-                  <span className="nav-label">{it.label}</span>
-                </button>
-              ))}
+                  <button
+                    key={it.tab}
+                    className={`nav-item ${tab === it.tab ? "active" : ""}`}
+                    onClick={() => setTab(it.tab)}
+                    title={collapsed ? it.label : undefined}
+                  >
+                    <Icon name={it.icon} size={19} />
+                    <span className="nav-label">{it.label}</span>
+                  </button>
+                ))}
             </div>
           ))}
         </nav>
 
         <div className="sidebar-foot">
-          <button
-            className="nav-item"
-            onClick={openFeedback}
-            title={collapsed ? "Send feedback" : undefined}
-          >
+          <UpdateButton collapsed={collapsed} />
+          <button className="nav-item" onClick={openFeedback} title={collapsed ? "Send feedback" : undefined}>
             <Icon name="send" size={19} />
             <span className="nav-label">Feedback</span>
           </button>
@@ -251,15 +226,7 @@ function AppShell() {
             <span className="nav-label">Settings</span>
           </button>
           <div className="foot-tools">
-            <button
-              className="icon-btn"
-              onClick={checkUpdates}
-              title="Check for updates"
-              aria-label="Check for updates"
-            >
-              <Icon name="refresh" size={17} />
-            </button>
-            <button className="icon-btn" onClick={cycleTheme} title={`Theme: ${choice}`} aria-label="Toggle theme">
+            <button className="icon-btn" onClick={cycleTheme} title={`Appearance: ${appearance}`} aria-label="Toggle appearance">
               <Icon name={themeIcon} size={17} />
             </button>
           </div>
@@ -267,53 +234,19 @@ function AppShell() {
       </aside>
 
       <main className="content">
-        {tab === "dictate" && (
-          <Dictate
-            engine={engine}
-            settings={settings}
-            activeModel={activeModel}
-            canStart={canStart}
-            level={level}
-            lastTranscript={lastTranscript}
-            historyVersion={historyVersion}
-            onStart={() => invoke("start_dictation", { modelPath: "" }).catch((e) => toast(String(e), "error"))}
-            onStop={() => invoke("stop_dictation").catch((e) => toast(String(e), "error"))}
-            onToggleRecord={() => invoke("toggle_recording").catch((e) => toast(String(e), "error"))}
-            onNavigate={(t) => setTab(t)}
-          />
-        )}
-        {tab === "history" && <History items={history} />}
-        {tab === "insights" && <Insights />}
-        {tab === "dictionary" && <Dictionary />}
-        {tab === "models" && (
-          <Models
-            models={models}
-            progress={progress}
-            activeId={settings?.model_id}
-            onDownload={(id) => invoke("download_model", { id })}
-            onUse={async (id) => {
-              if (!settings) return;
-              await invoke("set_settings", { input: { ...settings, model_id: id } }).catch((e) =>
-                toast(String(e), "error"),
-              );
-              refreshSettings();
-            }}
-            onDelete={(id) =>
-              invoke("delete_model", { id })
-                .then(() => {
-                  refreshModels();
-                  toast("Model deleted", "success");
-                })
-                .catch((e) => toast(String(e), "error"))
-            }
-          />
-        )}
-        {tab === "assistant" && <Assistant />}
-        {tab === "settings" && (
-          <SettingsView settings={settings} info={info} onSaved={refreshSettings} />
-        )}
+        {tab === "home" && <Home onNavigate={setTab} />}
+        {tab === "chat" && <ChatAI />}
+        {tab === "graph" && <MemoryGraph />}
+        {tab === "memory" && <Memory />}
+        {tab === "analytics" && <Analytics />}
+        {tab === "milestones" && <Milestones />}
+        {tab === "coach" && <Coach />}
+        {tab === "models" && <Models />}
+        {tab === "settings" && <SettingsView info={info} onRunSetup={() => setSetupOpen(true)} />}
         {tab === "about" && <About info={info} onFeedback={openFeedback} />}
       </main>
+      <WhatsNew />
+      <Celebrations />
     </div>
   );
 }
@@ -322,7 +255,11 @@ export default function App() {
   return (
     <ThemeProvider>
       <ToastProvider>
-        <AppShell />
+        <SettingsProvider>
+          <EngineProvider>
+            <AppShell />
+          </EngineProvider>
+        </SettingsProvider>
       </ToastProvider>
     </ThemeProvider>
   );

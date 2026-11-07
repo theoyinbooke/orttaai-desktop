@@ -1,7 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import "@fontsource-variable/bricolage-grotesque";
+import "@fontsource-variable/inter";
+import "@fontsource-variable/source-serif-4";
 import "@fontsource-variable/jetbrains-mono";
 import App from "./App";
 import Panel from "./Panel";

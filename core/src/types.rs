@@ -104,6 +104,22 @@ impl Default for HotkeyCombo {
 }
 
 impl HotkeyCombo {
+    /// `"Ctrl+Shift+Space"`-style display string (inverse of [`parse`](Self::parse)).
+    pub fn display(&self) -> String {
+        let mut parts: Vec<&str> = self
+            .modifiers
+            .iter()
+            .map(|m| match m {
+                Modifier::Ctrl => "Ctrl",
+                Modifier::Shift => "Shift",
+                Modifier::Alt => "Alt",
+                Modifier::Meta => "Meta",
+            })
+            .collect();
+        parts.push(&self.key);
+        parts.join("+")
+    }
+
     /// Best-effort parse of a `"Ctrl+Shift+Space"`-style string.
     pub fn parse(s: &str) -> Self {
         let mut modifiers = Vec::new();

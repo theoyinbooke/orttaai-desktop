@@ -1,61 +1,135 @@
-// Shared auto-update flow — used by both the manual "Check for updates" buttons
-// (App header + Settings) and the silent check that runs on startup.
-//
-// The whole pipeline (signed GitHub release → latest.json → download → install →
-// relaunch) is handled by the Tauri updater plugin; this just drives it and
-// reports progress so each caller can render it its own way.
+// App update flow (mirrors the Mac's Sparkle-driven sidebar button):
+// check → available → downloading % → ready ("Restart to update") → installing.
+// Never restarts without a click. Checks on launch (after 15s) and every 3h;
+// downloads automatically when `auto_download_updates` is on.
 
-import { check } from "@tauri-apps/plugin-updater";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-export type UpdateStage =
+export type UpdatePhase =
+  | { kind: "idle" }
   | { kind: "checking" }
   | { kind: "uptodate" }
   | { kind: "available"; version: string }
-  | { kind: "downloading"; version: string }
-  | { kind: "installed"; version: string }
-  | { kind: "error"; message: string };
+  | { kind: "downloading"; version: string; fraction: number }
+  | { kind: "ready"; version: string }
+  | { kind: "installing"; version: string }
+  | { kind: "failed"; message: string };
 
-/**
- * Check for an update; if one exists, download + install it and relaunch.
- *
- * `onStage` reports each step. With `{ silent: true }` a failing `check()` is
- * swallowed (returns false, no `error` stage) — this is the startup path, where
- * a `tauri dev` build (no updater) or a not-yet-published endpoint would
- * otherwise throw a scary error the user never asked to see. The manual buttons
- * pass `silent: false` so the user gets a result either way.
- *
- * Resolves `true` only when an update was installed (the app is relaunching).
- */
-export async function runUpdate(
-  onStage: (stage: UpdateStage) => void,
-  opts: { silent?: boolean } = {},
-): Promise<boolean> {
-  onStage({ kind: "checking" });
+const CHECK_EVERY_MS = 3 * 60 * 60 * 1000;
 
-  let update;
-  try {
-    update = await check();
-  } catch (e) {
-    if (opts.silent) return false;
-    onStage({ kind: "error", message: String(e) });
-    return false;
-  }
+export function useUpdater(autoDownload: boolean) {
+  const [phase, setPhase] = useState<UpdatePhase>({ kind: "idle" });
+  const updateRef = useRef<Update | null>(null);
+  const busy = useRef(false);
+  const autoRef = useRef(autoDownload);
+  autoRef.current = autoDownload;
 
-  if (!update) {
-    onStage({ kind: "uptodate" });
-    return false;
-  }
+  const download = useCallback(async () => {
+    const u = updateRef.current;
+    if (!u || busy.current) return;
+    busy.current = true;
+    let total = 0;
+    let got = 0;
+    setPhase({ kind: "downloading", version: u.version, fraction: 0 });
+    try {
+      await u.download((ev) => {
+        if (ev.event === "Started") total = ev.data.contentLength ?? 0;
+        else if (ev.event === "Progress") {
+          got += ev.data.chunkLength;
+          setPhase({ kind: "downloading", version: u.version, fraction: total ? got / total : 0 });
+        }
+      });
+      setPhase({ kind: "ready", version: u.version });
+    } catch (e) {
+      setPhase({ kind: "failed", message: String(e) });
+    } finally {
+      busy.current = false;
+    }
+  }, []);
 
-  onStage({ kind: "available", version: update.version });
-  try {
-    onStage({ kind: "downloading", version: update.version });
-    await update.downloadAndInstall();
-    onStage({ kind: "installed", version: update.version });
-    await relaunch();
-    return true;
-  } catch (e) {
-    onStage({ kind: "error", message: String(e) });
-    return false;
+  /** `silent`: swallow errors (startup / background checks, dev builds). */
+  const checkNow = useCallback(
+    async (silent = false) => {
+      if (busy.current) return;
+      busy.current = true;
+      if (!silent) setPhase({ kind: "checking" });
+      try {
+        const u = await check();
+        busy.current = false;
+        if (!u) {
+          if (!silent) setPhase({ kind: "uptodate" });
+          return;
+        }
+        updateRef.current = u;
+        setPhase({ kind: "available", version: u.version });
+        if (autoRef.current) await download();
+      } catch (e) {
+        busy.current = false;
+        if (!silent) setPhase({ kind: "failed", message: String(e) });
+      }
+    },
+    [download],
+  );
+
+  const install = useCallback(async () => {
+    const u = updateRef.current;
+    if (!u) return;
+    setPhase({ kind: "installing", version: u.version });
+    try {
+      await u.install();
+      await relaunch();
+    } catch (e) {
+      setPhase({ kind: "failed", message: String(e) });
+    }
+  }, []);
+
+  useEffect(() => {
+    const first = setTimeout(() => checkNow(true), 15_000);
+    const every = setInterval(() => checkNow(true), CHECK_EVERY_MS);
+    return () => {
+      clearTimeout(first);
+      clearInterval(every);
+    };
+  }, [checkNow]);
+
+  /** The sidebar button's single action for the current phase. */
+  const act = useCallback(() => {
+    switch (phase.kind) {
+      case "available":
+        return download();
+      case "ready":
+        return install();
+      case "downloading":
+      case "installing":
+      case "checking":
+        return;
+      default:
+        return checkNow(false);
+    }
+  }, [phase, download, install, checkNow]);
+
+  return { phase, checkNow, download, install, act };
+}
+
+export function phaseLabel(p: UpdatePhase): string {
+  switch (p.kind) {
+    case "idle":
+      return "Check for updates";
+    case "checking":
+      return "Checking…";
+    case "uptodate":
+      return "Up to date";
+    case "available":
+      return `Update ${p.version} available`;
+    case "downloading":
+      return `Downloading ${Math.round(p.fraction * 100)}%`;
+    case "ready":
+      return "Restart to update";
+    case "installing":
+      return "Installing…";
+    case "failed":
+      return "Update failed — retry";
   }
 }

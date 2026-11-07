@@ -8,6 +8,7 @@
     "core:window:allow-set-theme",
     "opener:default",
     "updater:default",
-    "process:default"
+    "process:default",
+    "autostart:default"
   ]
 }

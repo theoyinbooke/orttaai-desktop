@@ -1,4 +1,4 @@
-// Orttaai design system — "Signal / studio console".
+// Orttaai design system — mirrors the macOS app (Orttaai/Design).
 // Theme, icon set, and reusable primitives. All visuals come from CSS tokens in
 // App.css; this file owns behavior + markup only.
 
@@ -76,6 +76,44 @@ export const useTheme = () => useContext(ThemeCtx);
 
 const P = (d: string) => <path d={d} />;
 const ICONS: Record<string, ReactNode> = {
+  home: P("M3 11.5 12 4l9 7.5M5.5 9.8V20h13V9.8M10 20v-5h4v5"),
+  graph: (
+    <>
+      <circle cx="6" cy="6" r="2.5" />
+      <circle cx="18" cy="7" r="2.5" />
+      <circle cx="12" cy="18" r="2.5" />
+      <path d="M8.3 7.1 15.6 6.6M7.2 8.2l3.6 7.6M16.9 9.3l-3.7 6.6" />
+    </>
+  ),
+  trophy: P("M8 4h8v5a4 4 0 0 1-8 0V4ZM8 6H4.5a3 3 0 0 0 3.8 4.4M16 6h3.5a3 3 0 0 1-3.8 4.4M12 13v4M8.5 20h7M10 17h4v3h-4z"),
+  coach: P("M12 3v3M5.6 5.6l2.1 2.1M3 12h3M18 12h3M16.3 7.7l2.1-2.1M9 21h6M10 17.5h4M12 9a4 4 0 0 0-2.5 7.1V17.5h5v-1.4A4 4 0 0 0 12 9Z"),
+  restart: P("M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4"),
+  sparkle: P("M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3ZM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16Z"),
+  mic: P("M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3ZM5 11a7 7 0 0 0 14 0M12 18v3"),
+  keyboard: P("M3 7h18v10H3zM6.5 10h1M10 10h1M13.5 10h1M17 10h.5M7 14h10"),
+  shield: P("M12 3 4.5 6v5.5c0 4.5 3.2 8.2 7.5 9.5 4.3-1.3 7.5-5 7.5-9.5V6L12 3Z"),
+  bolt: P("M13 2 4 14h7l-1 8 9-12h-7l1-8Z"),
+  share: P("M12 3v12M7.5 7.5 12 3l4.5 4.5M5 13v6h14v-6"),
+  edit: P("M4 20h4L19 9l-4-4L4 16v4ZM13.5 6.5l4 4"),
+  pin: P("M9 4h6l-1 6 3 3H7l3-3-1-6ZM12 13v7"),
+  globe: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3Z" />
+    </>
+  ),
+  volume: P("M4 9v6h4l5 4V5L8 9H4ZM16 9.5a3.5 3.5 0 0 1 0 5M18.5 7a7 7 0 0 1 0 10"),
+  calendar: P("M4 6h16v14H4zM4 10h16M8 3v4M16 3v4"),
+  flame: P("M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2.2 1-3.6 2.2-4.6.2 1.6 1 2.6 2.1 3C11 9.2 11 6 12 3Z"),
+  target: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="5" />
+      <circle cx="12" cy="12" r="1.5" />
+    </>
+  ),
+  link: P("M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"),
+  filter: P("M4 5h16l-6 7.5V19l-4 2v-8.5L4 5Z"),
   dictate: P("M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3ZM5 11a7 7 0 0 0 14 0M12 18v3"),
   history: (
     <>
@@ -362,6 +400,91 @@ export function Toggle({
         {hint && <span className="field-hint">{hint}</span>}
       </span>
     </label>
+  );
+}
+
+/** A bare on/off switch (no label) for settings rows. */
+export function Switch({
+  checked,
+  onChange,
+  disabled,
+  label,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      className={`switch ${checked ? "on" : ""}`}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="switch-knob" />
+    </button>
+  );
+}
+
+/** Segmented control (Mac-style picker). */
+export function Segmented<T extends string>({
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (v: T) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="segmented" role="radiogroup">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={value === o.value}
+          disabled={disabled}
+          className={`seg-btn ${value === o.value ? "active" : ""}`}
+          onClick={() => onChange(o.value)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Tab strip for in-page sub-sections (Mac picker tabs). */
+export function Tabs<T extends string>({
+  value,
+  tabs,
+  onChange,
+}: {
+  value: T;
+  tabs: { value: T; label: string }[];
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="tabs" role="tablist">
+      {tabs.map((t) => (
+        <button
+          key={t.value}
+          role="tab"
+          aria-selected={value === t.value}
+          className={`tab ${value === t.value ? "active" : ""}`}
+          onClick={() => onChange(t.value)}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
   );
 }
 

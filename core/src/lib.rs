@@ -7,22 +7,34 @@
 //!
 //! See `docs/architecture.md` for the full picture.
 
+pub mod analytics;
 pub mod audio;
+pub mod chat;
 pub mod clipboard;
+pub mod coach;
 pub mod coordinator;
+pub mod edit;
 pub mod error;
 pub mod focus;
+pub mod gesture;
+pub mod hardware;
 pub mod hotkey;
 pub mod injection;
-#[cfg(feature = "ollama")]
 pub mod llm;
 pub mod memory;
+pub mod milestones;
 #[cfg(feature = "models")]
 pub mod models;
+pub mod polish;
+pub mod semantic;
 pub mod settings;
 pub mod store;
+pub mod text;
 pub mod transcription;
 pub mod types;
+pub mod vad;
+pub mod whatsnew;
+pub mod writing;
 
 pub use coordinator::{DictationCoordinator, DictationOutcome};
 pub use error::{CoreError, Result};

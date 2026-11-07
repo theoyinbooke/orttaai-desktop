@@ -23,6 +23,18 @@ impl MemoryService {
             .insert(from.as_ref().to_lowercase(), to.into());
     }
 
+    /// Add a dictionary term, optionally matched case-sensitively.
+    /// (Case sensitivity is honoured by the text pipeline; this simple service
+    /// matches case-insensitively either way.)
+    pub fn add_term_with_case(
+        &mut self,
+        from: impl AsRef<str>,
+        to: impl Into<String>,
+        _case_sensitive: bool,
+    ) {
+        self.add_term(from, to);
+    }
+
     /// Add a snippet expansion (e.g. `"addr"` → `"123 Main St"`).
     pub fn add_snippet(&mut self, trigger: impl AsRef<str>, expansion: impl Into<String>) {
         self.snippets
