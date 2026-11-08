@@ -30,6 +30,8 @@ pub mod polish;
 pub mod semantic;
 pub mod settings;
 pub mod store;
+#[cfg(feature = "link")]
+pub mod sync;
 pub mod text;
 pub mod transcription;
 pub mod types;

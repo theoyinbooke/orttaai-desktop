@@ -285,4 +285,112 @@ pub const MIGRATIONS: &[&str] = &[
         value      TEXT,
         updated_at INTEGER NOT NULL
     );",
+
+    // v3 — Orttaai Link (docs/orttaai-link.md): sync identities on the synced
+    // tables, the sync ledger, and triggers that note every local change while
+    // this PC is linked to a Mac (sync_state.capture = '1'; sync turns it off
+    // while it applies records from the Mac).
+    "ALTER TABLE transcription ADD COLUMN sync_id TEXT;
+    ALTER TABLE transcription ADD COLUMN source_device_id TEXT;
+    ALTER TABLE transcription ADD COLUMN source_device_kind TEXT;
+    CREATE UNIQUE INDEX idx_transcription_sync_id ON transcription (sync_id);
+    ALTER TABLE learning_suggestion ADD COLUMN sync_id TEXT;
+    CREATE UNIQUE INDEX idx_learning_suggestion_sync_id ON learning_suggestion (sync_id);
+    ALTER TABLE writing_insight_snapshot ADD COLUMN sync_id TEXT;
+    CREATE UNIQUE INDEX idx_wis_sync_id ON writing_insight_snapshot (sync_id);
+
+    CREATE TABLE sync_state (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    );
+    INSERT INTO sync_state (key, value) VALUES ('capture', '0');
+
+    CREATE TABLE sync_record (
+        record_name      TEXT PRIMARY KEY,
+        zone             TEXT NOT NULL,
+        kind             TEXT NOT NULL,
+        local_table      TEXT,
+        local_id         INTEGER,
+        rev_counter      INTEGER NOT NULL,
+        rev_modified_ms  INTEGER NOT NULL,
+        rev_writer       TEXT NOT NULL,
+        generation       INTEGER NOT NULL DEFAULT 0,
+        is_deleted       INTEGER NOT NULL DEFAULT 0,
+        deleted_at_ms    INTEGER,
+        origin_device_id TEXT,
+        origin_kind      TEXT,
+        created_at_ms    INTEGER,
+        schema_version   INTEGER NOT NULL DEFAULT 1,
+        payload          BLOB
+    );
+    CREATE INDEX idx_sync_record_local ON sync_record (local_table, local_id);
+
+    CREATE TABLE sync_outbox (
+        record_name     TEXT PRIMARY KEY,
+        rev_counter     INTEGER NOT NULL,
+        rev_modified_ms INTEGER NOT NULL,
+        rev_writer      TEXT NOT NULL,
+        failed_reason   TEXT,
+        enqueued_at     INTEGER NOT NULL
+    );
+
+    CREATE TABLE sync_pending (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        local_table TEXT NOT NULL,
+        local_id    INTEGER NOT NULL,
+        deleted     INTEGER NOT NULL DEFAULT 0,
+        sync_key    TEXT
+    );
+
+    CREATE TRIGGER sync_transcription_insert AFTER INSERT ON transcription
+    WHEN (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id) VALUES ('transcription', NEW.id); END;
+    CREATE TRIGGER sync_transcription_update AFTER UPDATE OF text, raw_text, app_name, app_id, recording_ms,
+        processing_ms, transcription_ms, text_processing_ms, injection_ms, model_id, audio_device,
+        injection_method, entry_kind, edit_instruction, time_zone, created_at ON transcription
+    WHEN (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id) VALUES ('transcription', NEW.id); END;
+    CREATE TRIGGER sync_transcription_delete AFTER DELETE ON transcription
+    WHEN (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id, deleted, sync_key) VALUES ('transcription', OLD.id, 1, OLD.sync_id); END;
+
+    CREATE TRIGGER sync_dictionary_insert AFTER INSERT ON dictionary_entry
+    WHEN (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id) VALUES ('dictionary_entry', NEW.id); END;
+    CREATE TRIGGER sync_dictionary_update AFTER UPDATE OF source, target, normalized_source, is_case_sensitive, is_active ON dictionary_entry
+    WHEN (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id) VALUES ('dictionary_entry', NEW.id); END;
+    CREATE TRIGGER sync_dictionary_delete AFTER DELETE ON dictionary_entry
+    WHEN (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id, deleted, sync_key) VALUES ('dictionary_entry', OLD.id, 1, OLD.normalized_source); END;
+
+    CREATE TRIGGER sync_snippet_insert AFTER INSERT ON snippet_entry
+    WHEN (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id) VALUES ('snippet_entry', NEW.id); END;
+    CREATE TRIGGER sync_snippet_update AFTER UPDATE OF trigger, expansion, normalized_trigger, is_active ON snippet_entry
+    WHEN (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id) VALUES ('snippet_entry', NEW.id); END;
+    CREATE TRIGGER sync_snippet_delete AFTER DELETE ON snippet_entry
+    WHEN (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id, deleted, sync_key) VALUES ('snippet_entry', OLD.id, 1, OLD.normalized_trigger); END;
+
+    CREATE TRIGGER sync_suggestion_insert AFTER INSERT ON learning_suggestion
+    WHEN (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id) VALUES ('learning_suggestion', NEW.id); END;
+    CREATE TRIGGER sync_suggestion_update AFTER UPDATE OF candidate_target, confidence, status, evidence ON learning_suggestion
+    WHEN (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id) VALUES ('learning_suggestion', NEW.id); END;
+    CREATE TRIGGER sync_suggestion_delete AFTER DELETE ON learning_suggestion
+    WHEN (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id, deleted, sync_key) VALUES ('learning_suggestion', OLD.id, 1, OLD.sync_id); END;
+
+    CREATE TRIGGER sync_insight_insert AFTER INSERT ON writing_insight_snapshot
+    WHEN NEW.kind = 'writing' AND (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id) VALUES ('writing_insight_snapshot', NEW.id); END;
+    CREATE TRIGGER sync_insight_update AFTER UPDATE OF is_pinned ON writing_insight_snapshot
+    WHEN NEW.kind = 'writing' AND (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id) VALUES ('writing_insight_snapshot', NEW.id); END;
+    CREATE TRIGGER sync_insight_delete AFTER DELETE ON writing_insight_snapshot
+    WHEN OLD.kind = 'writing' AND (SELECT value FROM sync_state WHERE key = 'capture') = '1'
+    BEGIN INSERT INTO sync_pending (local_table, local_id, deleted, sync_key) VALUES ('writing_insight_snapshot', OLD.id, 1, OLD.sync_id); END;",
 ];
