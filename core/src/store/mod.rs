@@ -493,6 +493,15 @@ impl Store {
         Ok(())
     }
 
+    /// Rewrite the database file so deleted rows don't linger in free pages
+    /// (after Reset App Data). Can report busy while another connection is
+    /// mid-write; callers treat it as best-effort.
+    pub fn vacuum(&self) -> Result<()> {
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
+        Ok(())
+    }
+
     /// Total number of stored transcriptions.
     pub fn count(&self) -> Result<i64> {
         Ok(self

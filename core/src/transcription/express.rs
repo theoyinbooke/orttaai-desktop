@@ -151,6 +151,24 @@ pub fn delete(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The names Orttaai creates inside an `express` folder: each catalog model's
+/// folder and Word Boost's, plus their download staging folders and partial
+/// archives. Used by Reset App Data to remove only Orttaai's own files.
+pub fn owned_entry_names() -> Vec<String> {
+    catalog()
+        .into_iter()
+        .map(|s| s.id)
+        .chain(std::iter::once(WORD_BOOST_ID))
+        .flat_map(|id| {
+            [
+                id.to_string(),
+                format!("{id}.part"),
+                format!("{id}.tar.bz2.part"),
+            ]
+        })
+        .collect()
+}
+
 /// Word Boost's model (Mac: Parakeet CTC 110M): the CTC branch of
 /// `nvidia/parakeet-tdt_ctc-110m`, downloaded with every Express model.
 pub const WORD_BOOST_ID: &str = "sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8";

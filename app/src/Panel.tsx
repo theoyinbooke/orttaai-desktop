@@ -3,6 +3,9 @@
 // final-20-seconds countdown, hands-free and EDIT badges, a stop button, the
 // processing estimate, and the error state. It never shows transcript text.
 // The backend shows/hides the window (hidden before injection on Linux).
+// On Windows, while dictation is ready, the backend can also keep the window
+// up as the idle pill (Mac's floating handle): a small bar that shows the
+// shortcut on hover and starts a hands-free dictation when clicked.
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -102,9 +105,62 @@ function Waveform({ countingDown, level }: { countingDown: boolean; level: Mutab
   return <canvas ref={canvas} className="pill-canvas" aria-hidden="true" />;
 }
 
+/** Mac FloatingPanelHintView: the idle handle, and the hint while hovered. */
+function IdlePill({ hotkey, handsFree }: { hotkey: string; handsFree: boolean }) {
+  const [failed, setFailed] = useState<string | null>(null);
+  useEffect(() => {
+    if (!failed) return;
+    const t = window.setTimeout(() => setFailed(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [failed]);
+  const start = () => {
+    setFailed(null);
+    invoke("toggle_recording").catch((e) => setFailed(String(e)));
+  };
+  return (
+    <div
+      className={`idle-pill ${failed ? "failed" : ""}`}
+      role="button"
+      tabIndex={-1}
+      aria-label="Start dictation"
+      title={failed ?? undefined}
+      // Don't let the press move focus inside the panel; the click alone starts.
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={start}
+    >
+      <span className="idle-handle" aria-hidden="true" />
+      <span className="idle-hint">
+        <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" className="idle-ico">
+          <path
+            d="M2 12h3l2.5-6 4 13 3-9 2 4H22"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span className="idle-text">
+          <span className="idle-quiet">{handsFree ? "Hold or tap" : "Hold"}</span>
+          <kbd className="idle-key">{hotkey || "your shortcut"}</kbd>
+          <span className="idle-quiet">to dictate</span>
+        </span>
+        <span className="idle-mic" title="Start dictation" aria-hidden="true">
+          <svg width="11" height="11" viewBox="0 0 24 24">
+            <rect x="8" y="2" width="8" height="13" rx="4" fill="currentColor" />
+            <path d="M5 11a7 7 0 0 0 14 0M12 18v4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+          </svg>
+        </span>
+      </span>
+    </div>
+  );
+}
+
 export default function Panel() {
   const [status, setStatus] = useState<CoordinatorStatus | null>(null);
   const [phase, setPhase] = useState<string>("idle");
+  const [hotkey, setHotkey] = useState("");
+  const [handsFreeOn, setHandsFreeOn] = useState(true);
   // The stop button's failure, shown briefly in the pill (it has no room for more).
   const [stopError, setStopError] = useState<string | null>(null);
   const level = useLevel();
@@ -120,19 +176,33 @@ export default function Panel() {
       .then((s) => {
         setStatus(s.status);
         setPhase(s.phase);
+        setHotkey(s.hotkey);
       })
+      .catch(() => {});
+    invoke<{ hands_free_enabled: boolean }>("get_settings")
+      .then((s) => setHandsFreeOn(s.hands_free_enabled))
       .catch(() => {});
     const a = listen<EngineSnapshot>("engine-status", (e) => {
       setStatus(e.payload.status);
+      setHotkey(e.payload.hotkey);
     });
     const b = listen<string>("engine-state", (e) => setPhase(e.payload));
+    const c = listen<{ hands_free_enabled: boolean }>("settings-changed", (e) =>
+      setHandsFreeOn(e.payload.hands_free_enabled),
+    );
     return () => {
       a.then((off) => off());
       b.then((off) => off());
+      c.then((off) => off());
     };
   }, []);
 
   const state = status?.state ?? (phase as CoordinatorStatus["state"]);
+
+  // The engine is ready (the backend only shows the window now on Windows).
+  if (phase === "idle" && state === "idle") {
+    return <IdlePill hotkey={hotkey} handsFree={handsFreeOn} />;
+  }
 
   if (state === "processing") {
     return (

@@ -1141,14 +1141,70 @@ fn speech_before_a_pause_is_decoded_while_still_recording() {
     assert!((2.0..2.6).contains(&tail), "tail {tail}s");
 }
 
+fn wait_for_calls(calls: &Arc<Mutex<Vec<usize>>>, n: usize) {
+    for _ in 0..400 {
+        if calls.lock().unwrap().len() >= n {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[test]
-fn live_decoding_off_decodes_the_whole_recording_once() {
+fn a_decode_started_at_the_pause_is_used_when_only_silence_follows() {
+    // Without live pieces (Express, or Whisper with live decoding off), the
+    // whole recording is decoded once the speaker pauses, and that decode
+    // stands in for the one at release.
     let (mut r, calls) = live_rig(false);
     r.coord.on_press().unwrap();
     r.feed.push(&tone(3.0, 0.2));
     r.feed.push(&silence(0.8));
     r.advance(300);
+    wait_for_calls(&calls, 1);
+    assert_eq!(calls.lock().unwrap().len(), 1, "decoded before release");
+    r.feed.push(&silence(0.4));
+    let outcome = r.coord.on_release().unwrap();
+    assert_eq!(outcome.transcript.as_deref(), Some("part1"));
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        1,
+        "nothing decoded again at release"
+    );
+}
+
+#[test]
+fn speech_after_the_pause_decodes_the_whole_recording_at_release() {
+    let (mut r, calls) = live_rig(false);
+    r.coord.on_press().unwrap();
+    r.feed.push(&tone(3.0, 0.2));
+    r.feed.push(&silence(0.8));
+    r.advance(300);
+    wait_for_calls(&calls, 1);
     r.feed.push(&tone(2.0, 0.2));
+    let outcome = r.coord.on_release().unwrap();
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2, "the early decode, then all of it");
+    assert_eq!(outcome.transcript.as_deref(), Some("part2"));
+    let whole = calls[1] as f32 / SR as f32;
+    assert!((5.7..6.0).contains(&whole), "whole recording {whole}s");
+}
+
+#[test]
+fn a_short_last_stretch_is_decoded_at_the_pause_too() {
+    // With live pieces, the stretch too short for a piece of its own is
+    // decoded at the pause and reused at release.
+    let (mut r, calls) = live_rig(true);
+    r.coord.on_press().unwrap();
+    r.feed.push(&tone(1.0, 0.2));
+    r.feed.push(&silence(0.6));
+    r.advance(300);
+    wait_for_calls(&calls, 1);
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        1,
+        "the short stretch, before release"
+    );
+    r.feed.push(&silence(0.3));
     let outcome = r.coord.on_release().unwrap();
     assert_eq!(outcome.transcript.as_deref(), Some("part1"));
     assert_eq!(calls.lock().unwrap().len(), 1);

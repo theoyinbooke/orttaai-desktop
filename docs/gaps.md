@@ -17,7 +17,7 @@ GNOME/Mutter does not reliably keep an always-on-top `focusable:false` window ou
 ## 4. Typing, pasting and the clipboard
 - **Wayland typing** goes through the RemoteDesktop portal (GNOME/KDE; the user approves once, a restore token avoids re-prompts) or `wtype` (wlroots). GNOME has no virtual-keyboard protocol, so `wtype` alone can't type there.
 - **Paste mode** stages the text, sends Ctrl+V (Shift+Insert for terminals, where Ctrl+V is "literal next"; on Linux, Shift+Insert pastes the PRIMARY selection, so that is staged and restored too), then restores the clipboard after 250 ms. The Mac verifies the paste through Accessibility before restoring after 90 ms; desktop platforms have no such read-back, so the delay is longer to let apps that fetch the selection asynchronously read it.
-- **Rich clipboard loss:** only plain text is saved and restored (images/files on the clipboard are cleared by a paste). On native Wayland the clipboard goes through `wl-copy`/`wl-paste` (`wl-clipboard`); without it, XWayland's clipboard is used, which native Wayland apps may not share.
+- **Clipboard after a paste:** on Windows everything that was on the clipboard comes back (text, images, rich text, copied files). On Linux one kind can be restored: text when there was any, otherwise an image (a screenshot copy). On native Wayland the clipboard goes through `wl-copy`/`wl-paste` (`wl-clipboard`); without it, XWayland's clipboard is used, which native Wayland apps may not share.
 - Some X11 apps reject synthetic events (`XKeyEvent.synthetic`); apps running as Administrator on Windows ignore input from non-elevated apps.
 
 ## 5. Voice edit selection capture

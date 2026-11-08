@@ -39,14 +39,16 @@ bzip2 = { version = "0.4", optional = true }
 tar = { version = "0.4", optional = true }
 # Model download verification (pure Rust).
 sha2 = { version = "0.10", optional = true }
-# Real OS clipboard for paste injection / selection capture (text only).
+# Real OS clipboard for paste injection / selection capture. Images are only
+# read through arboard on Linux (X11); see the linux target entry below.
 arboard = { version = "3.6", default-features = false, optional = true }
 
 [features]
 default = []
 whisper = ["dep:whisper-rs"]
 cpal-audio = ["dep:cpal", "dep:rubato"]
-injection = ["dep:enigo", "dep:arboard"]
+# windows-sys (target-gated) saves/restores every clipboard format on Windows.
+injection = ["dep:enigo", "dep:arboard", "dep:windows-sys"]
 # windows-sys (target-gated) drives the win32 message pump the hotkey needs.
 hotkey = ["dep:global-hotkey", "dep:windows-sys"]
 models = ["dep:ureq", "dep:sha2"]
@@ -74,7 +76,7 @@ hound = "3.5"
 
 [target."cfg(windows)".dependencies]
 # Also the low-level keyboard/mouse hooks behind "Tap Right Ctrl".
-windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader", "Win32_System_Threading"], optional = true }
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_System_DataExchange", "Win32_System_Memory"], optional = true }
 # UI Automation (secure-field detection) + foreground-window/process (focused
 # app capture) on Windows. Only compiled on Windows; the Linux host never builds it.
 windows = { version = "0.61", features = [
@@ -93,6 +95,9 @@ windows = { version = "0.61", features = [
 [target."cfg(target_os = \"linux\")".dependencies]
 # xinput: raw key events for "Tap Right Ctrl".
 x11rb = { version = "0.13", features = ["xinput"] }
+# Same optional arboard as above, plus image support so a copied image on the
+# X11 clipboard survives a paste (clipboard.rs).
+arboard = { version = "3.6", default-features = false, features = ["image-data"], optional = true }
 ashpd = { version = "0.11", optional = true, default-features = false, features = ["tokio"] }
 tokio = { version = "1", optional = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 futures-util = { version = "0.3", optional = true }

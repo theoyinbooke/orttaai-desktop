@@ -178,6 +178,86 @@ struct Inflight {
     handle: JoinHandle<crate::error::Result<String>>,
 }
 
+/// Quiet after speech that starts a decode before the key comes up (Mac
+/// `expressEarlyDecodeSilenceSampleCount`: in October 2026 its dictations
+/// ended with a median 1.3 s of silence before release, at least 0.5 s in 234
+/// of 239), so the decode is done, or well under way, at release.
+pub const EARLY_DECODE_SILENCE: usize = SAMPLE_RATE / 2;
+/// The latest audio searched for that pause.
+pub const EARLY_DECODE_PROBE: usize = 3 * SAMPLE_RATE;
+
+/// Where the speaker's last speech ended in `recent` (the latest audio), when
+/// they have been quiet for at least [`EARLY_DECODE_SILENCE`] since; `None`
+/// while they're talking or when there's no speech in it.
+pub fn paused_after_speech(recent: &[f32]) -> Option<usize> {
+    if !has_speech(recent, SPEECH_ENERGY_THRESHOLD) {
+        return None;
+    }
+    let end = last_speech_end(recent, pause_threshold(recent))?;
+    (recent.len() - end >= EARLY_DECODE_SILENCE).then_some(end)
+}
+
+/// A decode of the rest of the recording, started at a pause while the key is
+/// still down (Mac: Express early decode, Whisper speculative tail). At
+/// release it stands in for decoding that audio, when nothing was committed
+/// since it started and only silence was recorded after what it covers.
+pub struct EarlyDecode {
+    /// Samples already committed by the live session when it started.
+    base: usize,
+    /// Samples it covers (base + the audio it decodes).
+    covered: usize,
+    /// Where the speech it saw ended, so a later pause after new speech
+    /// starts a fresh one.
+    speech_end: usize,
+    handle: JoinHandle<crate::error::Result<String>>,
+}
+
+impl EarlyDecode {
+    /// Decode `audio` (the recording from `base` on) in the background.
+    pub fn start(
+        base: usize,
+        audio: Vec<f32>,
+        speech_end: usize,
+        transcriber: &Arc<dyn Transcriber>,
+        options: DecodeOptions,
+    ) -> Option<Self> {
+        let covered = base + audio.len();
+        let transcriber = Arc::clone(transcriber);
+        let handle = std::thread::Builder::new()
+            .name("orttaai-early-decode".into())
+            .spawn(move || transcriber.transcribe(&audio, &options))
+            .ok()?;
+        Some(Self {
+            base,
+            covered,
+            speech_end,
+            handle,
+        })
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.handle.is_finished()
+    }
+
+    /// Whether it already covers speech up to `speech_end` from `base`.
+    pub fn covers(&self, base: usize, speech_end: usize) -> bool {
+        self.base == base && self.speech_end >= speech_end
+    }
+
+    /// Its text when it still stands for the rest of `samples` (the whole
+    /// recording) after `base` committed samples, waiting for it if it's
+    /// still running; `None` when the recording moved on since.
+    pub fn take_if_current(self, base: usize, samples: &[f32]) -> Option<String> {
+        if self.base != base || self.covered > samples.len() {
+            return None;
+        }
+        if has_speech(&samples[self.covered..], FAINT_ENERGY_FLOOR) {
+            return None;
+        }
+        self.handle.join().ok()?.ok()
+    }
+}
+
 /// One recording's committed pieces.
 pub struct LiveSession {
     mode: LiveMode,
