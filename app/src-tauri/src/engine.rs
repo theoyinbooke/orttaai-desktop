@@ -335,6 +335,39 @@ fn load_voice_detector() -> Option<SileroVad> {
     }
 }
 
+/// The OS's windows, plus Orttaai's own: a dictation into Setup's Quick Test
+/// or Chat AI is handed to that window's page, which inserts it at the caret,
+/// rather than typed with synthesized keys (Windows doesn't reliably deliver
+/// those to the app that sends them).
+struct OwnWindowFocus {
+    app: AppHandle,
+}
+
+impl orttaai_core::focus::WindowFocus for OwnWindowFocus {
+    fn current(&self) -> Option<u64> {
+        orttaai_core::focus::SystemWindowFocus.current()
+    }
+
+    fn activate(&self, window: u64) -> bool {
+        orttaai_core::focus::SystemWindowFocus.activate(window)
+    }
+
+    fn insert_into_own(&self, window: u64, text: &str) -> bool {
+        if !orttaai_core::focus::is_own_window(window) {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        for (label, w) in self.app.webview_windows() {
+            let Ok(hwnd) = w.hwnd() else { continue };
+            if hwnd.0 as usize as u64 == window {
+                return self.app.emit_to(label.as_str(), "insert-text", text).is_ok();
+            }
+        }
+        let _ = (&self.app, text);
+        false
+    }
+}
+
 /// Build and start the engine on the calling (background) thread: load the
 /// model, warm it, spin up the dictation worker, and register the hotkeys.
 fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), String> {
@@ -365,6 +398,7 @@ fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), Strin
         pipeline::build_pipeline(&settings),
         decode_options_from_settings(&settings),
     );
+    coord.set_window_focus(Box::new(OwnWindowFocus { app: app.clone() }));
     coord.set_config(CoordinatorConfig::from_settings(&settings));
     coord.set_rewriter(pipeline::build_rewriter(&settings));
     coord.set_vocabulary(vocabulary_terms(&settings));

@@ -350,6 +350,34 @@ pub trait WindowFocus: Send + Sync {
     fn wait(&self, ms: u64) {
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }
+    /// Put `text` straight into `window` when it's one of Orttaai's own (Setup's
+    /// Quick Test, Chat AI), instead of synthesizing keystrokes into ourselves,
+    /// which Windows doesn't reliably deliver. `true` when it was handed over.
+    fn insert_into_own(&self, _window: u64, _text: &str) -> bool {
+        false
+    }
+}
+
+/// Whether `window` belongs to this process (Windows; elsewhere `false`).
+pub fn is_own_window(window: u64) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+        let mut pid = 0u32;
+        unsafe {
+            GetWindowThreadProcessId(
+                HWND(window as usize as *mut core::ffi::c_void),
+                Some(&mut pid),
+            )
+        };
+        pid != 0 && pid == std::process::id()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        false
+    }
 }
 
 /// The OS's windows.
@@ -418,6 +446,9 @@ impl<W: WindowFocus + ?Sized> WindowFocus for std::sync::Arc<W> {
     }
     fn wait(&self, ms: u64) {
         (**self).wait(ms)
+    }
+    fn insert_into_own(&self, window: u64, text: &str) -> bool {
+        (**self).insert_into_own(window, text)
     }
 }
 

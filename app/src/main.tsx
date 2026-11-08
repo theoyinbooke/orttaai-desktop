@@ -9,6 +9,7 @@ import Panel from "./Panel";
 import SetupWindow from "./views/Setup";
 import { applyTheme, storedTheme } from "./ui";
 import "./App.css";
+import { listenForInsertedText } from "./lib/insertText";
 
 // Apply the saved theme before first paint to avoid a flash.
 applyTheme(storedTheme());
@@ -18,6 +19,7 @@ applyTheme(storedTheme());
 const label = getCurrentWindow().label;
 const isPanel = label === "panel";
 if (isPanel) document.body.classList.add("panel-window");
+else listenForInsertedText();
 
 // No webview "Back / Reload / Inspect Element" menu in the shipped app; text
 // fields keep theirs for copy and paste.

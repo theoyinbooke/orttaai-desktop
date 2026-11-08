@@ -1624,6 +1624,17 @@ impl DictationCoordinator {
                 };
             }
         }
+        // One of Orttaai's own windows: the window takes the text itself.
+        if let Some(target) = self.target_window {
+            if self.windows.insert_into_own(target, text) {
+                return Delivery {
+                    result: InjectionResult::Success,
+                    method: InjectionMethod::Typed,
+                    error: None,
+                    ms: 0,
+                };
+            }
+        }
         self.injection.deliver(text, app)
     }
 
