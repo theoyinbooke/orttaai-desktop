@@ -6,12 +6,14 @@ This is a standalone Rust + Tauri reimplementation of [Orttaai](https://github.c
 
 ## Screenshots
 
-![Orttaai — Dictate: hold your shortcut, speak, and your words are typed into whatever app is focused](docs/screenshots/dictate.png)
+![Orttaai Overview: today's words, dictation speed, the 30-day trend and your most-used apps](docs/screenshots/overview-light.png)
 
 |  |  |
 | --- | --- |
-| **Models** — download, switch & delete on-device whisper models<br>![Models](docs/screenshots/models.png) | **Insights** — your dictation activity at a glance<br>![Insights](docs/screenshots/insights.png) |
-| **Dictionary** — spelling fixes & snippets, applied to every transcript<br>![Dictionary](docs/screenshots/dictionary.png) | **Settings** — shortcut, performance & secure-field guard<br>![Settings](docs/screenshots/settings.png) |
+| **Dark mode**: every page follows your system or your choice<br>![Overview in dark mode](docs/screenshots/overview-dark.png) | **First-run setup**: pick Express or Whisper; the download shows in its own card<br>![Setup, engine step](docs/screenshots/setup-engine.png) |
+| **Model**: Express with Word Boost, Whisper models, where models are kept<br>![Model](docs/screenshots/model.png) | **Settings › Dictation**: hold or tap your shortcut, or tap Right Ctrl<br>![Settings, Dictation](docs/screenshots/settings.png) |
+| **Memory**: dictionary words and snippets, applied to every dictation<br>![Memory](docs/screenshots/memory.png) | **Analytics**: words, sessions, rhythm and the apps you dictate into<br>![Analytics](docs/screenshots/analytics.png) |
+| **Graph**: where your dictation time goes, by topic and project<br>![Memory Graph](docs/screenshots/graph.png) | **Milestones**: 22 badges, with share cards<br>![Milestones](docs/screenshots/milestones.png) |
 
 ## Architecture
 
@@ -27,19 +29,29 @@ See [`docs/architecture.md`](docs/architecture.md) and the full build plan for d
 
 ## Status
 
-**Phase 1 — all real backends landed.** The OS-agnostic core (traits, coordinator, memory, settings, store) is green, and **all four platform backends are implemented**: whisper.cpp transcription, cpal microphone capture (rubato resampling to 16 kHz), text injection (`enigo` + `wtype`), and the global push-to-talk hotkey (`global-hotkey`, with a win32 message pump on Windows). The **full `dictate` loop is wired end-to-end** — hold hotkey → speak → release → transcribe → inject. Everything compiles and lints clean across every target; live capture/injection/hotkey are verified on the target machine (they need OS permissions a CI/sandbox can't grant — see the platform notes).
+**v0.3.0 — macOS feature parity.** The desktop app now mirrors the native Mac app
+(v1.18), screen for screen. See [`docs/parity.md`](docs/parity.md) for the full map.
 
-**Phase 2 — the Tauri desktop app is feature-complete.** `app/` is a Tauri 2 + React app over the core, with a **system tray** and tabs:
+- **Dictation** — hold the shortcut to talk, or **tap it for hands-free** (stops on the
+  next tap, the pill's stop button, **silence** via Silero VAD, or its time cap, with a
+  countdown). Optionally **tap Right Ctrl** on its own to start and again to insert
+  (Windows and X11). Mic picker with Bluetooth/disconnect recovery that keeps what was heard.
+  Paste or type, clipboard restored. Floating pill with live waveform and timer.
+- **Two speech engines** — **Whisper** (whisper.cpp, every language, optional CUDA) and
+  **Express** (NVIDIA **Parakeet** via ONNX Runtime — the fastest option on CPU).
+- **Text pipeline** — dictionary (multi-word, case-sensitive), fuzzy dictionary,
+  snippets, filler/stutter removal, spoken formatting ("new line", lists), automatic
+  paragraphs, number formatting, style modes, vocabulary bias.
+- **Local AI** (Ollama or LM Studio, local endpoints only) — **Polish** (S1-mini or any
+  model), **voice edit** of the selected text, **Chat AI** over your own dictations
+  (streaming, saved conversations), **Writing Insights**, **Tone of Voice**.
+- **Memory Graph** — semantic index of your dictations: Activity, concept Map, Insights.
+- **Analytics**, **History** (search/filter), **Milestones** + share cards, **Coach**
+  (speaking tracks, scenes, voice shape, month report), **What's New**.
+- **Setup wizard**, tray menu, launch at login, single instance, signed auto-updates.
 
-- **Dictate** — Start/Stop the engine, live state badge + mic level meter, the "click to record" toggle (for Wayland), recent dictations, and quick stats.
-- **History** — full transcript history with per-row delete.
-- **Insights** — activity & trends (words, WPM, top apps) with a time-range filter.
-- **Dictionary** — snippet/replacement CRUD, applied live during dictation.
-- **Models** — a compact table to download, switch, and **delete** GGUF models (with a download progress bar).
-- **Assistant** — local AI chat via Ollama.
-- **Settings** — hotkey, decode preset/threads, secure-field guard, theme, and updates.
-
-The engine runs the real dictation loop and emits live `engine-state`/`transcript` events; the model loads on a background thread so the window never freezes during start. Everything builds + lints clean; live dictation runs on Linux/Windows.
+Not portable from the Mac: iCloud/CloudKit sync with the iPhone keyboard, Apple
+Intelligence polish, and the CoreML coach voices (the WebView's speech voices are used).
 
 ## Install
 
@@ -99,7 +111,7 @@ cargo run -p orttaai-cli -- demo   # run the dictation loop with mock backends
 ```bash
 cd app
 npm install
-npm run tauri dev     # launch the desktop window (tray + Status/History/Settings)
+npm run tauri dev     # launch the desktop window
 ```
 
 > Linux build deps for Tauri: `libwebkit2gtk-4.1-dev libgtk-3-dev
@@ -173,10 +185,16 @@ Hold the push-to-talk chord (default **Ctrl+Shift+Space**), speak, and release �
 transcript is typed into the focused window. This is the Phase-0 spike gate from the
 build plan: *hold hotkey → speak → text appears*.
 
-> **Wayland:** native global shortcuts go through the XDG portal and aren't wired yet;
-> the hotkey path uses X11 (works under XWayland). Injection still uses `wtype` on
-> Wayland. **macOS** (dev host only): the hotkey needs a main-thread run loop, so
-> `dictate` is intended for the Linux/Windows targets.
+> **Wayland:** global shortcuts and typing go through the XDG GlobalShortcuts and
+> RemoteDesktop portals (falling back to `wtype`). **macOS** (dev host only): the
+> hotkey needs a main-thread run loop, so `dictate` is intended for Linux/Windows.
+
+### Windows builds: static C runtime
+
+The Express engine links sherpa-onnx's prebuilt ONNX Runtime, which is built with the
+static C runtime (`/MT`). `.cargo/config.toml` makes Rust use `+crt-static` on Windows;
+whisper.cpp must match, so **dot-source `scripts/windows-crt-env.ps1` before building
+on Windows** (CI does this). Cross-builds use `scripts/windows-crt-env.sh`.
 
 ## Platform support targets
 
@@ -185,6 +203,26 @@ build plan: *hold hotkey → speak → text appears*.
 | **Windows** | WASAPI (`cpal`) | `SendInput` (`enigo`) | `RegisterHotKey` | Easiest target — all solid |
 | **Linux X11** | ALSA/Pipe (`cpal`) | `xdotool` | `XGrabKey` | Reliable |
 | **Linux Wayland** | PipeWire (`cpal`) | `wtype` | XDG portal | Brittle hotkey; see gaps doc |
+
+## Troubleshooting log
+
+If Orttaai crashes or shows an error you want to report, you can turn on a
+diagnostic log. Quit Orttaai, then start it with `ORTTAAI_LOG=info` set:
+
+- **Windows (PowerShell):** `$env:ORTTAAI_LOG="info"; & "$env:LOCALAPPDATA\Orttaai\Orttaai.exe"`
+- **Linux:** `ORTTAAI_LOG=info orttaai`
+
+The log is written to `orttaai.log` in Orttaai's data folder
+(`%APPDATA%\orttaai\Orttaai\data` on Windows, `~/.local/share/orttaai` on Linux).
+Attach it to your bug report.
+
+**The log never contains your dictations or your data.** It does not record what
+you say or type, your transcripts, dictionary, snippets, clipboard or selected
+text. It holds only technical events, such as the engine starting, models
+loading, audio device changes, timings and error messages, that help us
+troubleshoot a crash or an error. Your home folder is written as `~`, so file
+paths don't show your account name. The same note is written at the top of the
+file, and the log stays on your computer unless you choose to send it.
 
 ## Known OS-level gaps
 

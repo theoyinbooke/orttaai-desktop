@@ -1,0 +1,15 @@
+# Windows: link the C runtime statically (/MT). sherpa-onnx's prebuilt ONNX
+# Runtime libs are /MT, so whisper.cpp (built by cmake-rs, which follows this
+# flag) must match — and the installer then needs no VC++ redistributable.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# whisper.cpp itself must ALSO be compiled /MT. whisper-rs-sys forwards CMAKE_*
+# env vars to CMake, and `[env]` here can't be scoped per target, so Windows
+# builds export these (see scripts/windows-crt-env.sh / .ps1 and release.yml):
+#   CMAKE_C_FLAGS_RELEASE / CMAKE_CXX_FLAGS_RELEASE        = "/MT /O2 /Ob2 /DNDEBUG"
+#   CMAKE_C_FLAGS_RELWITHDEBINFO / CMAKE_CXX_FLAGS_RELWITHDEBINFO = "/MT /O2 /Ob1 /DNDEBUG"
+#   CMAKE_C_FLAGS_DEBUG / CMAKE_CXX_FLAGS_DEBUG            = "/MT /Od"

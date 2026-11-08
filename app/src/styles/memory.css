@@ -1,0 +1,473 @@
+/* Memory page + Text settings preview (text-pipeline area). Cards, rows, tabs and
+   buttons come from styles/settings.css; this is what only these pages draw. */
+
+.memory-view {
+  gap: 12px;
+}
+
+/* Search in the title strip (Mac searchField, 240 wide). */
+.memory-view .page-head-actions {
+  flex: 0 1 240px;
+  min-width: 120px;
+}
+.mem-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--st-tertiary);
+}
+.mem-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 16px;
+}
+.mem-search input:focus,
+.mem-search input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.mem-search input::placeholder {
+  color: var(--st-tertiary);
+}
+.mem-search-clear {
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--st-tertiary);
+  padding: 0;
+}
+
+/* Flash messages (Mac flashMessages: radius is the classic card's 8). */
+.mem-flash {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 12px;
+}
+.mem-flash > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mem-flash.is-error {
+  background: var(--danger-quiet);
+  color: var(--danger);
+}
+.mem-flash-x {
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  opacity: 0.7;
+}
+.mem-flash-x:hover {
+  opacity: 1;
+}
+
+.mem-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.mem-pad {
+  padding: 8px 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* Add / edit line (Mac dictionaryEditorRow, snippetEditorRow). */
+.mem-editor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+.mem-editor .text-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px;
+  background: var(--surface);
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 16px;
+}
+.mem-editor .text-input:focus {
+  border-color: var(--accent);
+  box-shadow: none;
+}
+.mem-editor .text-input::placeholder {
+  color: var(--st-tertiary);
+}
+.mem-editor-snippet {
+  align-items: flex-start;
+}
+.mem-editor-snippet .btn {
+  margin-top: 3px;
+}
+.mem-editor textarea.text-input {
+  display: block;
+  resize: none;
+  line-height: 16px;
+}
+.mem-editor .mem-trigger-field {
+  flex: 0 0 180px;
+}
+.mem-editor-arrow {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--st-tertiary);
+}
+.mem-editor-arrow svg {
+  stroke-width: 2.4;
+}
+
+.mem-case {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 50%, transparent);
+  color: var(--st-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.mem-case.on {
+  color: var(--accent);
+  background: var(--accent-quiet);
+}
+
+/* Tables: one grid per row so columns line up (Mac tableHeader + rows). */
+.mem-table {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 4px;
+}
+.mem-row {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  font-size: 12px;
+  color: var(--text);
+}
+.mem-row:not(.mem-head) {
+  border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+.mem-dict {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 56px 56px 64px;
+}
+.mem-snip {
+  grid-template-columns: 180px minmax(0, 1fr) 56px 56px 92px;
+}
+.mem-sugg {
+  grid-template-columns: 84px minmax(0, 1fr) minmax(0, 1fr) 80px 150px;
+  min-height: 38px;
+}
+.mem-row.mem-head {
+  min-height: 0;
+  padding: 4px 0;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 12px;
+  text-transform: uppercase;
+  color: var(--st-tertiary);
+}
+.mem-row.is-off {
+  opacity: 0.6;
+}
+.mem-cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mem-cell.mem-target {
+  color: var(--accent);
+  font-weight: 500;
+}
+.mem-aa {
+  margin-left: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--st-tertiary);
+}
+.mem-used {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--st-tertiary);
+}
+/* Mac: the switch at 80%, anchored to its leading edge. */
+.mem-switch {
+  display: flex;
+}
+.mem-row .mem-switch .switch {
+  transform: scale(0.8);
+  transform-origin: left center;
+}
+.mem-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 2px;
+}
+.mem-sugg .mem-actions {
+  gap: 4px;
+}
+.mem-actions .icon-btn,
+.mem-actions .copy-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  opacity: 1;
+}
+.mem-actions .icon-btn:hover,
+.mem-actions .copy-btn:hover {
+  background: transparent;
+  color: var(--text);
+}
+.mem-actions .icon-btn svg,
+.mem-actions .copy-btn svg {
+  width: 14px;
+  height: 14px;
+}
+.mem-actions .icon-btn.mem-danger,
+.mem-actions .icon-btn.mem-danger:hover {
+  color: var(--danger);
+}
+.mem-type {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.mem-origin {
+  font-size: 10px;
+  color: var(--st-tertiary);
+  white-space: nowrap;
+}
+
+/* Empty state (Mac emptyState). */
+.mem-empty {
+  padding: 8px 0;
+}
+.mem-empty-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--st-tertiary);
+}
+.mem-empty strong {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.mem-empty p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* Learning from your edits (Mac editCheckRow). */
+.mem-checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.mem-checks li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.mem-checks li + li {
+  border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+.mem-check-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  color: var(--st-tertiary);
+}
+.mem-checks li.is-learned {
+  color: var(--text);
+  font-weight: 600;
+}
+.mem-checks li.is-learned .mem-check-icon {
+  color: var(--accent);
+}
+.mem-check-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mem-check-meta {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--st-tertiary);
+  white-space: nowrap;
+}
+.mem-check-when {
+  width: 96px;
+  text-align: right;
+}
+
+/* ---- Settings › Text: live "try it" preview -------------------------------- */
+.tp-try {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 12px;
+  padding: 4px 0 8px;
+}
+.tp-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.tp-pane-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 15px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--st-tertiary);
+}
+.tp-pane textarea.text-input {
+  min-height: 112px;
+  padding: 8px;
+  background: var(--surface);
+  border-radius: 6px;
+  resize: vertical;
+  line-height: 1.4;
+  font-size: 13px;
+}
+.tp-pane textarea.text-input:focus {
+  border-color: var(--accent);
+  box-shadow: none;
+}
+.tp-output {
+  flex: 1;
+  min-height: 112px;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--accent-quiet);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text);
+}
+.tp-output.is-same {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--text-2);
+}
+.tp-changes {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.tp-change {
+  padding: 3px 8px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  font-size: 11px;
+  color: var(--text-2);
+}
+.tp-samples {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.tp-samples .ghost-link {
+  font-weight: 500;
+}
+.tp-note {
+  padding: 8px 0 4px;
+  font-size: 11px;
+  color: var(--st-tertiary);
+  border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+@media (max-width: 760px) {
+  .mem-editor {
+    flex-wrap: wrap;
+  }
+  .mem-editor .mem-trigger-field {
+    flex-basis: 100%;
+  }
+  .mem-dict {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 56px 64px;
+  }
+  .mem-dict > :nth-child(3) {
+    display: none;
+  }
+  .mem-snip {
+    grid-template-columns: 120px minmax(0, 1fr) 56px 92px;
+  }
+  .mem-snip > :nth-child(3) {
+    display: none;
+  }
+  .mem-sugg {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 150px;
+  }
+  .mem-sugg > :nth-child(1),
+  .mem-sugg > :nth-child(4) {
+    display: none;
+  }
+  .tp-try {
+    grid-template-columns: 1fr;
+  }
+}

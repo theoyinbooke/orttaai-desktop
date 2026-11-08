@@ -69,6 +69,13 @@ jobs:
             Write-Host "Registered CUDA -> $($d.FullName)"
           }
 
+      - name: Static C runtime for native libs (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          . ./scripts/windows-crt-env.ps1
+          Get-ChildItem env:CMAKE_* | ForEach-Object { "$($_.Name)=$($_.Value)" } | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20

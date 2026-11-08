@@ -1,213 +1,128 @@
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { runUpdate } from "../lib/updater";
-import {
-  Button,
-  Card,
-  Field,
-  Icon,
-  Kbd,
-  PageHeader,
-  Select,
-  Toggle,
-  useTheme,
-  useToast,
-  type ThemeChoice,
-} from "../ui";
-import type { AppInfo, Settings as S } from "../types";
+// Settings (Mac HomeSettingsWorkspaceView): title, tab bar and one centred column.
+// Dictation · Text · Audio · Coach · General.
+import { useEffect, useState, type ReactNode } from "react";
+import { Button, ConfirmDialog, Icon, PageHeader, Segmented, useToast } from "../ui";
+import type { AppInfo } from "../types";
+import { call } from "../lib/api";
+import { useSettings } from "../lib/settings";
+import { Glyph, Row, Section, TabBar, ToggleRow, usePatch } from "../components/SettingsRows";
+import DictationSettings from "./settings/Dictation";
+import AudioSettings from "./settings/Audio";
+import TextSettings from "./settings/Text";
+import CoachSettings from "./settings/Coach";
 
-export default function Settings(props: {
-  settings: S | null;
-  info: AppInfo | null;
-  onSaved: () => void;
-}) {
-  const [form, setForm] = useState<S | null>(props.settings);
-  const [dirty, setDirty] = useState(false);
-  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
-  const { choice, setChoice } = useTheme();
-  const toast = useToast();
+type Pane = "dictation" | "text" | "audio" | "coach" | "general";
 
-  useEffect(() => setForm(props.settings), [props.settings]);
+const PANES: { value: Pane; label: string; icon: ReactNode }[] = [
+  { value: "dictation", label: "Dictation", icon: <Icon name="waveform" size={13} /> },
+  { value: "text", label: "Text", icon: <Glyph name="alignLeft" /> },
+  { value: "audio", label: "Audio", icon: <Icon name="mic" size={13} /> },
+  { value: "coach", label: "Coach", icon: <Icon name="scope" size={13} /> },
+  { value: "general", label: "General", icon: <Icon name="sliders" size={13} /> },
+];
 
-  if (!form)
-    return (
-      <div className="view">
-        <PageHeader title="Settings" />
-        <p className="muted">Loading…</p>
-      </div>
-    );
-
-  const update = (patch: Partial<S>) => {
-    setForm({ ...form, ...patch });
-    setDirty(true);
-  };
-
-  async function save() {
-    if (!form) return;
-    try {
-      await invoke("set_settings", { input: form });
-      setDirty(false);
-      props.onSaved();
-      toast("Settings saved", "success");
-    } catch (e) {
-      toast(String(e), "error");
-    }
-  }
-
-  async function checkUpdates() {
-    await runUpdate((s) => {
-      switch (s.kind) {
-        case "checking":
-          return setUpdateMsg("Checking…");
-        case "uptodate":
-          return setUpdateMsg("You're up to date.");
-        case "downloading":
-          return setUpdateMsg(`Downloading ${s.version}…`);
-        case "installed":
-          return setUpdateMsg("Installed — restarting…");
-        case "error":
-          return setUpdateMsg(`Update check failed: ${s.message}`);
-      }
-    });
-  }
-
-  const themes: { value: ThemeChoice; label: string; icon: string }[] = [
-    { value: "system", label: "System", icon: "monitor" },
-    { value: "light", label: "Light", icon: "sun" },
-    { value: "dark", label: "Dark", icon: "moon" },
-  ];
-
+export default function Settings({ info }: { info: AppInfo | null; onRunSetup: () => void }) {
+  const [pane, setPane] = useState<Pane>("dictation");
+  // Each section opens at its top (the Mac rebuilds the scroll view per tab).
+  useEffect(() => {
+    document.querySelector(".content")?.scrollTo(0, 0);
+  }, [pane]);
   return (
-    <div className="view settings stagger">
-      <PageHeader
-        title="Settings"
-        actions={
-          <Button variant="primary" icon="check" onClick={save} disabled={!dirty}>
-            {dirty ? "Save changes" : "Saved"}
-          </Button>
-        }
-      />
-
-      <Card className="settings-section">
-        <h2 className="section-h">Dictation</h2>
-        <Field
-          label="Push-to-talk shortcut"
-          hint={
-            <>
-              Current: <Kbd combo={form.push_to_talk} />. On GNOME/Wayland you may also need to bind
-              it once in Settings → Keyboard.
-            </>
-          }
-        >
-          <input
-            className="text-input"
-            value={form.push_to_talk}
-            onChange={(e) => update({ push_to_talk: e.currentTarget.value })}
-          />
-        </Field>
-        <div className="toggle-stack">
-          <Toggle
-            checked={form.preserve_clipboard}
-            onChange={(v) => update({ preserve_clipboard: v })}
-            label="Preserve clipboard"
-            hint="Restore your clipboard after pasting a transcript on fallback."
-          />
-          <Toggle
-            checked={form.strict_secure}
-            onChange={(v) => update({ strict_secure: v })}
-            label="Never type into password fields"
-            hint="Refuses to insert unless the focused field is confirmed safe. On Linux field type can't be detected, so this blocks typing until you paste manually — leave off unless you dictate near password boxes."
-          />
-        </div>
-      </Card>
-
-      <Card className="settings-section">
-        <h2 className="section-h">Performance</h2>
-        <div className="field">
-          <span className="field-label">Speed vs accuracy</span>
-          <div className="segmented" role="radiogroup" aria-label="Decode preset">
-            {(["fast", "balanced", "accuracy"] as const).map((p) => (
-              <button
-                key={p}
-                role="radio"
-                aria-checked={form.preset === p}
-                className={`seg-btn ${form.preset === p ? "active" : ""}`}
-                onClick={() => update({ preset: p })}
-              >
-                {p[0].toUpperCase() + p.slice(1)}
-              </button>
-            ))}
-          </div>
-          <span className="field-hint">
-            Fast &amp; Balanced decode in a single deterministic pass (lowest latency). Accuracy
-            re-tries hard audio at higher temperature — slower worst-case, more robust.
-          </span>
-        </div>
-        <div className="field">
-          <span className="field-label">Decode threads</span>
-          <Select
-            value={String(form.n_threads)}
-            onChange={(v) => update({ n_threads: Number(v) })}
-            ariaLabel="Decode threads"
-            options={[
-              { value: "0", label: "Auto (recommended)" },
-              { value: "4", label: "4 threads" },
-              { value: "6", label: "6 threads" },
-              { value: "8", label: "8 threads" },
-              { value: "12", label: "12 threads" },
-              { value: "16", label: "16 threads" },
-            ]}
-          />
-          <span className="field-hint">
-            More isn't always faster on hybrid CPUs (performance + efficiency cores). Auto picks a
-            sensible default. Takes effect next time you start the engine.
-          </span>
-        </div>
-      </Card>
-
-      <Card className="settings-section">
-        <h2 className="section-h">Assistant</h2>
-        <Field label="Ollama endpoint" hint="Where your local Ollama server is listening.">
-          <input
-            className="text-input"
-            value={form.ollama_endpoint}
-            onChange={(e) => update({ ollama_endpoint: e.currentTarget.value })}
-          />
-        </Field>
-      </Card>
-
-      <Card className="settings-section">
-        <h2 className="section-h">Appearance</h2>
-        <div className="segmented" role="radiogroup" aria-label="Theme">
-          {themes.map((t) => (
-            <button
-              key={t.value}
-              role="radio"
-              aria-checked={choice === t.value}
-              className={`seg-btn ${choice === t.value ? "active" : ""}`}
-              onClick={() => setChoice(t.value)}
-            >
-              <Icon name={t.icon} size={16} />
-              {t.label}
-            </button>
-          ))}
-        </div>
-      </Card>
-
-      <Card className="settings-section">
-        <h2 className="section-h">Updates</h2>
-        <div className="row-between">
-          <Button variant="ghost" icon="refresh" onClick={checkUpdates}>
-            Check for updates
-          </Button>
-          {updateMsg && <span className="muted small">{updateMsg}</span>}
-        </div>
-        {props.info && (
-          <p className="app-meta mono">
-            {props.info.name} v{props.info.version} · {props.info.platform}
-          </p>
-        )}
-      </Card>
+    <div className="view">
+      <PageHeader title="Settings" leading={<TabBar tabs={PANES} value={pane} onChange={setPane} label="Settings sections" />} />
+      <div className="st-column">
+        {pane === "dictation" && <DictationSettings />}
+        {pane === "text" && <TextSettings />}
+        {pane === "audio" && <AudioSettings />}
+        {pane === "coach" && <CoachSettings />}
+        {pane === "general" && <General linux={info?.platform === "linux"} />}
+      </div>
     </div>
+  );
+}
+
+/** App-level behaviour and the destructive resets (Mac GeneralSettingsView). */
+function General({ linux }: { linux: boolean }) {
+  const { settings } = useSettings();
+  const save = usePatch();
+  const toast = useToast();
+  const [confirm, setConfirm] = useState<null | "history" | "reset">(null);
+  if (!settings) return null;
+  return (
+    <>
+      <Section title="App">
+        <Row label="Appearance" hint="Light, dark, or whichever this computer is set to. The recording pill stays dark either way.">
+          <Segmented
+            value={settings.appearance}
+            options={[
+              { value: "system", label: "Match System" },
+              { value: "light", label: "Light" },
+              { value: "dark", label: "Dark" },
+            ]}
+            onChange={(v) => save({ appearance: v })}
+          />
+        </Row>
+        <ToggleRow
+          k="launch_at_login"
+          label="Launch at Login"
+          hint="Starts Orttaai when you log in to this computer so dictation is always ready."
+        />
+        <ToggleRow
+          k="start_engine_on_launch"
+          label="Start Dictation on Launch"
+          hint="Loads the speech model as soon as Orttaai opens, so the shortcut works right away."
+        />
+        {/* Linux hides the pill while it processes, so the estimate would never show. */}
+        {!linux && (
+          <ToggleRow
+            k="show_processing_estimate"
+            label="Show Processing Estimate"
+            hint="Shows roughly how long transcription will take in the pill while it finishes a recording."
+          />
+        )}
+        <ToggleRow
+          k="celebrate_milestones"
+          label="Celebrate Milestones"
+          hint="Shows a small card in the corner when a dictation earns a badge, and a celebration the next time you open Orttaai. Badges are still earned when this is off; see them in Milestones."
+        />
+        <ToggleRow k="sound_cues" label="Sound Cues" hint="Plays soft sounds when recording starts, stops, or fails." />
+      </Section>
+      <Section title="Danger Zone">
+        <Row
+          label="Clear History"
+          hint="Permanently deletes every saved transcription and what was derived from it. Settings, Personal Memory, and models are kept."
+        >
+          <Button size="sm" className="st-btn st-danger" onClick={() => setConfirm("history")}>
+            Clear History…
+          </Button>
+        </Row>
+        <Row
+          label="Reset App Data"
+          hint="Clears history, Personal Memory, insights, conversations, badges and Coach progress. Settings and downloaded models are kept."
+        >
+          <Button size="sm" className="st-btn st-danger" onClick={() => setConfirm("reset")}>
+            Reset App Data…
+          </Button>
+        </Row>
+      </Section>
+      <ConfirmDialog
+        open={confirm !== null}
+        title={confirm === "history" ? "Clear All History?" : "Reset App Data?"}
+        body={
+          confirm === "history"
+            ? "This will permanently delete all transcriptions. This cannot be undone."
+            : "This clears history, Personal Memory, insights, conversations, badges and Coach progress. This cannot be undone."
+        }
+        confirmLabel={confirm === "history" ? "Clear History" : "Reset"}
+        onCancel={() => setConfirm(null)}
+        onConfirm={() => {
+          const cmd = confirm === "history" ? "clear_history" : "reset_app_data";
+          setConfirm(null);
+          call(cmd)
+            .then(() => toast(cmd === "clear_history" ? "History cleared" : "App data reset", "success"))
+            .catch((e) => toast(String(e), "error"));
+        }}
+      />
+    </>
   );
 }

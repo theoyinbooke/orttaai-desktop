@@ -1,687 +1,285 @@
 //! Orttaai desktop shell — a thin Tauri layer over `orttaai-core`.
 //!
-//! The UI is disposable; all real logic lives in the core. Read-only commands
-//! expose settings + history; the engine commands drive the real dictation loop
-//! (whisper + cpal + injection behind a global hotkey) and emit live state events.
+//! The UI is disposable; all real logic lives in the core. Commands are grouped
+//! by feature area, one module each:
+//! - `engine`   — dictation engine, hotkeys, overlay, models
+//! - `memory`   — dictionary, snippets, learning suggestions
+//! - `ai`       — Chat AI, polish, voice edit, writing insights, tone
+//! - `semantic` — semantic memory / Memory Graph
+//! - `insights` — Home, analytics, history, milestones, What's New
+//! - `coach`    — Coach
+//! - `settings_cmds` — settings read/patch, reset, clear history
 
-use orttaai_core::audio::CpalAudioCapture;
-use orttaai_core::coordinator::DictationCoordinator;
-use orttaai_core::hotkey::{default_manager, HotkeyCallback, HotkeyManager};
-use orttaai_core::injection::SystemTextInjector;
+mod ai;
+mod coach;
+mod engine;
+mod express_cmds;
+mod insights;
+mod memory;
+mod persist;
+mod pipeline;
+mod semantic;
+mod settings_cmds;
+
+use engine::{EngineState, TRAY_ID};
 use orttaai_core::settings::Settings;
-use orttaai_core::store::{Store, TranscriptionRecord};
-use orttaai_core::transcription::WhisperTranscriber;
-use orttaai_core::types::{DecodePreset, HotkeyCombo, Modifier, RecordingState};
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, State,
+    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
-const TRAY_ID: &str = "main";
-
-// ---- Engine state (Tauri-managed) ------------------------------------------
-
-/// A dictation action queued to the worker thread. Sent from the hotkey event
-/// loop and the tray/IPC toggle so the multi-second whisper decode never runs on
-/// (and blocks) those threads.
-enum DictationCmd {
-    Press,
-    Release,
-    Toggle,
+/// Map any displayable error into the `String` errors Tauri commands return.
+pub(crate) fn err(e: impl std::fmt::Display) -> String {
+    e.to_string()
 }
 
-#[derive(Default)]
-struct EngineState {
-    hotkey: Mutex<Option<Box<dyn HotkeyManager>>>,
-    /// Queue to the single dictation worker thread (which owns the coordinator
-    /// and runs the slow decode). `None` when the engine is stopped.
-    commands: Mutex<Option<std::sync::mpsc::Sender<DictationCmd>>>,
-    /// The app focused when recording started — recorded as the dictation's
-    /// source. `None` on Wayland, where the focused app can't be detected.
-    source_app: Mutex<Option<String>>,
-    running: AtomicBool,
-    /// Set for the duration of `start_dictation` while the (slow) model load runs
-    /// on a background thread — guards against overlapping starts from a double
-    /// click or the tray firing while a start is already in flight.
-    starting: AtomicBool,
-}
-
-#[derive(Serialize)]
-struct EngineStatus {
-    running: bool,
-}
-
-#[tauri::command]
-fn engine_status(state: State<EngineState>) -> EngineStatus {
-    EngineStatus {
-        running: state.running.load(Ordering::SeqCst),
+/// Called after every settings save with the previous and new values, so
+/// areas can react (re-register hotkeys, reload the pipeline, toggle autostart…).
+pub(crate) fn on_settings_changed(app: &AppHandle, old: &Settings, new: &Settings) {
+    // == engine: live-apply dictation settings ==
+    engine::on_settings_changed(app, old, new);
+    // == semantic: index on enable / embedding-model change ==
+    semantic::on_settings_changed(app, old, new);
+    // == general: launch at login ==
+    if old.launch_at_login != new.launch_at_login {
+        sync_launch_at_login(app, new);
     }
 }
 
-/// Start the dictation engine. Loading the whisper model takes seconds for the
-/// larger models, so the whole setup runs on a blocking background thread via
-/// `spawn_blocking` — the WebView's main thread is never blocked, so the window
-/// never goes "Not Responding". Emits `engine-state` "loading" while the model
-/// loads, then "idle" (ready) or "off" (failed/rolled back).
-#[tauri::command]
-async fn start_dictation(app: AppHandle, model_path: String) -> Result<(), String> {
-    {
-        let state = app.state::<EngineState>();
-        // No-op if already running; the `starting` swap also rejects a second
-        // start fired while the first is still loading the model.
-        if state.running.load(Ordering::SeqCst) || state.starting.swap(true, Ordering::SeqCst) {
-            return Ok(());
-        }
-    }
-    emit_state(&app, "loading");
-
-    let worker_app = app.clone();
-    let outcome =
-        tauri::async_runtime::spawn_blocking(move || start_engine(&worker_app, model_path))
-            .await
-            .unwrap_or_else(|e| Err(format!("engine start task panicked: {e}")));
-
-    app.state::<EngineState>()
-        .starting
-        .store(false, Ordering::SeqCst);
-    if outcome.is_err() {
-        // Roll the UI back to "off" so the Start button returns and the user can
-        // fix the problem (e.g. download the model) and retry.
-        emit_state(&app, "off");
-    }
-    outcome
-}
-
-/// Build and start the engine on the calling (background) thread: load the model,
-/// spin up the dictation worker, and register the global hotkey. Blocking — only
-/// ever called from `spawn_blocking`.
-fn start_engine(app: &AppHandle, model_path: String) -> Result<(), String> {
-    let state = app.state::<EngineState>();
-    let settings = Settings::load_or_default();
-
-    // Empty path → use the active model from settings (must be downloaded).
-    let resolved = if model_path.trim().is_empty() {
-        let path =
-            orttaai_core::models::local_path(&settings.model_id).map_err(|e| e.to_string())?;
-        if !path.exists() {
-            return Err(format!(
-                "model '{}' is not downloaded — pick one in the Models tab",
-                settings.model_id
-            ));
-        }
-        path
-    } else {
-        std::path::PathBuf::from(&model_path)
+/// Make the OS autostart entry match `launch_at_login`.
+fn sync_launch_at_login(app: &AppHandle, settings: &Settings) {
+    use tauri_plugin_autostart::ManagerExt;
+    let launcher = app.autolaunch();
+    let enabled = launcher.is_enabled().unwrap_or(false);
+    // On, it's written every time: the entry holds the program's path, which
+    // an update can change (the Linux binary is now `orttaai`, was `app`).
+    let result = match (settings.launch_at_login, enabled) {
+        (true, _) => launcher.enable(),
+        (false, true) => launcher.disable(),
+        (false, false) => Ok(()),
     };
-
-    let transcriber = WhisperTranscriber::from_path(&resolved).map_err(|e| e.to_string())?;
-    let memory = Store::open_default()
-        .and_then(|s| s.load_memory_service())
-        .unwrap_or_default();
-    let mut coordinator = DictationCoordinator::new(
-        Box::new(transcriber),
-        Box::new(CpalAudioCapture::new()),
-        Box::new(SystemTextInjector::new()),
-        memory,
-        // Decode preset + thread count come from settings (the Performance panel).
-        settings.decode.clone(),
-    );
-    // Refuse to type into fields we can't confirm are non-secure (password
-    // boxes) when the user opts in. On Linux/Wayland field status is always
-    // Unknown, so this is the only secure-field guard available there.
-    coordinator.set_strict_secure(settings.strict_secure);
-    let coordinator = Arc::new(Mutex::new(coordinator));
-
-    // One worker thread owns the decode so it never blocks the hotkey event loop
-    // (which must stay free to deliver the next press / handle stop) or an IPC
-    // handler. The hotkey and tray/IPC callbacks just enqueue commands, which the
-    // worker runs in order.
-    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<DictationCmd>();
-    {
-        let app = app.clone();
-        let coordinator = coordinator.clone();
-        std::thread::Builder::new()
-            .name("orttaai-dictation".into())
-            .spawn(move || {
-                while let Ok(cmd) = cmd_rx.recv() {
-                    match cmd {
-                        DictationCmd::Press => do_press(&app, &coordinator),
-                        DictationCmd::Release => do_release(&app, &coordinator),
-                        DictationCmd::Toggle => {
-                            let recording = matches!(
-                                coordinator.lock().unwrap().state(),
-                                RecordingState::Recording
-                            );
-                            if recording {
-                                do_release(&app, &coordinator);
-                            } else {
-                                do_press(&app, &coordinator);
-                            }
-                        }
-                    }
-                }
-            })
-            .map_err(|e| format!("spawn dictation worker: {e}"))?;
-    }
-    *state.commands.lock().unwrap() = Some(cmd_tx.clone());
-
-    let on_down: HotkeyCallback = {
-        let tx = cmd_tx.clone();
-        Box::new(move || {
-            let _ = tx.send(DictationCmd::Press);
-        })
-    };
-    let on_up: HotkeyCallback = {
-        let tx = cmd_tx;
-        Box::new(move || {
-            let _ = tx.send(DictationCmd::Release);
-        })
-    };
-
-    // Try to grab the global hotkey. On Wayland (and some WMs) this can't
-    // register — or registers but never delivers events — so DON'T fail the
-    // whole engine: keep running and let the user dictate with the on-screen /
-    // tray "Record" toggle instead.
-    let mut hotkey = default_manager();
-    match hotkey.register(settings.push_to_talk, on_down, on_up) {
-        Ok(()) => {
-            *state.hotkey.lock().unwrap() = Some(hotkey);
-            if is_wayland() {
-                let _ = app.emit(
-                    "engine-warning",
-                    "On Wayland, hold your shortcut to record and release to insert. If pressing it does nothing, open GNOME Settings → Keyboard and assign a key to Orttaai's “push-to-talk” shortcut.",
-                );
-            }
-        }
-        Err(e) => {
-            let _ = app.emit(
-                "engine-warning",
-                format!(
-                    "Global push-to-talk is unavailable ({e}). Use the “Click to record” button (or the tray) to dictate."
-                ),
-            );
-        }
-    }
-    state.running.store(true, Ordering::SeqCst);
-    emit_state(app, "idle");
-    Ok(())
-}
-
-/// Start recording on the shared coordinator and reflect it in the UI. Safe to
-/// call from the hotkey thread or an IPC command.
-fn do_press(app: &AppHandle, coordinator: &Arc<Mutex<DictationCoordinator>>) {
-    let mut coord = coordinator.lock().unwrap();
-    match coord.on_press() {
-        Ok(()) if coord.state() == RecordingState::Recording => {
-            drop(coord);
-            // Capture the focused app now (recording start) as this dictation's
-            // source. `None` on Wayland, where focus can't be detected.
-            *app.state::<EngineState>().source_app.lock().unwrap() =
-                orttaai_core::focus::focused_app();
-            emit_state(app, "recording");
-            spawn_level_meter(app.clone(), coordinator.clone());
-        }
-        Ok(()) => {} // already recording — ignore the repeat press
-        Err(e) => {
-            drop(coord);
-            let _ = app.emit("engine-error", e.to_string());
-        }
+    if let Err(e) = result {
+        use tauri::Emitter;
+        let _ = app.emit(
+            "engine-warning",
+            format!("Couldn't change Launch at Login: {e}"),
+        );
     }
 }
 
-/// While recording, emit `audio-level` (0.0..=1.0) ~12×/s so the UI can show a
-/// live mic meter — the user's proof that the right input source is captured.
-fn spawn_level_meter(app: AppHandle, coordinator: Arc<Mutex<DictationCoordinator>>) {
-    std::thread::spawn(move || {
-        loop {
-            let (recording, level) = {
-                let c = coordinator.lock().unwrap();
-                (c.state() == RecordingState::Recording, c.level())
+/// Learn from my edits: when the engine's watch ends, turn the user's fixes
+/// into dictionary suggestions (text-pipeline area's learner).
+fn wire_learn_from_edits(app: &AppHandle) {
+    use orttaai_core::injection::edit_watch::{EditCheckOutcome as Watched, EditObservation};
+    use orttaai_core::store::{EditObservation as Learn, Store};
+    use orttaai_core::text::learning::EditCheckOutcome as Outcome;
+    use tauri::Emitter;
+    let handle = app.clone();
+    engine::set_edit_observer(
+        app,
+        std::sync::Arc::new(move |obs: EditObservation| {
+            let Ok(store) = Store::open_default() else {
+                return;
             };
-            if !recording {
-                break;
-            }
-            let _ = app.emit("audio-level", level);
-            std::thread::sleep(std::time::Duration::from_millis(80));
-        }
-        let _ = app.emit("audio-level", 0.0_f32);
-    });
-}
-
-/// Stop recording, transcribe, inject, and persist the transcript. Blocks for
-/// the duration of the decode, so it always runs on the dictation worker thread
-/// (never the hotkey event loop or an IPC handler).
-fn do_release(app: &AppHandle, coordinator: &Arc<Mutex<DictationCoordinator>>) {
-    emit_state(app, "processing");
-    let outcome = coordinator.lock().unwrap().on_release();
-    match outcome {
-        Ok(o) => {
-            eprintln!(
-                "orttaai: dictation done — has_transcript={}, inject_error={:?}",
-                o.transcript.is_some(),
-                o.inject_error
-            );
-            if let Some(text) = o.transcript {
-                let source = app
-                    .state::<EngineState>()
-                    .source_app
-                    .lock()
-                    .unwrap()
-                    .clone();
-                persist_transcript(&text, o.duration_ms, source);
-                let _ = app.emit("transcript", text.clone());
-                let _ = app.emit("history-changed", ());
-                if let Some(err) = o.inject_error {
-                    // Typing failed (common on GNOME/Wayland). Don't lose the
-                    // transcript: it is saved to History; also copy it so the
-                    // user can paste it manually.
-                    copy_to_clipboard(&text);
-                    let _ = app.emit(
-                        "engine-warning",
-                        format!("Couldn't type into the focused app ({err}). Saved to History and copied to the clipboard — press Ctrl+V to paste."),
-                    );
+            let at = orttaai_core::store::now_unix();
+            let logged = match (obs.outcome, obs.before, obs.after) {
+                (Watched::Edited, Some(before), Some(after)) => {
+                    let settings = Settings::load_or_default();
+                    let english = settings.dictation_language.eq_ignore_ascii_case("en")
+                        || settings.express_active();
+                    store
+                        .learn_from_edit(
+                            &Learn {
+                                inserted: obs.inserted,
+                                before,
+                                caret_utf16: None,
+                                after,
+                                app_name: obs.app.clone(),
+                            },
+                            english,
+                        )
+                        .map(|(_, learned)| learned > 0)
+                        .unwrap_or(false)
                 }
+                (watched, _, _) => {
+                    let outcome = match watched {
+                        Watched::NoChange => Outcome::NoChange,
+                        Watched::TextNotFound => Outcome::TextNotFound,
+                        Watched::SecureField => Outcome::SecureField,
+                        Watched::Edited | Watched::Unreadable => Outcome::Unreadable,
+                    };
+                    let _ = store.insert_edit_check(outcome, obs.app.as_deref(), 0, at);
+                    false
+                }
+            };
+            if logged {
+                let _ = handle.emit("memory-changed", ());
             }
-        }
-        Err(e) => {
-            let _ = app.emit("engine-error", e.to_string());
-        }
-    }
-    emit_state(app, "idle");
+            let _ = handle.emit("edit-checks-changed", ());
+        }),
+    );
 }
-
-/// Best-effort clipboard copy so a transcript is recoverable when injection
-/// fails (common on GNOME/Wayland). Tries `wl-copy` (Wayland) then `xclip`/`xsel`.
-fn copy_to_clipboard(text: &str) {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    let candidates: [(&str, &[&str]); 3] = [
-        ("wl-copy", &[]),
-        ("xclip", &["-selection", "clipboard"]),
-        ("xsel", &["--clipboard", "--input"]),
-    ];
-    for (bin, args) in candidates {
-        if let Ok(mut child) = Command::new(bin)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(text.as_bytes());
-            }
-            // wl-copy forks to serve the selection; don't block waiting on it.
-            return;
-        }
-    }
-}
-
-/// Whether we're in a Wayland session (where the global hotkey is unreliable).
-fn is_wayland() -> bool {
-    std::env::var_os("WAYLAND_DISPLAY").is_some()
-        || std::env::var("XDG_SESSION_TYPE")
-            .map(|s| s.eq_ignore_ascii_case("wayland"))
-            .unwrap_or(false)
-}
-
-/// Best-effort write of a completed dictation to the history store so Home and
-/// History actually populate. `source` is the app it was dictated into (captured
-/// at recording start; `None` on Wayland where focus can't be detected).
-fn persist_transcript(text: &str, duration_ms: i64, source: Option<String>) {
-    match Store::open_default() {
-        Ok(store) => {
-            let record = TranscriptionRecord::new(text, source, duration_ms, now_unix());
-            if let Err(e) = store.insert_transcription(&record) {
-                eprintln!("orttaai: failed to persist transcription: {e}");
-            }
-        }
-        Err(e) => eprintln!("orttaai: failed to open history store: {e}"),
-    }
-}
-
-/// Current Unix time in seconds.
-fn now_unix() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-#[tauri::command]
-fn stop_dictation(app: AppHandle, state: State<EngineState>) -> Result<(), String> {
-    if let Some(mut hotkey) = state.hotkey.lock().unwrap().take() {
-        hotkey.unregister().map_err(|e| e.to_string())?;
-    }
-    // Dropping the sender closes the channel so the worker thread exits after it
-    // finishes any in-flight decode.
-    *state.commands.lock().unwrap() = None;
-    state.running.store(false, Ordering::SeqCst);
-    emit_state(&app, "off");
-    Ok(())
-}
-
-/// Toggle recording via the dictation worker. Shared by the IPC command and the
-/// tray menu so both work when the global hotkey doesn't (Wayland). Enqueuing
-/// keeps the caller responsive — the worker runs the (blocking) decode.
-fn toggle_recording_impl(app: &AppHandle, state: &EngineState) {
-    match state.commands.lock().unwrap().as_ref() {
-        Some(tx) => {
-            let _ = tx.send(DictationCmd::Toggle);
-        }
-        None => {
-            let _ = app.emit("engine-error", "Engine is not running — press Start first.");
-        }
-    }
-}
-
-/// Manual push-to-talk toggle for when the global hotkey is unavailable (Wayland)
-/// or the user prefers clicking: the first call starts recording, the second
-/// stops, transcribes, and injects.
-#[tauri::command]
-fn toggle_recording(app: AppHandle, state: State<EngineState>) {
-    toggle_recording_impl(&app, state.inner());
-}
-
-/// Broadcast a state change to the frontend, reflect it in the tray tooltip, and
-/// show/hide the floating recording panel.
-fn emit_state(app: &AppHandle, state: &str) {
-    let _ = app.emit("engine-state", state);
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let tip = match state {
-            "recording" => "Orttaai — recording…",
-            "processing" => "Orttaai — transcribing…",
-            "idle" => "Orttaai — listening",
-            _ => "Orttaai",
-        };
-        let _ = tray.set_tooltip(Some(tip));
-    }
-    // Floating recording overlay — shown ONLY while recording (key held), and
-    // hidden the instant the key is released (i.e. before "processing", which is
-    // when transcription + INJECTION run). This is deliberate: even with
-    // `focusable:false`, GNOME/Mutter does not reliably keep an always-on-top
-    // window out of the focus chain, so a panel left visible during injection
-    // can capture the synthesized keystrokes. Hiding it on release returns focus
-    // to the user's target app before any text is typed. (`engine-state` is the
-    // single source of truth; every non-"recording" state hides it, so it can't
-    // get stuck on-screen.)
-    if let Some(panel) = app.get_webview_window("panel") {
-        let _ = if state == "recording" {
-            panel.show()
-        } else {
-            panel.hide()
-        };
-    }
-}
-
-// ---- Settings + models ------------------------------------------------------
-
-#[derive(serde::Deserialize)]
-struct SettingsInput {
-    model_id: String,
-    push_to_talk: String,
-    preserve_clipboard: bool,
-    ollama_endpoint: String,
-    strict_secure: bool,
-    /// "fast" | "balanced" | "accuracy" — the decode speed/accuracy preset.
-    preset: String,
-    /// Decode threads; 0 = auto.
-    n_threads: i32,
-}
-
-#[tauri::command]
-fn set_settings(input: SettingsInput) -> Result<(), String> {
-    let mut settings = Settings::load_or_default();
-    settings.model_id = input.model_id;
-    settings.push_to_talk = HotkeyCombo::parse(&input.push_to_talk);
-    settings.preserve_clipboard = input.preserve_clipboard;
-    settings.ollama_endpoint = input.ollama_endpoint;
-    settings.strict_secure = input.strict_secure;
-    settings.decode.preset = preset_from_str(&input.preset);
-    settings.decode.n_threads = input.n_threads.clamp(0, 256);
-    settings.save().map_err(|e| e.to_string())
-}
-
-fn preset_from_str(s: &str) -> DecodePreset {
-    match s {
-        "fast" => DecodePreset::Fast,
-        "accuracy" => DecodePreset::Accuracy,
-        _ => DecodePreset::Balanced,
-    }
-}
-
-fn preset_to_str(p: DecodePreset) -> &'static str {
-    match p {
-        DecodePreset::Fast => "fast",
-        DecodePreset::Balanced => "balanced",
-        DecodePreset::Accuracy => "accuracy",
-    }
-}
-
-#[tauri::command]
-fn list_models() -> Result<Vec<orttaai_core::models::ModelInfo>, String> {
-    orttaai_core::models::list().map_err(|e| e.to_string())
-}
-
-/// Delete a downloaded model file to reclaim disk. The active model can be
-/// deleted too; the engine keeps any already-loaded model until it's restarted.
-#[tauri::command]
-fn delete_model(id: String) -> Result<(), String> {
-    orttaai_core::models::delete(&id).map_err(|e| e.to_string())
-}
-
-/// Download a model in the background, emitting `model-progress`/`model-done`/
-/// `model-error` events so the UI can show a progress bar without blocking.
-#[tauri::command]
-fn download_model(app: AppHandle, id: String) {
-    std::thread::spawn(move || {
-        let progress_app = app.clone();
-        let progress_id = id.clone();
-        let result = orttaai_core::models::download(&id, move |fraction| {
-            let _ = progress_app.emit(
-                "model-progress",
-                serde_json::json!({ "id": progress_id, "fraction": fraction }),
-            );
-        });
-        match result {
-            Ok(path) => {
-                let _ = app.emit(
-                    "model-done",
-                    serde_json::json!({ "id": id, "path": path.to_string_lossy() }),
-                );
-            }
-            Err(e) => {
-                let _ = app.emit(
-                    "model-error",
-                    serde_json::json!({ "id": id, "error": e.to_string() }),
-                );
-            }
-        }
-    });
-}
-
-// ---- Ollama (Chat AI) -------------------------------------------------------
-
-#[tauri::command]
-async fn ollama_models() -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let settings = Settings::load_or_default();
-        orttaai_core::llm::list_models(&settings.ollama_endpoint).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-async fn ollama_chat(prompt: String, model: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let settings = Settings::load_or_default();
-        let model = if model.trim().is_empty() {
-            "llama3.2".to_string()
-        } else {
-            model
-        };
-        orttaai_core::llm::generate(&settings.ollama_endpoint, &model, &prompt)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-// ---- Analytics + Personal Memory --------------------------------------------
-
-#[tauri::command]
-fn dashboard_stats(days: Option<i64>) -> Result<orttaai_core::store::DashboardStats, String> {
-    Store::open_default()
-        .and_then(|s| s.stats(days))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn delete_transcription(app: AppHandle, id: i64) -> Result<(), String> {
-    Store::open_default()
-        .and_then(|s| s.delete_transcription(id))
-        .map_err(|e| e.to_string())?;
-    let _ = app.emit("history-changed", ());
-    Ok(())
-}
-
-#[tauri::command]
-fn list_memory() -> Result<Vec<orttaai_core::store::MemoryEntry>, String> {
-    Store::open_default()
-        .and_then(|s| s.list_memory())
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn add_memory(kind: String, trigger: String, replacement: String) -> Result<(), String> {
-    let store = Store::open_default().map_err(|e| e.to_string())?;
-    store
-        .add_memory(&kind, &trigger, &replacement)
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-fn delete_memory(id: i64) -> Result<(), String> {
-    Store::open_default()
-        .and_then(|s| s.delete_memory(id))
-        .map_err(|e| e.to_string())
-}
-
-// ---- Read-only commands -----------------------------------------------------
 
 #[derive(Serialize)]
 struct AppInfo {
     name: String,
     version: String,
     platform: String,
+    /// `x11 | wayland | windows | macos`.
+    session: String,
+    /// `cpu | cuda | vulkan` — which whisper backend this build links.
+    gpu_backend: String,
 }
 
 #[tauri::command]
 fn app_info() -> AppInfo {
+    let session = if cfg!(target_os = "linux") {
+        if std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var("XDG_SESSION_TYPE")
+                .map(|s| s.eq_ignore_ascii_case("wayland"))
+                .unwrap_or(false)
+        {
+            "wayland"
+        } else {
+            "x11"
+        }
+    } else {
+        std::env::consts::OS
+    };
+    let gpu_backend = if cfg!(feature = "cuda") {
+        "cuda"
+    } else if cfg!(feature = "vulkan") {
+        "vulkan"
+    } else {
+        "cpu"
+    };
     AppInfo {
         name: "Orttaai".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         platform: std::env::consts::OS.to_string(),
+        session: session.to_string(),
+        gpu_backend: gpu_backend.to_string(),
     }
 }
 
-#[derive(Serialize)]
-struct SettingsDto {
-    model_id: String,
-    push_to_talk: String,
-    preserve_clipboard: bool,
-    ollama_endpoint: String,
-    strict_secure: bool,
-    preset: String,
-    n_threads: i32,
+/// The first-run / "Run Setup" window: its own fixed 600 x 750 window, as on the
+/// Mac, not a page inside the main window.
+pub(crate) fn open_setup(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window("setup") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    let window = WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("index.html".into()))
+        .title("Orttaai Setup")
+        .inner_size(600.0, 750.0)
+        .resizable(false)
+        .maximizable(false)
+        .center()
+        .build()?;
+    let _ = window.set_focus();
+    Ok(())
+}
+
+/// Opens Setup from a place that can't build a window inline (menu events, the
+/// second-instance callback).
+fn open_setup_later(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = open_setup(&app) {
+            eprintln!("orttaai: couldn't open setup: {e}");
+        }
+    });
 }
 
 #[tauri::command]
-fn get_settings() -> SettingsDto {
-    let settings = Settings::load_or_default();
-    SettingsDto {
-        model_id: settings.model_id,
-        push_to_talk: format_combo(&settings.push_to_talk),
-        preserve_clipboard: settings.preserve_clipboard,
-        ollama_endpoint: settings.ollama_endpoint,
-        strict_secure: settings.strict_secure,
-        preset: preset_to_str(settings.decode.preset).to_string(),
-        n_threads: settings.decode.n_threads,
+async fn open_setup_window(app: AppHandle) -> Result<(), String> {
+    open_setup(&app).map_err(|e| e.to_string())
+}
+
+/// Setup is done: its window goes away and the workspace opens on Overview.
+#[tauri::command]
+async fn finish_setup(app: AppHandle) -> Result<(), String> {
+    show_main(&app, Some("home"));
+    if let Some(window) = app.get_webview_window("setup") {
+        window.destroy().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Bring the main window forward, optionally on a specific page. Until setup
+/// is finished that means the setup window.
+pub(crate) fn show_main(app: &AppHandle, route: Option<&str>) {
+    if route == Some("setup") {
+        open_setup_later(app);
+        return;
+    }
+    if !Settings::load_or_default().has_completed_setup {
+        open_setup_later(app);
+        return;
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    if let Some(route) = route {
+        use tauri::Emitter;
+        let _ = app.emit("navigate", route);
     }
 }
-
-fn format_combo(combo: &HotkeyCombo) -> String {
-    let mut parts: Vec<String> = combo
-        .modifiers
-        .iter()
-        .map(|m| {
-            match m {
-                Modifier::Ctrl => "Ctrl",
-                Modifier::Shift => "Shift",
-                Modifier::Alt => "Alt",
-                Modifier::Meta => "Meta",
-            }
-            .to_string()
-        })
-        .collect();
-    parts.push(combo.key.clone());
-    parts.join("+")
-}
-
-#[derive(Serialize)]
-struct HistoryItem {
-    id: i64,
-    text: String,
-    app: Option<String>,
-    word_count: i64,
-    created_at: i64,
-}
-
-#[tauri::command]
-fn recent_history(limit: i64) -> Result<Vec<HistoryItem>, String> {
-    let store = Store::open_default().map_err(|e| e.to_string())?;
-    let records = store
-        .recent(limit.clamp(1, 500))
-        .map_err(|e| e.to_string())?;
-    Ok(records
-        .into_iter()
-        .map(|r| HistoryItem {
-            id: r.id.unwrap_or(0),
-            text: r.text,
-            app: r.app,
-            word_count: r.word_count,
-            created_at: r.created_at,
-        })
-        .collect())
-}
-
-// ---- Tray + app bootstrap ---------------------------------------------------
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "Show Orttaai", true, None::<&str>)?;
+    let status = MenuItem::with_id(app, "status", "Orttaai — Off", false, None::<&str>)?;
+    // The engine updates this line with its state ("Recording…", "Ready"…).
+    app.manage(engine::TrayStatus(status.clone()));
     let rec = MenuItem::with_id(app, "rec", "Start / stop recording", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &rec, &quit])?;
+    let home = MenuItem::with_id(app, "home", "Home", true, None::<&str>)?;
+    let analytics = MenuItem::with_id(app, "analytics", "Analytics", true, None::<&str>)?;
+    let setup = MenuItem::with_id(app, "setup", "Run Setup…", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let updates = MenuItem::with_id(app, "updates", "Check for Updates…", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Orttaai", true, None::<&str>)?;
+    let sep = || tauri::menu::PredefinedMenuItem::separator(app);
+    let menu = Menu::with_items(
+        app,
+        &[
+            &status,
+            &sep()?,
+            &rec,
+            &sep()?,
+            &home,
+            &analytics,
+            &setup,
+            &settings,
+            &updates,
+            &sep()?,
+            &quit,
+        ],
+    )?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Orttaai")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "quit" => app.exit(0),
-            "show" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+            "home" => show_main(app, Some("home")),
+            "analytics" => show_main(app, Some("analytics")),
+            "setup" => show_main(app, Some("setup")),
+            "settings" => show_main(app, Some("settings")),
+            "updates" => show_main(app, Some("check-updates")),
+            "rec" => {
+                let state = app.state::<EngineState>();
+                // With the engine off the reason shows in the main window,
+                // which may be hidden: bring it up so it isn't missed.
+                if !state.is_running() {
+                    show_main(app, None);
                 }
+                engine::toggle_recording_impl(app, state.inner());
             }
-            "rec" => toggle_recording_impl(app, app.state::<EngineState>().inner()),
             _ => {}
         });
     if let Some(icon) = app.default_window_icon().cloned() {
@@ -691,55 +289,325 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Park the floating panel near the bottom-center of the primary monitor.
-/// (No click-through: `set_ignore_cursor_events` on the not-yet-realized hidden
-/// window panics inside tao's GTK event loop, and `focusable:false` alone already
-/// stops it stealing keyboard focus — the property that matters for injection.)
-fn position_panel(app: &tauri::App) {
-    if let Some(panel) = app.get_webview_window("panel") {
-        if let Ok(Some(monitor)) = panel.primary_monitor() {
-            let size = monitor.size();
-            let x = (size.width as i32 - 220) / 2;
-            let y = size.height as i32 - 160;
-            let _ = panel.set_position(tauri::PhysicalPosition::new(x, y));
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// The diagnostic log's first lines: what it holds, and what it never does.
+const LOG_PRIVACY_NOTE: &str = "\
+Orttaai diagnostic log. It never records what you dictate, your transcripts, \
+dictionary, snippets, clipboard, selected text or anything else you type or say. \
+It holds only technical events (engine start, model loading, audio device \
+changes, timings and error messages) that help troubleshoot a crash or an error. \
+Your home folder is written as ~, so file paths don't show your account name.\n";
+
+/// The log file, with the user's home folder written as `~` so paths in it
+/// don't carry the account name.
+struct MaskedLog {
+    file: std::fs::File,
+    /// The home folder as it appears in log lines: plain, and with Windows
+    /// backslashes escaped (paths printed with `{:?}`).
+    home: Vec<String>,
+}
+
+impl std::io::Write for MaskedLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Ok(text) = std::str::from_utf8(buf) {
+            if self.home.iter().any(|h| text.contains(h.as_str())) {
+                let mut masked = text.to_string();
+                for h in &self.home {
+                    masked = masked.replace(h.as_str(), "~");
+                }
+                self.file.write_all(masked.as_bytes())?;
+                return Ok(buf.len());
+            }
         }
+        self.file.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
     }
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Off unless asked for: `ORTTAAI_LOG=info` (any tracing filter) writes the
+/// engine's log to `orttaai.log` in Orttaai's data folder, for a bug report.
+/// See [`LOG_PRIVACY_NOTE`] for what it may contain.
+fn init_diagnostic_log() {
+    let Ok(filter) = std::env::var("ORTTAAI_LOG") else {
+        return;
+    };
+    let Ok(dir) = orttaai_core::store::Store::data_dir() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("orttaai.log");
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    use std::io::Write;
+    let _ = write!(file, "\n{LOG_PRIVACY_NOTE}");
+    let home: Vec<String> = ["USERPROFILE", "HOME"]
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .map(|h| h.trim_end_matches(['/', '\\']).to_string())
+        .filter(|h| h.len() > 1)
+        .flat_map(|h| {
+            let escaped = h.replace('\\', "\\\\");
+            // Longest first, so the escaped form is replaced before the plain one.
+            [escaped, h]
+        })
+        .collect();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+        .with_ansi(false)
+        .with_writer(std::sync::Mutex::new(MaskedLog { file, home }))
+        .try_init();
+}
+
 pub fn run() {
+    init_diagnostic_log();
     tauri::Builder::default()
+        // Must be first: a second launch focuses the running instance instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main(app, None);
+        }))
         .plugin(tauri_plugin_opener::init())
+        // Native folder picker (Model Storage).
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--minimized"]),
+        ))
         .manage(EngineState::default())
         .setup(|app| {
             #[cfg(desktop)]
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
             build_tray(app)?;
-            position_panel(app);
+            engine::position_panel(app);
+            wire_learn_from_edits(app.handle());
+            sync_launch_at_login(app.handle(), &Settings::load_or_default());
+            engine::on_app_ready(app.handle());
+            // The main window starts hidden: a new install sees only the setup
+            // window, and a launch at login stays in the tray.
+            if !Settings::load_or_default().has_completed_setup {
+                open_setup(app.handle())?;
+            } else if !std::env::args().any(|a| a == "--minimized") {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
             Ok(())
         })
+        .on_window_event(|window, event| {
+            // Closing the main window keeps Orttaai running in the tray (like the
+            // Mac menu-bar app); Quit lives in the tray menu.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                } else if window.label() == "setup"
+                    && !Settings::load_or_default().has_completed_setup
+                {
+                    // Nothing else is open yet, and a tray isn't a given on Linux,
+                    // so closing first-run setup quits; the next launch reopens it.
+                    window.app_handle().exit(0);
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            // == shell ==
             app_info,
-            get_settings,
-            set_settings,
-            list_models,
-            download_model,
-            delete_model,
-            recent_history,
-            engine_status,
-            start_dictation,
-            stop_dictation,
-            toggle_recording,
-            ollama_models,
-            ollama_chat,
-            dashboard_stats,
-            delete_transcription,
-            list_memory,
-            add_memory,
-            delete_memory
+            open_setup_window,
+            finish_setup,
+            settings_cmds::get_settings,
+            settings_cmds::open_microphone_settings,
+            settings_cmds::express_in_use,
+            settings_cmds::update_settings,
+            settings_cmds::reset_settings,
+            settings_cmds::clear_history,
+            settings_cmds::reset_app_data,
+            // == engine ==
+            engine::engine_status,
+            engine::start_dictation,
+            engine::stop_dictation,
+            engine::toggle_recording,
+            engine::stop_recording,
+            engine::suspend_hotkeys,
+            engine::validate_shortcut,
+            engine::list_audio_devices,
+            engine::start_level_monitor,
+            engine::stop_level_monitor,
+            engine::reset_audio,
+            engine::hardware_info,
+            engine::platform_check,
+            engine::list_models,
+            engine::models_storage,
+            engine::set_models_dir,
+            engine::download_model,
+            engine::cancel_download,
+            engine::delete_model,
+            engine::use_model,
+            engine::verify_model,
+            engine::vad_status,
+            express_cmds::express_models,
+            express_cmds::express_download,
+            express_cmds::word_boost_status,
+            express_cmds::word_boost_download,
+            express_cmds::express_cancel,
+            express_cmds::express_delete,
+            // == memory ==
+            memory::list_dictionary,
+            memory::save_dictionary,
+            memory::delete_dictionary,
+            memory::list_snippets,
+            memory::save_snippet,
+            memory::delete_snippet,
+            memory::set_dictionary_active,
+            memory::set_snippet_active,
+            memory::list_suggestions,
+            memory::accept_suggestion,
+            memory::dismiss_suggestion,
+            memory::list_edit_checks,
+            memory::analyze_history,
+            memory::export_memory,
+            memory::import_memory,
+            memory::preview_text_pipeline,
+            // == ai ==
+            ai::ai_status,
+            ai::ai_test_connection,
+            ai::ai_models,
+            ai::ai_catalog,
+            ai::ai_pull_model,
+            ai::ai_warm_models,
+            ai::s1_mini_status,
+            ai::s1_mini_install,
+            ai::ai_polish_test,
+            ai::ai_rewrite_selection,
+            ai::chat_conversations,
+            ai::chat_messages,
+            ai::chat_rename,
+            ai::chat_delete,
+            ai::chat_models,
+            ai::chat_info,
+            ai::chat_send,
+            ai::chat_stop,
+            ai::writing_insights_info,
+            ai::writing_insights_generate,
+            ai::writing_insights_quick,
+            ai::writing_insights_latest,
+            ai::writing_insights_history,
+            ai::writing_insights_get,
+            ai::writing_insights_freshness,
+            ai::writing_insights_compare,
+            ai::writing_insights_apps,
+            ai::writing_apply_recommendation,
+            ai::insight_snapshot_pin,
+            ai::insight_snapshot_delete,
+            ai::tone_analyze,
+            ai::tone_latest,
+            ai::tone_history,
+            ai::tone_get,
+            ai::tone_sample_count,
+            // == semantic ==
+            semantic::semantic_status,
+            semantic::semantic_llm_status,
+            semantic::semantic_search,
+            semantic::semantic_index_now,
+            semantic::semantic_clear_index,
+            semantic::semantic_rebuild_graph,
+            semantic::semantic_concept_graph,
+            semantic::semantic_concept_detail,
+            semantic::semantic_concept_brief,
+            semantic::semantic_activity,
+            semantic::semantic_activity_start,
+            semantic::semantic_activity_stop,
+            semantic::semantic_insight_report,
+            semantic::semantic_generate_insights,
+            semantic::semantic_findings,
+            semantic::semantic_open_loops,
+            semantic::semantic_set_finding_status,
+            semantic::semantic_signals,
+            semantic::semantic_home_insights,
+            // == insights ==
+            insights::dashboard_stats,
+            insights::delete_transcription,
+            insights::recent_history,
+            insights::home_summary,
+            insights::analytics_dashboard,
+            insights::github_prompt_check,
+            insights::history_page,
+            insights::history_apps,
+            insights::get_transcription,
+            insights::copy_transcription,
+            insights::milestones_overview,
+            insights::milestones_pending,
+            insights::milestones_evaluate,
+            insights::milestones_mark_celebrated,
+            insights::whats_new_pending,
+            insights::whats_new_mark_seen,
+            insights::save_share_card,
+            insights::copy_share_card,
+            insights::reveal_share_card,
+            // == coach ==
+            coach::coach_catalog,
+            coach::coach_snapshot,
+            coach::coach_judge_state,
+            coach::coach_check_judges,
+            coach::coach_start_habit,
+            coach::coach_end_habit,
+            coach::coach_set_app_rule,
+            coach::coach_remove_app_rule,
+            coach::coach_set_persona,
+            coach::coach_month_report,
+            coach::coach_begin_rep,
+            coach::coach_next_rep,
+            coach::coach_end_session,
+            coach::coach_score_rep,
+            coach::coach_practice_arm,
+            coach::coach_practice_disarm,
+            coach::coach_practice_discard,
+            coach::coach_scene_begin,
+            coach::coach_scene_warm,
+            coach::coach_scene_reply,
+            coach::coach_scene_mood,
+            coach::coach_scene_end,
+            coach::coach_models,
+            coach::coach_compare_models,
+            coach::coach_setup_status,
+            coach::coach_run_setup,
+            coach::coach_start_ollama,
+            coach::coach_save_card,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::MaskedLog;
+    use std::io::Write;
+
+    #[test]
+    fn the_home_folder_never_reaches_the_log() {
+        let path = std::env::temp_dir().join(format!("orttaai-log-test-{}", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        let home = r"C:\Users\Ada Lovelace".to_string();
+        let mut log = MaskedLog {
+            file,
+            home: vec![home.replace('\\', r"\\"), home],
+        };
+        writeln!(log, r"loading model from 'C:\Users\Ada Lovelace\AppData\m.bin'").unwrap();
+        writeln!(log, r#"open failed: "C:\\Users\\Ada Lovelace\\x""#).unwrap();
+        writeln!(log, "engine started").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(!text.contains("Lovelace"), "{text}");
+        assert!(text.contains(r"'~\AppData\m.bin'") && text.contains(r#""~\\x""#), "{text}");
+        assert!(text.contains("engine started"));
+    }
 }

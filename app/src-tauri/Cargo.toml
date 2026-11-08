@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.2.4"
+version = "0.3.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -27,9 +27,20 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The write-once engine, with all real backends (whisper, cpal, injection, hotkey).
-orttaai-core = { path = "../../core", features = ["full"] }
+orttaai-core = { path = "../../core", features = ["full", "express"] }
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+# Opt-in diagnostics: ORTTAAI_LOG=info writes orttaai.log (technical events only,
+# never dictations or personal data) to the data folder.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Analytics/home: share-card PNGs arrive base64-encoded and are saved to the
+# user's Pictures folder.
+base64 = "0.22"
+directories = "5"
+tauri-plugin-dialog = "2"
 
 # Native Wayland typing via the RemoteDesktop portal is Linux-only; Cargo unions
 # these features with the base dependency, so Windows builds never pull in ashpd.

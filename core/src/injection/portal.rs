@@ -4,20 +4,31 @@
 //! virtual-keyboard protocol that `wtype` relies on — but it DOES implement
 //! `org.freedesktop.portal.RemoteDesktop`. We open one persistent session (the
 //! user grants permission once; we save a restore token so later launches don't
-//! re-prompt) and type each transcript as keysym press/release events.
+//! re-prompt) and type each transcript as keysym press/release events. The
+//! same session sends the paste/copy chords for paste injection and voice-edit
+//! selection capture.
 //!
 //! All portal/D-Bus work runs on a dedicated thread with its own async runtime;
-//! the synchronous [`inject`](WaylandPortalInjector::inject) call hands text to
-//! it over a channel and waits for the result.
+//! the synchronous calls hand work to it over a channel and wait for the result.
 
 use crate::error::{CoreError, Result};
 use crate::settings::Settings;
-use crate::types::InjectionResult;
 use ashpd::desktop::remote_desktop::{DeviceType, KeyState, RemoteDesktop};
 use ashpd::desktop::{PersistMode, Session};
 
+pub const CONTROL_L: i32 = 0xFFE3;
+pub const SHIFT_L: i32 = 0xFFE1;
+pub const INSERT: i32 = 0xFF63;
+pub const KEY_V: i32 = 0x76;
+pub const KEY_C: i32 = 0x63;
+
+enum Keys {
+    Text(String),
+    Chord { modifiers: Vec<i32>, key: i32 },
+}
+
 struct Job {
-    text: String,
+    keys: Keys,
     reply: std::sync::mpsc::Sender<std::result::Result<(), String>>,
 }
 
@@ -50,7 +61,6 @@ impl WaylandPortalInjector {
                     }
                 };
                 rt.block_on(async move {
-                    // ---- set up the session (interactive on first run) --------
                     let rd = match RemoteDesktop::new().await {
                         Ok(rd) => rd,
                         Err(e) => {
@@ -67,22 +77,20 @@ impl WaylandPortalInjector {
                     };
                     let _ = ready_tx.send(Ok(()));
 
-                    // ---- serve type requests, healing a dropped session -------
                     // GNOME closes a RemoteDesktop session after use/idle, so a
-                    // later inject fails with "Invalid session". When that happens
-                    // *before any key is typed*, transparently re-open with the
-                    // saved restore token (no dialog) and retry once. We never
-                    // retry mid-text, so a partial type can't double up in the
-                    // user's app.
+                    // later request fails with "Invalid session". When that
+                    // happens *before any key is sent*, transparently re-open
+                    // with the saved restore token (no dialog) and retry once.
+                    // Never retried mid-text, so a partial type can't double up.
                     while let Some(job) = rx.recv().await {
-                        let result = match type_keysyms(&rd, &session, &job.text).await {
+                        let result = match send_keys(&rd, &session, &job.keys).await {
                             Ok(()) => Ok(()),
                             Err((0, msg)) => {
-                                eprintln!("orttaai: portal session unusable ({msg}); re-opening");
+                                tracing::warn!("portal session unusable ({msg}); re-opening");
                                 match open_keyboard_session(&rd).await {
                                     Ok(s) => {
                                         session = s;
-                                        type_keysyms(&rd, &session, &job.text)
+                                        send_keys(&rd, &session, &job.keys)
                                             .await
                                             .map_err(|(_, m)| m)
                                     }
@@ -113,26 +121,38 @@ impl WaylandPortalInjector {
         self.ready.is_ok()
     }
 
-    /// Type `text` into the focused window via the portal. Blocks until done.
-    pub fn inject(&self, text: &str) -> Result<InjectionResult> {
+    fn run(&self, keys: Keys) -> Result<()> {
         if let Err(e) = &self.ready {
             return Err(CoreError::Injection(e.clone()));
-        }
-        if text.is_empty() {
-            return Ok(InjectionResult::NoTranscript);
         }
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         self.tx
             .send(Job {
-                text: text.to_string(),
+                keys,
                 reply: reply_tx,
             })
             .map_err(|_| CoreError::Injection("portal worker stopped".into()))?;
         match reply_rx.recv() {
-            Ok(Ok(())) => Ok(InjectionResult::Success),
+            Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(CoreError::Injection(e)),
             Err(_) => Err(CoreError::Injection("portal worker dropped".into())),
         }
+    }
+
+    /// Type `text` into the focused window. Blocks until done.
+    pub fn type_text(&self, text: &str) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        self.run(Keys::Text(text.to_string()))
+    }
+
+    /// Press `modifiers`, click `key`, release the modifiers (keysyms).
+    pub fn chord(&self, modifiers: &[i32], key: i32) -> Result<()> {
+        self.run(Keys::Chord {
+            modifiers: modifiers.to_vec(),
+            key,
+        })
     }
 }
 
@@ -170,26 +190,59 @@ async fn open_keyboard_session<'a>(
     Ok(session)
 }
 
-/// Type `text` as keysym press/release pairs. On error, returns how many chars
-/// were already typed so the caller can avoid retrying mid-text (which would
-/// double-type). A failure at index 0 means nothing was typed — safe to retry.
-async fn type_keysyms<'a>(
+async fn key<'a>(
     rd: &RemoteDesktop<'a>,
     session: &Session<'a, RemoteDesktop<'a>>,
-    text: &str,
+    keysym: i32,
+    state: KeyState,
+) -> std::result::Result<(), String> {
+    rd.notify_keyboard_keysym(session, keysym, state)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Send `keys`. On error, returns how many keys were already sent so the caller
+/// can avoid retrying mid-text (which would double-type). A failure at index 0
+/// means nothing was sent — safe to retry.
+async fn send_keys<'a>(
+    rd: &RemoteDesktop<'a>,
+    session: &Session<'a, RemoteDesktop<'a>>,
+    keys: &Keys,
 ) -> std::result::Result<(), (usize, String)> {
-    for (i, ch) in text.chars().enumerate() {
-        let keysym = char_to_keysym(ch);
-        rd.notify_keyboard_keysym(session, keysym, KeyState::Pressed)
-            .await
-            .map_err(|e| (i, e.to_string()))?;
-        rd.notify_keyboard_keysym(session, keysym, KeyState::Released)
-            .await
-            .map_err(|e| (i, e.to_string()))?;
-        // A small gap helps the compositor register each key.
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    match keys {
+        Keys::Text(text) => {
+            for (i, ch) in text.chars().enumerate() {
+                let keysym = char_to_keysym(ch);
+                key(rd, session, keysym, KeyState::Pressed)
+                    .await
+                    .map_err(|e| (i, e))?;
+                key(rd, session, keysym, KeyState::Released)
+                    .await
+                    .map_err(|e| (i, e))?;
+                // A small gap helps the compositor register each key.
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+            Ok(())
+        }
+        Keys::Chord { modifiers, key: k } => {
+            for &m in modifiers {
+                key(rd, session, m, KeyState::Pressed)
+                    .await
+                    .map_err(|e| (0, e))?;
+            }
+            let sent = async {
+                key(rd, session, *k, KeyState::Pressed).await?;
+                tokio::time::sleep(std::time::Duration::from_millis(4)).await;
+                key(rd, session, *k, KeyState::Released).await
+            }
+            .await;
+            // Always release the modifiers, even if the key failed.
+            for &m in modifiers.iter().rev() {
+                let _ = key(rd, session, m, KeyState::Released).await;
+            }
+            sent.map_err(|e| (1, e))
+        }
     }
-    Ok(())
 }
 
 /// Map a character to an X11 keysym for the portal.

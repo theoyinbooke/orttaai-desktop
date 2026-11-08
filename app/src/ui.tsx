@@ -1,4 +1,4 @@
-// Orttaai design system — "Signal / studio console".
+// Orttaai design system — mirrors the macOS app (Orttaai/Design).
 // Theme, icon set, and reusable primitives. All visuals come from CSS tokens in
 // App.css; this file owns behavior + markup only.
 
@@ -28,16 +28,22 @@ function resolve(choice: ThemeChoice): "light" | "dark" {
 export function applyTheme(choice: ThemeChoice) {
   document.documentElement.dataset.theme = resolve(choice);
 }
+/** The cached appearance; falls back to "system", the setting's default. */
 export function storedTheme(): ThemeChoice {
-  const v = localStorage.getItem(THEME_KEY) as ThemeChoice | null;
-  return v === "light" || v === "dark" || v === "system" ? v : "dark";
+  let v: string | null = null;
+  try {
+    v = localStorage.getItem(THEME_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+  return v === "light" || v === "dark" || v === "system" ? v : "system";
 }
 
 const ThemeCtx = createContext<{
   choice: ThemeChoice;
   resolved: "light" | "dark";
   setChoice: (c: ThemeChoice) => void;
-}>({ choice: "dark", resolved: "dark", setChoice: () => {} });
+}>({ choice: "system", resolved: "dark", setChoice: () => {} });
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [choice, setChoiceState] = useState<ThemeChoice>(storedTheme);
@@ -76,6 +82,147 @@ export const useTheme = () => useContext(ThemeCtx);
 
 const P = (d: string) => <path d={d} />;
 const ICONS: Record<string, ReactNode> = {
+  // Sidebar set, drawn after the Mac's SF Symbols.
+  house: P("M3.5 11.2 12 4l8.5 7.2M6 9.6V20h4.2v-5.5h3.6V20H18V9.6"),
+  chatBubbles: P("M3 5.5h11.5v8H8l-3 2.6v-2.6H3v-8ZM6 8.2h5.5M6 10.8h3.5M17 9h4v8h-1.8v2.4L16.4 17H11v-1.6"),
+  connected: (
+    <>
+      <circle cx="5.5" cy="6" r="2.2" />
+      <circle cx="18.5" cy="6" r="2.2" />
+      <circle cx="12" cy="18" r="2.2" />
+      <path strokeDasharray="1.6 2.2" d="M7.7 6h8.6M6.6 8l4.2 7.9M17.4 8l-4.2 7.9" />
+    </>
+  ),
+  barsAxis: P("M3.5 20.5h17M6 17.5v-6M10 17.5V5.5M14 17.5v-9M18 17.5v-4"),
+  rosette: (
+    <>
+      <circle cx="12" cy="9" r="5.5" />
+      <path d="M8.6 13.4 7.5 21l4.5-2.4 4.5 2.4-1.1-7.6" />
+    </>
+  ),
+  scope: (
+    <>
+      <circle cx="12" cy="12" r="7.5" />
+      <path d="M12 2.5v5M12 16.5v5M2.5 12h5M16.5 12h5" />
+    </>
+  ),
+  book: P("M6.5 3.5H18a1 1 0 0 1 1 1V20.5H6.5A2.5 2.5 0 0 1 4 18V6a2.5 2.5 0 0 1 2.5-2.5ZM4 18a2.5 2.5 0 0 1 2.5-2.5H19M8.5 7.5h6M8.5 10.5h6"),
+  cpu: (
+    <>
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+      <rect x="9.5" y="9.5" width="5" height="5" rx="0.8" />
+      <path d="M9.5 2.8V6M14.5 2.8V6M9.5 18v3.2M14.5 18v3.2M2.8 9.5H6M2.8 14.5H6M18 9.5h3.2M18 14.5h3.2" />
+    </>
+  ),
+  gear: (
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M10.3 2.8h3.4l.5 2.6 1.5.6 2.2-1.5 2.4 2.4-1.5 2.2.6 1.5 2.6.5v3.4l-2.6.5-.6 1.5 1.5 2.2-2.4 2.4-2.2-1.5-1.5.6-.5 2.6h-3.4l-.5-2.6-1.5-.6-2.2 1.5-2.4-2.4 1.5-2.2-.6-1.5-2.6-.5v-3.4l2.6-.5.6-1.5-1.5-2.2 2.4-2.4 2.2 1.5 1.5-.6.5-2.6Z" />
+    </>
+  ),
+  infoCircle: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5.5M12 7.6v.2M10.2 16.8h3.6" />
+    </>
+  ),
+  sliders: (
+    <>
+      <path d="M3 7h9M16 7h5M3 12h3M10 12h11M3 17h11M18 17h3" />
+      <circle cx="14" cy="7" r="2" />
+      <circle cx="8" cy="12" r="2" />
+      <circle cx="16" cy="17" r="2" />
+    </>
+  ),
+  sidebarLeft: (
+    <>
+      <rect x="3" y="4.5" width="18" height="15" rx="2.5" />
+      <path d="M9.5 4.5v15M5.5 8h1.6M5.5 11h1.6M5.5 14h1.6" />
+    </>
+  ),
+  clockArrow: (
+    <>
+      <path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.4" />
+      <path d="M3.5 4v4.4h4.4M12 7.5V12l3.2 2" />
+    </>
+  ),
+  waveSearch: (
+    <>
+      <path d="M3 10.5v3M6.2 7.5v9M9.4 4.5v15M12.6 8v5" />
+      <circle cx="16.5" cy="14.5" r="3.6" />
+      <path d="m19.2 17.2 2.3 2.3" />
+    </>
+  ),
+  pulse: P("M2.5 12.5h4.2l2.2-6 3.4 12 2.8-9 1.5 3h5.4"),
+  waveform: P("M4 10.5v3M8 7v10M12 3.5v17M16 7.5v9M20 10.5v3"),
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7v5l3.4 2" />
+    </>
+  ),
+  speedometer: (
+    <>
+      <path d="M4.2 18.5a9 9 0 1 1 15.6 0" />
+      <path d="m12 14 3.6-4.6M12 14v0" />
+      <circle cx="12" cy="14" r="1.4" />
+    </>
+  ),
+  lock: P("M7.5 11V8a4.5 4.5 0 0 1 9 0v3M5.5 11h13v9.5h-13z"),
+  cursorRays: P("M10.5 10.5 20 14l-4 1.8L14.2 20l-3.7-9.5ZM10.5 3v2.2M4.6 5.1l1.6 1.6M3 10.5h2.2M4.6 15.9l1.6-1.6M16.4 5.1l-1.6 1.6"),
+  shieldLock: P("M12 3 4.5 6v5.5c0 4.5 3.2 8.2 7.5 9.5 4.3-1.3 7.5-5 7.5-9.5V6L12 3ZM9.5 11V9.5a2.5 2.5 0 0 1 5 0V11M8.8 11h6.4v4.5H8.8z"),
+  textCheck: P("M4 6.5h13M4 11h9M4 15.5h6M13 16.5l2.6 2.6L21 13.7"),
+  drive: (
+    <>
+      <rect x="3" y="7" width="18" height="10" rx="2.5" />
+      <path d="M15 12h.2M18 12h.2" />
+    </>
+  ),
+  chip: P("M6 6h12v12H6zM9.5 2.8V6M14.5 2.8V6M9.5 18v3.2M14.5 18v3.2M2.8 9.5H6M2.8 14.5H6M18 9.5h3.2M18 14.5h3.2"),
+  memoryChip: P("M3 8h18v8H3zM7 8v8M12 8v8M17 8v8M6 16v3M18 16v3"),
+  minimize: P("M6 12h12"),
+  maximize: <rect x="6.5" y="6.5" width="11" height="11" rx="1.2" />,
+  close: P("M7 7l10 10M17 7 7 17"),
+  codeBrackets: P("M8.5 7 4 12l4.5 5M15.5 7 20 12l-4.5 5M13.5 5l-3 14"),
+  external: P("M13.5 4H20v6.5M20 4l-9 9M9 5.5H5A1.5 1.5 0 0 0 3.5 7v12A1.5 1.5 0 0 0 5 20.5h12a1.5 1.5 0 0 0 1.5-1.5v-4"),
+  home: P("M3 11.5 12 4l9 7.5M5.5 9.8V20h13V9.8M10 20v-5h4v5"),
+  graph: (
+    <>
+      <circle cx="6" cy="6" r="2.5" />
+      <circle cx="18" cy="7" r="2.5" />
+      <circle cx="12" cy="18" r="2.5" />
+      <path d="M8.3 7.1 15.6 6.6M7.2 8.2l3.6 7.6M16.9 9.3l-3.7 6.6" />
+    </>
+  ),
+  trophy: P("M8 4h8v5a4 4 0 0 1-8 0V4ZM8 6H4.5a3 3 0 0 0 3.8 4.4M16 6h3.5a3 3 0 0 1-3.8 4.4M12 13v4M8.5 20h7M10 17h4v3h-4z"),
+  coach: P("M12 3v3M5.6 5.6l2.1 2.1M3 12h3M18 12h3M16.3 7.7l2.1-2.1M9 21h6M10 17.5h4M12 9a4 4 0 0 0-2.5 7.1V17.5h5v-1.4A4 4 0 0 0 12 9Z"),
+  restart: P("M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4"),
+  sparkle: P("M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3ZM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16Z"),
+  mic: P("M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3ZM5 11a7 7 0 0 0 14 0M12 18v3"),
+  keyboard: P("M3 7h18v10H3zM6.5 10h1M10 10h1M13.5 10h1M17 10h.5M7 14h10"),
+  shield: P("M12 3 4.5 6v5.5c0 4.5 3.2 8.2 7.5 9.5 4.3-1.3 7.5-5 7.5-9.5V6L12 3Z"),
+  bolt: P("M13 2 4 14h7l-1 8 9-12h-7l1-8Z"),
+  share: P("M12 3v12M7.5 7.5 12 3l4.5 4.5M5 13v6h14v-6"),
+  edit: P("M4 20h4L19 9l-4-4L4 16v4ZM13.5 6.5l4 4"),
+  pin: P("M9 4h6l-1 6 3 3H7l3-3-1-6ZM12 13v7"),
+  globe: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3Z" />
+    </>
+  ),
+  volume: P("M4 9v6h4l5 4V5L8 9H4ZM16 9.5a3.5 3.5 0 0 1 0 5M18.5 7a7 7 0 0 1 0 10"),
+  calendar: P("M4 6h16v14H4zM4 10h16M8 3v4M16 3v4"),
+  flame: P("M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2.2 1-3.6 2.2-4.6.2 1.6 1 2.6 2.1 3C11 9.2 11 6 12 3Z"),
+  target: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="5" />
+      <circle cx="12" cy="12" r="1.5" />
+    </>
+  ),
+  link: P("M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"),
+  filter: P("M4 5h16l-6 7.5V19l-4 2v-8.5L4 5Z"),
   dictate: P("M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3ZM5 11a7 7 0 0 0 14 0M12 18v3"),
   history: (
     <>
@@ -282,21 +429,40 @@ export function Card({ children, className = "", ...rest }: { children: ReactNod
   );
 }
 
+/** The window chrome the page header needs: the sidebar toggle. Empty in a
+ * window without a sidebar. */
+export const ShellContext = createContext<{ toggleSidebar?: () => void }>({});
+
+/**
+ * The page's title strip (Mac `workspaceHeader`): sidebar toggle, title, optional
+ * controls beside it, actions at the trailing edge. It doubles as the window's
+ * drag region and stays put while the page scrolls.
+ */
 export function PageHeader({
   title,
-  desc,
+  leading,
   actions,
 }: {
   title: string;
-  desc?: ReactNode;
+  leading?: ReactNode;
   actions?: ReactNode;
 }) {
+  const { toggleSidebar } = useContext(ShellContext);
   return (
-    <header className="page-head">
-      <div className="page-head-text">
-        <h1>{title}</h1>
-        {desc && <p>{desc}</p>}
-      </div>
+    <header className="page-head" data-tauri-drag-region>
+      {toggleSidebar && (
+        <button
+          className="page-head-toggle"
+          onClick={toggleSidebar}
+          title="Show or hide the sidebar"
+          aria-label="Toggle sidebar"
+        >
+          <Icon name="sidebarLeft" size={17} />
+        </button>
+      )}
+      <h1 data-tauri-drag-region>{title}</h1>
+      {leading}
+      <div className="page-head-fill" data-tauri-drag-region />
       {actions && <div className="page-head-actions">{actions}</div>}
     </header>
   );
@@ -362,6 +528,91 @@ export function Toggle({
         {hint && <span className="field-hint">{hint}</span>}
       </span>
     </label>
+  );
+}
+
+/** A bare on/off switch (no label) for settings rows. */
+export function Switch({
+  checked,
+  onChange,
+  disabled,
+  label,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      className={`switch ${checked ? "on" : ""}`}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="switch-knob" />
+    </button>
+  );
+}
+
+/** Segmented control (Mac-style picker). */
+export function Segmented<T extends string>({
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (v: T) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="segmented" role="radiogroup">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={value === o.value}
+          disabled={disabled}
+          className={`seg-btn ${value === o.value ? "active" : ""}`}
+          onClick={() => onChange(o.value)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Tab strip for in-page sub-sections (Mac picker tabs). */
+export function Tabs<T extends string>({
+  value,
+  tabs,
+  onChange,
+}: {
+  value: T;
+  tabs: { value: T; label: string }[];
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="tabs" role="tablist">
+      {tabs.map((t) => (
+        <button
+          key={t.value}
+          role="tab"
+          aria-selected={value === t.value}
+          className={`tab ${value === t.value ? "active" : ""}`}
+          onClick={() => onChange(t.value)}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
   );
 }
 

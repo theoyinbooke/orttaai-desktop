@@ -1,23 +1,98 @@
-//! Global push-to-talk hotkey. Real backends land in Phase 1:
-//! `RegisterHotKey` (Windows), `XGrabKey` (X11), XDG GlobalShortcuts portal (Wayland).
-//! The Wayland path is brittle — registration may fail and callers degrade gracefully.
+//! Global hotkeys: `RegisterHotKey` (Windows), `XGrabKey` (X11), and the XDG
+//! GlobalShortcuts portal (Wayland). Each manager owns every binding the app
+//! needs (push-to-talk and the voice-edit shortcut) in one event loop —
+//! `global-hotkey` delivers all events through a single global channel, so two
+//! independent loops would steal each other's events.
+//!
+//! Every binding reports key-down and key-up; repeated downs while held and
+//! stray ups are filtered here, so callers see clean press/release pairs.
 
 use crate::error::{CoreError, Result};
 use crate::types::HotkeyCombo;
 
-/// Fired on key-down (start recording) and key-up (stop + transcribe).
+pub mod right_ctrl;
+pub mod tap;
+
+/// Fired on key-down and key-up.
 pub type HotkeyCallback = Box<dyn Fn() + Send + 'static>;
 
+/// Stable ids (also the GlobalShortcuts portal shortcut ids).
+pub const PUSH_TO_TALK_ID: &str = "push-to-talk";
+pub const EDIT_SELECTION_ID: &str = "edit-selection";
+
+/// One global shortcut.
+pub struct HotkeyBinding {
+    pub id: &'static str,
+    /// Shown in the portal's bind dialog / GNOME Settings.
+    pub description: &'static str,
+    pub combo: HotkeyCombo,
+    pub on_down: HotkeyCallback,
+    pub on_up: HotkeyCallback,
+}
+
+impl HotkeyBinding {
+    pub fn push_to_talk(
+        combo: HotkeyCombo,
+        on_down: HotkeyCallback,
+        on_up: HotkeyCallback,
+    ) -> Self {
+        Self {
+            id: PUSH_TO_TALK_ID,
+            description: "Dictate — hold to talk, tap for hands-free",
+            combo,
+            on_down,
+            on_up,
+        }
+    }
+
+    pub fn edit_selection(
+        combo: HotkeyCombo,
+        on_down: HotkeyCallback,
+        on_up: HotkeyCallback,
+    ) -> Self {
+        Self {
+            id: EDIT_SELECTION_ID,
+            description: "Edit selection with your voice",
+            combo,
+            on_down,
+            on_up,
+        }
+    }
+}
+
+/// Filters a raw key stream into clean press/release pairs: auto-repeat
+/// presses while held, and releases with no press, are dropped.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PressFilter {
+    pressed: bool,
+}
+
+impl PressFilter {
+    /// `true` when this down should be delivered.
+    pub fn down(&mut self) -> bool {
+        !std::mem::replace(&mut self.pressed, true)
+    }
+    /// `true` when this up should be delivered.
+    pub fn up(&mut self) -> bool {
+        std::mem::replace(&mut self.pressed, false)
+    }
+}
+
 pub trait HotkeyManager: Send {
-    /// Register `combo`, invoking `on_down` when held and `on_up` when released.
+    /// Register every binding (replacing any previous registration).
+    fn register_all(&mut self, bindings: Vec<HotkeyBinding>) -> Result<()>;
+
+    /// Register a single push-to-talk combo (legacy one-binding API).
     fn register(
         &mut self,
         combo: HotkeyCombo,
         on_down: HotkeyCallback,
         on_up: HotkeyCallback,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        self.register_all(vec![HotkeyBinding::push_to_talk(combo, on_down, on_up)])
+    }
 
-    /// Remove any registered hotkey.
+    /// Remove every registered hotkey.
     fn unregister(&mut self) -> Result<()>;
 
     fn backend_name(&self) -> &'static str;
@@ -26,8 +101,7 @@ pub trait HotkeyManager: Send {
 /// Mock manager whose press/release are fired manually (tests, `demo`).
 #[derive(Default)]
 pub struct MockHotkeyManager {
-    on_down: Option<HotkeyCallback>,
-    on_up: Option<HotkeyCallback>,
+    bindings: Vec<HotkeyBinding>,
 }
 
 impl MockHotkeyManager {
@@ -35,36 +109,50 @@ impl MockHotkeyManager {
         Self::default()
     }
 
-    /// Simulate the hotkey being pressed.
+    fn find(&self, id: &str) -> Option<&HotkeyBinding> {
+        self.bindings.iter().find(|b| b.id == id)
+    }
+
+    /// Simulate the push-to-talk hotkey being pressed.
     pub fn fire_down(&self) {
-        if let Some(cb) = &self.on_down {
-            cb();
+        self.fire_down_id(PUSH_TO_TALK_ID);
+    }
+
+    /// Simulate the push-to-talk hotkey being released.
+    pub fn fire_up(&self) {
+        self.fire_up_id(PUSH_TO_TALK_ID);
+    }
+
+    pub fn fire_down_id(&self, id: &str) {
+        if let Some(b) = self.find(id) {
+            (b.on_down)();
         }
     }
 
-    /// Simulate the hotkey being released.
-    pub fn fire_up(&self) {
-        if let Some(cb) = &self.on_up {
-            cb();
+    pub fn fire_up_id(&self, id: &str) {
+        if let Some(b) = self.find(id) {
+            (b.on_up)();
         }
+    }
+
+    /// Registered combos by id.
+    pub fn combos(&self) -> Vec<(&'static str, HotkeyCombo)> {
+        self.bindings
+            .iter()
+            .map(|b| (b.id, b.combo.clone()))
+            .collect()
     }
 }
 
 impl HotkeyManager for MockHotkeyManager {
-    fn register(
-        &mut self,
-        _combo: HotkeyCombo,
-        on_down: HotkeyCallback,
-        on_up: HotkeyCallback,
-    ) -> Result<()> {
-        self.on_down = Some(on_down);
-        self.on_up = Some(on_up);
+    fn register_all(&mut self, bindings: Vec<HotkeyBinding>) -> Result<()> {
+        check_distinct(&bindings)?;
+        self.bindings = bindings;
         Ok(())
     }
 
     fn unregister(&mut self) -> Result<()> {
-        self.on_down = None;
-        self.on_up = None;
+        self.bindings.clear();
         Ok(())
     }
 
@@ -73,16 +161,26 @@ impl HotkeyManager for MockHotkeyManager {
     }
 }
 
-/// Real OS-selected hotkey manager.
-///
-/// With the `hotkey` feature it uses `global-hotkey` (Windows `RegisterHotKey`,
-/// macOS Carbon, Linux X11) and emits push-to-talk **down/up** events. A dedicated
-/// thread owns the manager and drives the platform event source — pumping the
-/// win32 message queue on Windows, which `global-hotkey` requires. Without the
-/// feature, `register` returns [`CoreError::NotImplemented`].
-///
-/// Wayland note: native global shortcuts there go through the XDG portal and are
-/// not covered here yet; X11 (incl. XWayland) works. See `docs/gaps.md`.
+/// Two bindings on one chord would make every press ambiguous.
+fn check_distinct(bindings: &[HotkeyBinding]) -> Result<()> {
+    for (i, a) in bindings.iter().enumerate() {
+        for b in &bindings[i + 1..] {
+            if a.combo.same_chord(&b.combo) {
+                return Err(CoreError::Hotkey(format!(
+                    "{} is assigned to two shortcuts",
+                    a.combo.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Real OS-selected hotkey manager (`global-hotkey`: Windows `RegisterHotKey`,
+/// macOS Carbon, Linux X11). A dedicated thread owns the manager and drives the
+/// platform event source — pumping the win32 message queue on Windows, which
+/// `global-hotkey` requires. Without the `hotkey` feature, `register_all`
+/// returns [`CoreError::NotImplemented`].
 pub struct SystemHotkeyManager {
     #[cfg(feature = "hotkey")]
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -109,22 +207,23 @@ impl Default for SystemHotkeyManager {
 
 impl HotkeyManager for SystemHotkeyManager {
     #[cfg(feature = "hotkey")]
-    fn register(
-        &mut self,
-        combo: HotkeyCombo,
-        on_down: HotkeyCallback,
-        on_up: HotkeyCallback,
-    ) -> Result<()> {
+    fn register_all(&mut self, bindings: Vec<HotkeyBinding>) -> Result<()> {
         use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-        use std::sync::atomic::Ordering;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
-        let hotkey = to_global_hotkey(&combo)?;
-        let id = hotkey.id();
-        let stop = self.stop.clone();
+        self.unregister()?;
+        check_distinct(&bindings)?;
+        let mut resolved = Vec::with_capacity(bindings.len());
+        for b in bindings {
+            let hotkey = to_global_hotkey(&b.combo)?;
+            resolved.push((hotkey, b, PressFilter::default()));
+        }
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        self.stop = stop.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
 
-        // The manager + event loop must live on one thread (win32 message loop on
-        // Windows); global-hotkey self-manages X11 on Linux.
+        // The manager + event loop must live on one thread (win32 message loop
+        // on Windows); global-hotkey self-manages X11 on Linux.
         let handle = std::thread::Builder::new()
             .name("orttaai-hotkey".to_string())
             .spawn(move || {
@@ -135,9 +234,17 @@ impl HotkeyManager for SystemHotkeyManager {
                         return;
                     }
                 };
-                if let Err(e) = manager.register(hotkey) {
-                    let _ = ready_tx.send(Err(CoreError::Hotkey(format!("register: {e}"))));
-                    return;
+                for (hotkey, b, _) in &resolved {
+                    if let Err(e) = manager.register(*hotkey) {
+                        for (h, _, _) in &resolved {
+                            let _ = manager.unregister(*h);
+                        }
+                        let _ = ready_tx.send(Err(CoreError::Hotkey(format!(
+                            "{} is unavailable — another app may be using it ({e})",
+                            b.combo.display()
+                        ))));
+                        return;
+                    }
                 }
                 let _ = ready_tx.send(Ok(()));
 
@@ -146,16 +253,28 @@ impl HotkeyManager for SystemHotkeyManager {
                     #[cfg(windows)]
                     pump_win32_messages();
                     while let Ok(event) = receiver.try_recv() {
-                        if event.id == id {
+                        if let Some((_, b, filter)) =
+                            resolved.iter_mut().find(|(h, _, _)| h.id() == event.id)
+                        {
                             match event.state {
-                                HotKeyState::Pressed => on_down(),
-                                HotKeyState::Released => on_up(),
+                                HotKeyState::Pressed => {
+                                    if filter.down() {
+                                        (b.on_down)();
+                                    }
+                                }
+                                HotKeyState::Released => {
+                                    if filter.up() {
+                                        (b.on_up)();
+                                    }
+                                }
                             }
                         }
                     }
                     std::thread::sleep(std::time::Duration::from_millis(15));
                 }
-                let _ = manager.unregister(hotkey);
+                for (h, _, _) in &resolved {
+                    let _ = manager.unregister(*h);
+                }
             })
             .map_err(|e| CoreError::Hotkey(format!("spawn hotkey thread: {e}")))?;
 
@@ -164,7 +283,10 @@ impl HotkeyManager for SystemHotkeyManager {
                 self.thread = Some(handle);
                 Ok(())
             }
-            Ok(Err(e)) => Err(e),
+            Ok(Err(e)) => {
+                let _ = handle.join();
+                Err(e)
+            }
             Err(_) => Err(CoreError::Hotkey(
                 "hotkey thread exited before registering".to_string(),
             )),
@@ -172,12 +294,7 @@ impl HotkeyManager for SystemHotkeyManager {
     }
 
     #[cfg(not(feature = "hotkey"))]
-    fn register(
-        &mut self,
-        _combo: HotkeyCombo,
-        _on_down: HotkeyCallback,
-        _on_up: HotkeyCallback,
-    ) -> Result<()> {
+    fn register_all(&mut self, _bindings: Vec<HotkeyBinding>) -> Result<()> {
         Err(CoreError::NotImplemented(
             "system global hotkey — rebuild with --features hotkey",
         ))
@@ -219,19 +336,18 @@ impl Drop for SystemHotkeyManager {
     }
 }
 
+/// Whether hotkeys on this session go through the GlobalShortcuts portal.
+pub fn uses_portal() -> bool {
+    cfg!(all(feature = "portal", target_os = "linux")) && crate::injection::is_wayland_session()
+}
+
 /// The best hotkey manager for the current session: the GlobalShortcuts portal
 /// on Wayland (where X11 key grabs aren't delivered), otherwise the system
 /// global hotkey (`RegisterHotKey` / `XGrabKey`).
 pub fn default_manager() -> Box<dyn HotkeyManager> {
     #[cfg(all(feature = "portal", target_os = "linux"))]
-    {
-        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
-            || std::env::var("XDG_SESSION_TYPE")
-                .map(|s| s.eq_ignore_ascii_case("wayland"))
-                .unwrap_or(false);
-        if wayland {
-            return Box::new(portal::PortalHotkeyManager::new());
-        }
+    if uses_portal() {
+        return Box::new(portal::PortalHotkeyManager::new());
     }
     Box::new(SystemHotkeyManager::new())
 }
@@ -285,6 +401,22 @@ fn key_to_code(key: &str) -> Result<global_hotkey::hotkey::Code> {
         .map_err(|_| CoreError::Hotkey(format!("unsupported hotkey key: {key}")))
 }
 
+/// Whether `combo` can be registered as a global hotkey on this build (used by
+/// the shortcut recorder to reject keys the OS backend can't grab).
+pub fn validate_combo(combo: &HotkeyCombo) -> Result<()> {
+    if combo.key.trim().is_empty() {
+        return Err(CoreError::Hotkey("press a key".into()));
+    }
+    if combo.modifiers.is_empty() && !combo.key.to_ascii_uppercase().starts_with('F') {
+        return Err(CoreError::Hotkey(
+            "add Ctrl, Alt, Shift or Super — a bare key would fire while you type".into(),
+        ));
+    }
+    #[cfg(feature = "hotkey")]
+    key_to_code(&combo.key)?;
+    Ok(())
+}
+
 #[cfg(all(feature = "hotkey", windows))]
 fn pump_win32_messages() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -299,14 +431,63 @@ fn pump_win32_messages() {
     }
 }
 
-#[cfg(all(test, feature = "hotkey"))]
+#[cfg(test)]
 mod tests {
-    use super::{key_to_code, to_global_hotkey};
-    use crate::types::{HotkeyCombo, Modifier};
-    use global_hotkey::hotkey::Code;
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
 
     #[test]
+    fn press_filter_drops_repeats_and_stray_ups() {
+        let mut f = PressFilter::default();
+        assert!(!f.up());
+        assert!(f.down());
+        assert!(!f.down());
+        assert!(f.up());
+        assert!(!f.up());
+    }
+
+    #[test]
+    fn mock_routes_by_id_and_rejects_duplicate_chords() {
+        let hits = Arc::new(AtomicU32::new(0));
+        let h = hits.clone();
+        let mut m = MockHotkeyManager::new();
+        m.register_all(vec![
+            HotkeyBinding::push_to_talk(HotkeyCombo::default(), Box::new(|| {}), Box::new(|| {})),
+            HotkeyBinding::edit_selection(
+                HotkeyCombo::parse("Ctrl+Shift+E"),
+                Box::new(move || {
+                    h.fetch_add(1, Ordering::SeqCst);
+                }),
+                Box::new(|| {}),
+            ),
+        ])
+        .unwrap();
+        m.fire_down_id(EDIT_SELECTION_ID);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(m.combos().len(), 2);
+        let dup = m.register_all(vec![
+            HotkeyBinding::push_to_talk(HotkeyCombo::default(), Box::new(|| {}), Box::new(|| {})),
+            HotkeyBinding::edit_selection(
+                HotkeyCombo::parse("Shift+Ctrl+Space"),
+                Box::new(|| {}),
+                Box::new(|| {}),
+            ),
+        ]);
+        assert!(dup.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_bare_keys() {
+        assert!(validate_combo(&HotkeyCombo::parse("A")).is_err());
+        assert!(validate_combo(&HotkeyCombo::parse("F8")).is_ok());
+        assert!(validate_combo(&HotkeyCombo::default()).is_ok());
+    }
+
+    #[cfg(feature = "hotkey")]
+    #[test]
     fn maps_common_keys() {
+        use global_hotkey::hotkey::Code;
         assert_eq!(key_to_code("space").unwrap(), Code::Space);
         assert_eq!(key_to_code("Space").unwrap(), Code::Space);
         assert_eq!(key_to_code("a").unwrap(), Code::KeyA);
@@ -316,12 +497,10 @@ mod tests {
         assert!(key_to_code("definitely-not-a-key").is_err());
     }
 
+    #[cfg(feature = "hotkey")]
     #[test]
     fn builds_combo_deterministically() {
-        let combo = HotkeyCombo {
-            key: "Space".to_string(),
-            modifiers: vec![Modifier::Ctrl, Modifier::Shift],
-        };
+        let combo = HotkeyCombo::default();
         let a = to_global_hotkey(&combo).unwrap();
         let b = to_global_hotkey(&combo).unwrap();
         assert_eq!(a.id(), b.id());

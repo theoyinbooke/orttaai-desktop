@@ -15,24 +15,44 @@ serde_json.workspace = true
 tracing.workspace = true
 directories.workspace = true
 rusqlite.workspace = true
+# Text pipeline: transcript cleanup patterns and the bundled (deflated) English word list.
+# Coach: counting rules (pure-Rust regex) and local calendar days/weeks/months.
+regex = "1"
+miniz_oxide = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # Real platform backends are optional so the default build stays fast and
 # OS-agnostic. whisper.cpp (via whisper-rs) is the first wired, in Phase 1.
-whisper-rs = { version = "0.16", optional = true }
+whisper-rs = { version = "0.16", optional = true, features = ["tracing_backend"] }
 cpal = { version = "0.17.3", optional = true }
 rubato = { version = "0.15", optional = true }
 enigo = { version = "0.3.0", optional = true }
 global-hotkey = { version = "0.8.0", optional = true }
 ureq = { version = "3.2.1", features = ["json"], optional = true }
+# Express engine (Parakeet via sherpa-onnx; ONNX Runtime statically linked).
+sherpa-onnx = { version = "2.0.1", optional = true }
+# Word Boost runs the CTC model on the ONNX Runtime sherpa-onnx already links:
+# bindings only, nothing linked or downloaded by this crate.
+ort-sys = { version = "=2.0.0-rc.15", default-features = false, features = ["disable-linking", "api-22"], optional = true }
+rustfft = { version = "6", optional = true }
+bzip2 = { version = "0.4", optional = true }
+tar = { version = "0.4", optional = true }
+# Model download verification (pure Rust).
+sha2 = { version = "0.10", optional = true }
+# Real OS clipboard for paste injection / selection capture (text only).
+arboard = { version = "3.6", default-features = false, optional = true }
 
 [features]
 default = []
 whisper = ["dep:whisper-rs"]
 cpal-audio = ["dep:cpal", "dep:rubato"]
-injection = ["dep:enigo"]
+injection = ["dep:enigo", "dep:arboard"]
 # windows-sys (target-gated) drives the win32 message pump the hotkey needs.
 hotkey = ["dep:global-hotkey", "dep:windows-sys"]
-models = ["dep:ureq"]
+models = ["dep:ureq", "dep:sha2"]
+# Parakeet TDT via sherpa-onnx (the Mac "Express" engine). Downloads prebuilt
+# sherpa-onnx static libs at build time.
+express = ["dep:sherpa-onnx", "dep:ort-sys", "dep:rustfft", "dep:bzip2", "dep:tar", "models"]
 ollama = ["dep:ureq"]
 # Native GNOME/Wayland typing via the XDG RemoteDesktop portal (Linux only).
 # Kept out of `full` so Windows builds never pull in ashpd; the desktop app
@@ -53,20 +73,26 @@ full = ["whisper", "cpal-audio", "injection", "hotkey", "models", "ollama"]
 hound = "3.5"
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"], optional = true }
+# Also the low-level keyboard/mouse hooks behind "Tap Right Ctrl".
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader", "Win32_System_Threading"], optional = true }
 # UI Automation (secure-field detection) + foreground-window/process (focused
 # app capture) on Windows. Only compiled on Windows; the Linux host never builds it.
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Com",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Accessibility",
     "Win32_UI_WindowsAndMessaging",
+    # Hardware detection: total RAM + free disk.
+    "Win32_System_SystemInformation",
+    "Win32_Storage_FileSystem",
 ] }
 
 # Focused-app capture on X11 (no Wayland equivalent). Compiled on all Linux.
 [target."cfg(target_os = \"linux\")".dependencies]
-x11rb = "0.13"
+# xinput: raw key events for "Tap Right Ctrl".
+x11rb = { version = "0.13", features = ["xinput"] }
 ashpd = { version = "0.11", optional = true, default-features = false, features = ["tokio"] }
 tokio = { version = "1", optional = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 futures-util = { version = "0.3", optional = true }
