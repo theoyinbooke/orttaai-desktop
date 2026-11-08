@@ -450,7 +450,7 @@ mod client {
                 "messages": msgs,
                 "stream": true,
                 "temperature": opts.temperature.unwrap_or(0.0),
-                "ttl": Self::ttl(),
+                "ttl": opts.keep_alive_secs.unwrap_or_else(Self::ttl),
             });
             if let Some(n) = opts.max_tokens {
                 payload["max_tokens"] = serde_json::json!(n.clamp(1, 16_000));
@@ -478,7 +478,7 @@ mod client {
                 "prompt": req.prompt,
                 "stream": false,
                 "temperature": opts.temperature.unwrap_or(0.0),
-                "ttl": Self::ttl(),
+                "ttl": opts.keep_alive_secs.unwrap_or_else(Self::ttl),
             });
             if let Some(n) = opts.max_tokens {
                 payload["max_tokens"] = serde_json::json!(n.clamp(1, 16_000));

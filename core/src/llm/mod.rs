@@ -70,6 +70,9 @@ pub struct ChatOptions {
     pub num_ctx: Option<u32>,
     /// Whole-request timeout.
     pub timeout_ms: Option<u64>,
+    /// How long the server keeps the model loaded after this request
+    /// (Ollama `keep_alive`, LM Studio `ttl`); `None` is 5 minutes.
+    pub keep_alive_secs: Option<u64>,
 }
 
 impl ChatOptions {

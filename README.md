@@ -6,12 +6,14 @@ This is a standalone Rust + Tauri reimplementation of [Orttaai](https://github.c
 
 ## Screenshots
 
-![Orttaai — Dictate: hold your shortcut, speak, and your words are typed into whatever app is focused](docs/screenshots/dictate.png)
+![Orttaai Overview: today's words, dictation speed, the 30-day trend and your most-used apps](docs/screenshots/overview-light.png)
 
 |  |  |
 | --- | --- |
-| **Models** — download, switch & delete on-device whisper models<br>![Models](docs/screenshots/models.png) | **Insights** — your dictation activity at a glance<br>![Insights](docs/screenshots/insights.png) |
-| **Dictionary** — spelling fixes & snippets, applied to every transcript<br>![Dictionary](docs/screenshots/dictionary.png) | **Settings** — shortcut, performance & secure-field guard<br>![Settings](docs/screenshots/settings.png) |
+| **Dark mode**: every page follows your system or your choice<br>![Overview in dark mode](docs/screenshots/overview-dark.png) | **First-run setup**: pick Express or Whisper; the download shows in its own card<br>![Setup, engine step](docs/screenshots/setup-engine.png) |
+| **Model**: Express with Word Boost, Whisper models, where models are kept<br>![Model](docs/screenshots/model.png) | **Settings › Dictation**: hold or tap your shortcut, or tap Right Ctrl<br>![Settings, Dictation](docs/screenshots/settings.png) |
+| **Memory**: dictionary words and snippets, applied to every dictation<br>![Memory](docs/screenshots/memory.png) | **Analytics**: words, sessions, rhythm and the apps you dictate into<br>![Analytics](docs/screenshots/analytics.png) |
+| **Graph**: where your dictation time goes, by topic and project<br>![Memory Graph](docs/screenshots/graph.png) | **Milestones**: 22 badges, with share cards<br>![Milestones](docs/screenshots/milestones.png) |
 
 ## Architecture
 

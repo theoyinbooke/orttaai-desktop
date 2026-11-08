@@ -411,7 +411,7 @@ mod client {
                 "messages": msgs,
                 "stream": true,
                 "options": request_options(opts, &[]),
-                "keep_alive": "5m",
+                "keep_alive": format!("{}s", opts.keep_alive_secs.unwrap_or(300)),
             });
             if let Some(think) = opts.think {
                 payload["think"] = Value::Bool(think);
@@ -443,7 +443,7 @@ mod client {
                 "stream": false,
                 "raw": req.raw,
                 "options": request_options(opts, &req.stop),
-                "keep_alive": "5m",
+                "keep_alive": format!("{}s", opts.keep_alive_secs.unwrap_or(300)),
             });
             if !req.raw {
                 if let Some(think) = opts.think {

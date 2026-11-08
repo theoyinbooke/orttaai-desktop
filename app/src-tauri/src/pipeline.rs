@@ -54,6 +54,12 @@ impl TranscriptPipeline for AppPipeline {
             polish_ms,
         }
     }
+
+    fn warm_if_idle(&self) {
+        if let Some(p) = &self.polisher {
+            p.warm_if_idle();
+        }
+    }
 }
 
 /// The text processor for these settings, falling back to an empty memory if

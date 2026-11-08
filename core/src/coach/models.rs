@@ -254,6 +254,7 @@ impl CoachModelSetup {
             max_tokens: Some(max_tokens),
             num_ctx: Some(num_ctx),
             timeout_ms: Some(timeout_ms),
+            keep_alive_secs: None,
         }
     }
 }

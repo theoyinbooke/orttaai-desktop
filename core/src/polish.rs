@@ -17,7 +17,7 @@ use crate::llm::{
 use crate::settings::{LlmProvider, PolishEngine, Settings, StyleMode};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 // ============================================================================
@@ -709,6 +709,27 @@ pub struct PolishOutcome {
     pub error: Option<String>,
 }
 
+/// How long the server keeps the polish model loaded after it was last used
+/// (Ollama `keep_alive`, LM Studio `ttl`). The Mac keeps S1-mini loaded while
+/// Polish is on; an hour keeps the model ready through a working session
+/// without holding its memory forever once you stop dictating.
+pub const POLISH_KEEP_ALIVE_SECS: u64 = 3_600;
+
+/// A polish model used or warmed more recently than this is still loaded:
+/// it's warmed again before the keep-alive above runs out.
+const WARM_FRESH_FOR: Duration = Duration::from_secs(50 * 60);
+
+/// When each polish model was last used or warmed, across pipeline rebuilds
+/// (the pipeline is rebuilt on every settings change).
+fn last_active() -> &'static Mutex<HashMap<String, Instant>> {
+    static LAST: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// A short dictation-like sentence, so warming loads the model and runs it
+/// once the way polish will (the first run after a load is the slow one).
+const WARM_SAMPLE: &str = "so um this is a quick warm up sentence, uh, to get polish ready";
+
 /// Polishes dictations on the local LLM host. Holds the client and the
 /// circuit breaker; share one per app (it's `Send + Sync`).
 pub struct Polisher {
@@ -735,6 +756,67 @@ impl Polisher {
 
     pub fn breaker(&self) -> &CircuitBreaker {
         &self.breaker
+    }
+
+    /// Which model this polisher runs, for the last-used record.
+    fn warm_key(&self) -> String {
+        let model = match self.opts.engine {
+            PolishEngine::S1Mini => "s1-mini",
+            PolishEngine::LocalLlm => self.opts.model.trim(),
+        };
+        format!("{:?}|{model}", self.opts.provider)
+    }
+
+    fn mark_active(&self) {
+        last_active()
+            .lock()
+            .unwrap()
+            .insert(self.warm_key(), Instant::now());
+    }
+
+    /// Load and run the polish model once in the background unless it was
+    /// used or warmed recently, so the first polish isn't the slow one. Called
+    /// when Polish is turned on or changed, at launch, and when a recording
+    /// starts (the model then loads while you talk).
+    pub fn warm_if_idle(&self) {
+        if !self.opts.enabled || self.opts.style == StyleMode::Raw {
+            return;
+        }
+        let key = self.warm_key();
+        {
+            let mut seen = last_active().lock().unwrap();
+            if seen
+                .get(&key)
+                .is_some_and(|at| at.elapsed() < WARM_FRESH_FOR)
+            {
+                return;
+            }
+            // Claimed now, so a second call doesn't start a second warm-up.
+            seen.insert(key.clone(), Instant::now());
+        }
+        let client = self.client.clone();
+        let engine = self.opts.engine;
+        let model = self.opts.model.trim().to_string();
+        let s1 = self.s1_model.lock().unwrap().clone();
+        let spawned = std::thread::Builder::new()
+            .name("orttaai-polish-warm".into())
+            .spawn(move || {
+                let started = Instant::now();
+                match warm_model(client.as_ref(), engine, &model, s1) {
+                    Ok(()) => tracing::info!(
+                        "polish model warmed in {} ms",
+                        started.elapsed().as_millis()
+                    ),
+                    Err(why) => {
+                        // Not warm: let the next chance try again.
+                        last_active().lock().unwrap().remove(&key);
+                        tracing::warn!("couldn't warm the polish model: {why}");
+                    }
+                }
+            });
+        if spawned.is_err() {
+            last_active().lock().unwrap().remove(&self.warm_key());
+        }
     }
 
     /// Polish `text` typed into `app`. Never fails.
@@ -769,6 +851,9 @@ impl Polisher {
             PolishEngine::S1Mini => self.polish_s1(input, started),
             PolishEngine::LocalLlm => self.polish_local(input, app),
         };
+        if result.is_ok() {
+            self.mark_active();
+        }
         match result {
             Ok(Some(polished)) if polished != input => PolishOutcome {
                 text: polished,
@@ -802,6 +887,7 @@ impl Polisher {
             think: Some(false),
             max_tokens: Some((chars / 2 + 24).clamp(24, 200) as u32),
             timeout_ms: Some(timeout),
+            keep_alive_secs: Some(POLISH_KEEP_ALIVE_SECS),
             ..ChatOptions::model(model)
         };
         let prompt = local_polish_prompt(input, app, self.opts.style);
@@ -846,6 +932,7 @@ impl Polisher {
                 think: Some(false),
                 max_tokens: Some(s1_mini::max_tokens(p)),
                 timeout_ms: Some(remaining.max(50)),
+                keep_alive_secs: Some(POLISH_KEEP_ALIVE_SECS),
                 ..ChatOptions::model(model.clone())
             };
             match self.client.generate(
@@ -920,19 +1007,56 @@ impl Polisher {
         let client = self.client.clone();
         let model = model.to_string();
         std::thread::spawn(move || {
-            let opts = ChatOptions {
-                temperature: Some(0.0),
-                think: Some(false),
-                max_tokens: Some(24),
-                timeout_ms: Some(1_400),
-                ..ChatOptions::model(model)
-            };
-            let _ = client.generate(
-                &GenerateRequest::new("Fix punctuation only: hello world"),
-                &opts,
-            );
+            let _ = warm_model(client.as_ref(), PolishEngine::LocalLlm, &model, None);
         });
     }
+}
+
+/// Load `model` on the server and run it once on a short sentence. For
+/// S1-mini, `s1` is its installed name when known; otherwise it's looked up.
+fn warm_model(
+    client: &dyn LlmClient,
+    engine: PolishEngine,
+    model: &str,
+    s1: Option<String>,
+) -> Result<(), String> {
+    let (request, model) = match engine {
+        PolishEngine::S1Mini => {
+            let name = match s1 {
+                Some(name) => name,
+                None => {
+                    let names: Vec<String> = client
+                        .list_models()
+                        .map_err(|e| error_text(&e))?
+                        .into_iter()
+                        .map(|m| m.name)
+                        .collect();
+                    catalog::installed_s1_mini(&names).ok_or("S1-mini isn't installed")?
+                }
+            };
+            (
+                GenerateRequest::raw(s1_mini::prompt(WARM_SAMPLE), s1_mini::STOP),
+                name,
+            )
+        }
+        PolishEngine::LocalLlm => (
+            GenerateRequest::new(local_polish_prompt(WARM_SAMPLE, None, StyleMode::Clean)),
+            model.to_string(),
+        ),
+    };
+    let opts = ChatOptions {
+        temperature: Some(0.0),
+        think: Some(false),
+        max_tokens: Some(48),
+        // Loading from disk can take a while the first time.
+        timeout_ms: Some(60_000),
+        keep_alive_secs: Some(POLISH_KEEP_ALIVE_SECS),
+        ..ChatOptions::model(model)
+    };
+    client
+        .generate(&request, &opts)
+        .map(|_| ())
+        .map_err(|e| error_text(&e))
 }
 
 #[cfg(test)]
@@ -1357,5 +1481,101 @@ mod tests {
         );
         assert!(!p.polish("please send the report", None).polished);
         assert_eq!(mock.call_count(), 0);
+    }
+
+    // ---- warm-up ----
+
+    fn wait_for_calls(mock: &MockLlm, n: usize) -> usize {
+        for _ in 0..200 {
+            let seen = mock.calls.lock().unwrap().len();
+            if seen >= n {
+                return seen;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        mock.calls.lock().unwrap().len()
+    }
+
+    #[test]
+    fn warms_once_then_not_while_fresh() {
+        let mock = Arc::new(MockLlm::fixed("ok"));
+        let mut o = opts(PolishEngine::LocalLlm);
+        o.model = "warm-test-once".into();
+        let p = Polisher::new(mock.clone(), o.clone());
+        p.warm_if_idle();
+        assert_eq!(wait_for_calls(&mock, 1), 1, "warmed in the background");
+        let opts_used = mock.calls.lock().unwrap()[0].1.clone();
+        assert_eq!(opts_used.model, "warm-test-once");
+        assert_eq!(opts_used.keep_alive_secs, Some(POLISH_KEEP_ALIVE_SECS));
+
+        // A rebuilt polisher for the same model (any settings change) and a
+        // recording start both find it fresh: no second warm-up.
+        Polisher::new(mock.clone(), o).warm_if_idle();
+        p.warm_if_idle();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(mock.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_failed_warm_up_is_tried_again() {
+        let mock = Arc::new(MockLlm::offline());
+        let mut o = opts(PolishEngine::LocalLlm);
+        o.model = "warm-test-offline".into();
+        let p = Polisher::new(mock.clone(), o);
+        p.warm_if_idle();
+        assert_eq!(wait_for_calls(&mock, 1), 1);
+        // Once the failure clears the claim, the next chance tries again.
+        for _ in 0..200 {
+            if !last_active().lock().unwrap().contains_key(&p.warm_key()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        p.warm_if_idle();
+        assert_eq!(wait_for_calls(&mock, 2), 2);
+    }
+
+    #[test]
+    fn nothing_warms_when_polish_is_off_or_raw() {
+        let mock = Arc::new(MockLlm::fixed("ok"));
+        let mut off = opts(PolishEngine::LocalLlm);
+        off.model = "warm-test-off".into();
+        off.enabled = false;
+        Polisher::new(mock.clone(), off).warm_if_idle();
+        let mut raw = opts(PolishEngine::LocalLlm);
+        raw.model = "warm-test-raw".into();
+        raw.style = StyleMode::Raw;
+        Polisher::new(mock.clone(), raw).warm_if_idle();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(mock.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn s1_mini_warm_up_uses_its_prompt_and_keeps_it_loaded() {
+        let mock = Arc::new(MockLlm::fixed("ok"));
+        let mut o = opts(PolishEngine::S1Mini);
+        o.provider = LlmProvider::LmStudio;
+        let p = Polisher::new(mock.clone(), o);
+        p.warm_if_idle();
+        assert_eq!(wait_for_calls(&mock, 1), 1);
+        let (msgs, used) = mock.calls.lock().unwrap()[0].clone();
+        assert_eq!(used.model, "hf.co/superwhisper/s1-mini-GGUF:Q4_K_M");
+        assert_eq!(used.keep_alive_secs, Some(POLISH_KEEP_ALIVE_SECS));
+        assert!(msgs
+            .iter()
+            .any(|m| m.content.contains("<|im_start|>system")));
+    }
+
+    #[test]
+    fn polish_asks_the_server_to_keep_the_model_loaded() {
+        let mock = Arc::new(MockLlm::fixed("Pay forty dollars now."));
+        let mut o = opts(PolishEngine::LocalLlm);
+        o.model = "warm-test-keep".into();
+        let p = Polisher::new(mock.clone(), o);
+        p.polish("pay forty dollars now", None);
+        let calls = mock.calls.lock().unwrap();
+        assert!(calls
+            .iter()
+            .all(|(_, used)| used.keep_alive_secs == Some(POLISH_KEEP_ALIVE_SECS)));
     }
 }

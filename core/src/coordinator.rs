@@ -57,6 +57,11 @@ pub struct PipelineOutput {
 /// default.
 pub trait TranscriptPipeline: Send + Sync {
     fn process(&self, raw: &str, app: Option<&str>) -> PipelineOutput;
+
+    /// Get any model this pipeline calls ready ahead of a dictation (polish:
+    /// load it on the local AI server) when it hasn't been used for a while.
+    /// Returns at once; the work runs in the background.
+    fn warm_if_idle(&self) {}
 }
 
 /// Default pipeline: Personal Memory dictionary + snippets only.
@@ -592,8 +597,11 @@ impl DictationCoordinator {
         self.transcriber.set_word_boost_terms(terms);
     }
 
+    /// Use this pipeline from the next dictation, and warm its models (at
+    /// launch, and when Polish is turned on or changed).
     pub fn set_pipeline(&mut self, pipeline: Box<dyn TranscriptPipeline>) {
         self.pipeline = pipeline;
+        self.pipeline.warm_if_idle();
     }
 
     pub fn set_rewriter(&mut self, rewriter: Option<Box<dyn EditRewriter>>) {
@@ -911,6 +919,8 @@ impl DictationCoordinator {
                 }
                 self.state = RecordingState::Recording;
                 tracing::debug!("recording started ({kind:?})");
+                // A model idle long enough to be unloaded loads while you talk.
+                self.pipeline.warm_if_idle();
             }
             Err(e) => {
                 tracing::error!("failed to start recording: {e}");
