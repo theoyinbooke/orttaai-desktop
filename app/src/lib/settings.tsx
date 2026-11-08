@@ -101,7 +101,6 @@ export type Settings = {
   start_engine_on_launch: boolean;
   show_processing_estimate: boolean;
   /** Windows: keep a small pill on screen while idle (hover hint, click to dictate). */
-  show_idle_pill: boolean;
   celebrate_milestones: boolean;
   has_completed_setup: boolean;
   auto_download_updates: boolean;
