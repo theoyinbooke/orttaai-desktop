@@ -8,6 +8,7 @@
 //! See `docs/architecture.md` for the full picture.
 
 pub mod analytics;
+pub mod apps;
 pub mod audio;
 pub mod chat;
 pub mod clipboard;

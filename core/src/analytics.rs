@@ -160,11 +160,9 @@ pub fn minutes_saved(words: i64, recording_ms: i64) -> i64 {
     ((typing - speaking).floor() as i64).max(0)
 }
 
+/// One name per app across devices ("chrome" is Google Chrome, as on the Mac).
 fn normalized_app_name(raw: Option<&str>) -> String {
-    match raw.map(str::trim) {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => "Unknown App".to_string(),
-    }
+    crate::apps::display_name(raw)
 }
 
 /// "Whisper large v3 turbo_954mb" → without the size suffix (`_\d+(mb|gb)$`).
@@ -801,7 +799,7 @@ pub fn analytics_snapshot(
     let mut app_words: BTreeMap<String, i64> = BTreeMap::new();
     for s in &in_range {
         let name = match s.app.as_deref().map(str::trim) {
-            Some(a) if !a.is_empty() => a.to_string(),
+            Some(a) if !a.is_empty() => crate::apps::display_name(Some(a)),
             _ => "Unknown".to_string(),
         };
         *app_words.entry(name).or_default() += s.words.max(0);
@@ -1109,7 +1107,7 @@ mod tests {
         assert_eq!(p.top_apps30d[0].name, "Firefox");
         assert_eq!(p.top_apps30d[0].sessions, 2);
         assert!((p.top_apps30d[0].session_share - 2.0 / 3.0).abs() < 1e-9);
-        assert_eq!(p.top_apps30d[1].name, "Code");
+        assert_eq!(p.top_apps30d[1].name, "Visual Studio Code");
         assert_eq!(p.usual_daily_words, Some(30));
         assert_eq!(p.recent[0].preview_text, "hello world");
         assert_eq!(p.recent[0].app_name, "Unknown App");
