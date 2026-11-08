@@ -534,6 +534,7 @@ pub fn run() {
             link::link_devices,
             // == engine ==
             engine::engine_status,
+            engine::right_ctrl_window_tap,
             engine::start_dictation,
             engine::stop_dictation,
             engine::toggle_recording,

@@ -493,7 +493,9 @@ fn start_right_ctrl(app: &AppHandle, settings: &Settings, tx: &Sender<Cmd>) {
     }
     let tx = tx.clone();
     match RightCtrlListener::start(Box::new(move || {
-        let _ = tx.send(Cmd::RightCtrlTap);
+        if accept_right_ctrl_tap(TapSource::Hook) {
+            let _ = tx.send(Cmd::RightCtrlTap);
+        }
     })) {
         Ok(listener) => {
             *state.right_ctrl.lock().unwrap() = Some(listener);
@@ -509,6 +511,100 @@ fn start_right_ctrl(app: &AppHandle, settings: &Settings, tx: &Sender<Cmd>) {
                 s.right_ctrl_error = Some(e.to_string());
             });
         }
+    }
+}
+
+/// Where a Right Ctrl tap was seen. The system-wide listener sees taps in
+/// every app; Orttaai's own window also reports the taps made while it has
+/// focus, because on Windows the listener can miss those. One tap must never
+/// count twice (that would start and stop at once), so a report from one
+/// source shortly after the other's is dropped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TapSource {
+    Hook,
+    Window,
+}
+
+/// Longer than the gap between the two reports of one tap, shorter than two
+/// taps a person can make.
+const SAME_TAP: std::time::Duration = std::time::Duration::from_millis(350);
+
+static LAST_TAP: Mutex<Option<(TapSource, std::time::Instant)>> = Mutex::new(None);
+
+fn accept_right_ctrl_tap(source: TapSource) -> bool {
+    accept_tap_at(&LAST_TAP, source, std::time::Instant::now())
+}
+
+fn accept_tap_at(
+    last: &Mutex<Option<(TapSource, std::time::Instant)>>,
+    source: TapSource,
+    now: std::time::Instant,
+) -> bool {
+    let Ok(mut last) = last.lock() else {
+        return true;
+    };
+    if let Some((previous, at)) = *last {
+        if previous != source && now.saturating_duration_since(at) < SAME_TAP {
+            // The other source already reported this tap.
+            *last = None;
+            return false;
+        }
+    }
+    *last = Some((source, now));
+    true
+}
+
+/// Orttaai's main window saw a clean Right Ctrl tap while it had focus.
+#[tauri::command]
+pub fn right_ctrl_window_tap(app: AppHandle) {
+    let state = app.state::<EngineState>();
+    // Only while Tap Right Ctrl is on and listening (not paused for the
+    // shortcut recorder, not off in Settings).
+    if state.right_ctrl.lock().unwrap().is_none() {
+        return;
+    }
+    if accept_right_ctrl_tap(TapSource::Window) {
+        state.send(Cmd::RightCtrlTap);
+    }
+}
+
+#[cfg(test)]
+mod tap_source_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn one_tap_seen_twice_counts_once_and_two_taps_count_twice() {
+        let gate = Mutex::new(None);
+        let t = Instant::now();
+        assert!(accept_tap_at(&gate, TapSource::Window, t));
+        assert!(!accept_tap_at(
+            &gate,
+            TapSource::Hook,
+            t + Duration::from_millis(20)
+        ));
+        // A second tap a moment later, seen by either source, counts.
+        assert!(accept_tap_at(
+            &gate,
+            TapSource::Hook,
+            t + Duration::from_millis(900)
+        ));
+        assert!(!accept_tap_at(
+            &gate,
+            TapSource::Window,
+            t + Duration::from_millis(910)
+        ));
+        // Two quick taps from the same source are two taps.
+        assert!(accept_tap_at(
+            &gate,
+            TapSource::Hook,
+            t + Duration::from_millis(2000)
+        ));
+        assert!(accept_tap_at(
+            &gate,
+            TapSource::Hook,
+            t + Duration::from_millis(2200)
+        ));
     }
 }
 

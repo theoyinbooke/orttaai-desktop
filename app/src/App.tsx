@@ -8,6 +8,7 @@ import { SettingsProvider, useSettings } from "./lib/settings";
 import { EngineProvider } from "./lib/engine";
 import { phaseLabel, UpdaterProvider, useAppUpdater } from "./lib/updater";
 import { AI_SETTINGS_ROUTE, requestAISection } from "./lib/navigation";
+import { useRightCtrlTap } from "./lib/rightCtrl";
 import Home from "./views/Home";
 import ChatAI from "./views/ChatAI";
 import MemoryGraph from "./views/MemoryGraph";
@@ -149,6 +150,7 @@ function SectionRail({ tab, coach, onSelect, onExpand }: { tab: Tab; coach: bool
 }
 
 function AppShell() {
+  useRightCtrlTap();
   const [tab, setTab] = useState<Tab>("home");
   const [collapsed, setCollapsed] = useState(() => {
     try {

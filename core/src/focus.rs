@@ -752,49 +752,223 @@ fn focused_app_x11() -> Option<String> {
     }
 }
 
+/// The app's name from its executable path: the file name without `.exe`.
+#[cfg(any(target_os = "windows", test))]
+fn exe_stem(path: &str) -> Option<String> {
+    let file = path.rsplit(['\\', '/']).next().unwrap_or(path);
+    let stem = file
+        .strip_suffix(".exe")
+        .or_else(|| file.strip_suffix(".EXE"))
+        .unwrap_or(file);
+    (!stem.is_empty()).then(|| stem.to_string())
+}
+
+/// Store (UWP) apps draw inside a frame owned by `ApplicationFrameHost`, so
+/// the frame's process names the host, not the app (Sticky Notes, Calculator,
+/// Photos).
+#[cfg(any(target_os = "windows", test))]
+fn is_frame_host(stem: &str) -> bool {
+    stem.eq_ignore_ascii_case("ApplicationFrameHost")
+}
+
+/// A Store app's name: the executable's description ("Microsoft Sticky
+/// Notes"), else the frame's title, else the executable's name.
+#[cfg(any(target_os = "windows", test))]
+fn store_app_name(
+    description: Option<String>,
+    title: Option<String>,
+    stem: Option<String>,
+) -> Option<String> {
+    let clean = |s: Option<String>| {
+        s.map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s.chars().count() <= 60)
+    };
+    clean(description)
+        .or_else(|| clean(title))
+        .or_else(|| clean(stem))
+}
+
 /// NOTE: `#[cfg(windows)]`-only — cannot be compiled on the Linux dev host; it is
-/// verified by the Windows CI build. Fails safe to `None`.
+/// verified by the Windows cross-check build. Fails safe to `None`.
 #[cfg(target_os = "windows")]
 fn focused_app_windows() -> Option<String> {
-    use windows::core::PWSTR;
-    use windows::Win32::Foundation::{CloseHandle, MAX_PATH};
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let pid = win_app::window_pid(hwnd)?;
+    let path = win_app::process_path(pid);
+    let stem = path.as_deref().and_then(exe_stem);
+    if stem.as_deref().is_some_and(is_frame_host) {
+        // The app is the process behind the frame's content.
+        let inner = win_app::content_pid(hwnd, pid).and_then(win_app::process_path);
+        return store_app_name(
+            inner.as_deref().and_then(win_app::file_description),
+            win_app::window_title(hwnd),
+            inner.as_deref().and_then(exe_stem),
+        );
+    }
+    // A process Orttaai may not open (an elevated one): its window's title.
+    stem.or_else(|| win_app::window_title(hwnd))
+}
+
+#[cfg(target_os = "windows")]
+mod win_app {
+    use windows::core::{BOOL, PCWSTR, PWSTR};
+    use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, MAX_PATH};
+    use windows::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumChildWindows, GetWindowTextW, GetWindowThreadProcessId,
+    };
 
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.0.is_null() {
-            return None;
-        }
+    pub fn window_pid(hwnd: HWND) -> Option<u32> {
         let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == 0 {
-            return None;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        (pid != 0).then_some(pid)
+    }
+
+    pub fn process_path(pid: u32) -> Option<String> {
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+            let mut buf = [0u16; MAX_PATH as usize];
+            let mut len = buf.len() as u32;
+            let ok = QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_WIN32,
+                PWSTR(buf.as_mut_ptr()),
+                &mut len,
+            );
+            let _ = CloseHandle(handle);
+            ok.ok()?;
+            Some(String::from_utf16_lossy(&buf[..len as usize]))
         }
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut buf = [0u16; MAX_PATH as usize];
-        let mut len = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(
-            handle,
-            PROCESS_NAME_WIN32,
-            PWSTR(buf.as_mut_ptr()),
-            &mut len,
+    }
+
+    pub fn window_title(hwnd: HWND) -> Option<String> {
+        let mut buf = [0u16; 256];
+        let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
+        (n > 0).then(|| String::from_utf16_lossy(&buf[..n as usize]))
+    }
+
+    /// The first child window that belongs to another process than the frame.
+    pub fn content_pid(frame: HWND, frame_pid: u32) -> Option<u32> {
+        struct Search {
+            frame_pid: u32,
+            found: Option<u32>,
+        }
+        unsafe extern "system" fn visit(child: HWND, data: LPARAM) -> BOOL {
+            let search = &mut *(data.0 as *mut Search);
+            if let Some(pid) = window_pid(child) {
+                if pid != search.frame_pid {
+                    search.found = Some(pid);
+                    return BOOL(0);
+                }
+            }
+            BOOL(1)
+        }
+        let mut search = Search {
+            frame_pid,
+            found: None,
+        };
+        unsafe {
+            let _ = EnumChildWindows(
+                Some(frame),
+                Some(visit),
+                LPARAM(&mut search as *mut Search as isize),
+            );
+        }
+        search.found
+    }
+
+    /// The executable's FileDescription ("Microsoft Sticky Notes").
+    pub fn file_description(path: &str) -> Option<String> {
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            let size = GetFileVersionInfoSizeW(PCWSTR(wide.as_ptr()), None);
+            if size == 0 {
+                return None;
+            }
+            let mut data = vec![0u8; size as usize];
+            GetFileVersionInfoW(PCWSTR(wide.as_ptr()), None, size, data.as_mut_ptr().cast())
+                .ok()?;
+            let query = |key: &str| -> Option<(*const u16, u32)> {
+                let key: Vec<u16> = key.encode_utf16().chain(std::iter::once(0)).collect();
+                let mut ptr = std::ptr::null_mut();
+                let mut len = 0u32;
+                VerQueryValueW(
+                    data.as_ptr().cast(),
+                    PCWSTR(key.as_ptr()),
+                    &mut ptr,
+                    &mut len,
+                )
+                .as_bool()
+                .then_some((ptr as *const u16, len))
+            };
+            let (translation, len) = query("\\VarFileInfo\\Translation")?;
+            if len < 4 {
+                return None;
+            }
+            let pair = translation as *const u16;
+            let (lang, page) = (*pair, *pair.add(1));
+            let (text, chars) = query(&format!(
+                "\\StringFileInfo\\{lang:04x}{page:04x}\\FileDescription"
+            ))?;
+            let slice = std::slice::from_raw_parts(text, chars as usize);
+            let value = String::from_utf16_lossy(slice)
+                .trim_end_matches('\0')
+                .trim()
+                .to_string();
+            (!value.is_empty()).then_some(value)
+        }
+    }
+}
+
+#[cfg(test)]
+mod app_name_tests {
+    use super::*;
+
+    #[test]
+    fn executable_names() {
+        assert_eq!(
+            exe_stem("C:\\Program Files\\Mozilla Firefox\\firefox.exe").as_deref(),
+            Some("firefox")
         );
-        let _ = CloseHandle(handle);
-        ok.ok()?;
-        let path = String::from_utf16_lossy(&buf[..len as usize]);
-        let file = path.rsplit(['\\', '/']).next().unwrap_or(&path);
-        let stem = file
-            .strip_suffix(".exe")
-            .or_else(|| file.strip_suffix(".EXE"))
-            .unwrap_or(file);
-        if stem.is_empty() {
-            None
-        } else {
-            Some(stem.to_string())
-        }
+        assert_eq!(
+            exe_stem("C:\\Windows\\System32\\NOTEPAD.EXE").as_deref(),
+            Some("NOTEPAD")
+        );
+        assert_eq!(exe_stem("").as_deref(), None);
+        assert!(is_frame_host("ApplicationFrameHost"));
+        assert!(is_frame_host("applicationframehost"));
+        assert!(!is_frame_host("firefox"));
+    }
+
+    #[test]
+    fn a_store_app_is_named_for_itself_not_its_frame() {
+        assert_eq!(
+            store_app_name(
+                Some("Microsoft Sticky Notes".into()),
+                Some("Sticky Notes".into()),
+                Some("Microsoft.Notes".into())
+            )
+            .as_deref(),
+            Some("Microsoft Sticky Notes")
+        );
+        assert_eq!(
+            store_app_name(None, Some("Sticky Notes".into()), None).as_deref(),
+            Some("Sticky Notes")
+        );
+        assert_eq!(
+            store_app_name(Some("  ".into()), None, Some("Microsoft.Notes".into())).as_deref(),
+            Some("Microsoft.Notes")
+        );
+        assert_eq!(store_app_name(None, None, None), None);
     }
 }
