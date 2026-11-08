@@ -3,11 +3,11 @@
 
 use super::wire::{BONJOUR_TYPE, DEFAULT_PORT};
 use mdns_sd::{ServiceDaemon, ServiceEvent};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 /// A Mac offering Orttaai Link.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveredMac {
     pub mac_device_id: String,

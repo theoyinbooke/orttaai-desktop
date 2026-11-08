@@ -1685,6 +1685,15 @@ rect.heat.on {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Orttaai Link: the device a dictation from elsewhere was said on. */
+.c-app-device {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10.5px;
+  line-height: 13px;
+  color: var(--tx3);
+}
 .c-model {
   color: var(--tx3);
   font-size: 11px;

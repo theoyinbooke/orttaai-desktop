@@ -118,6 +118,9 @@ export type TranscriptionRecord = {
   time_zone: string | null;
   polished: boolean;
   created_at: number;
+  /** Set when it came from another device through a linked Mac; null is this PC. */
+  source_device_id?: string | null;
+  source_device_kind?: string | null;
 };
 export type HistoryQuery = {
   search?: string | null;

@@ -12,6 +12,7 @@ import Home from "./views/Home";
 import ChatAI from "./views/ChatAI";
 import MemoryGraph from "./views/MemoryGraph";
 import Memory from "./views/Memory";
+import Devices from "./views/Devices";
 import Analytics from "./views/Analytics";
 import Milestones from "./views/Milestones";
 import Coach from "./views/Coach";
@@ -34,6 +35,7 @@ const WORKSPACE: Section[] = [
 ];
 const MANAGE: Section[] = [
   { tab: "memory", label: "Memory", icon: "book" },
+  { tab: "devices", label: "Devices", icon: "devices" },
   { tab: "models", label: "Model", icon: "cpu" },
   { tab: "settings", label: "Settings", icon: "gear" },
   { tab: "about", label: "About", icon: "infoCircle" },
@@ -264,6 +266,7 @@ function AppShell() {
           {tab === "chat" && <ChatAI />}
           {tab === "graph" && <MemoryGraph />}
           {tab === "memory" && <Memory />}
+          {tab === "devices" && <Devices />}
           {tab === "analytics" && <Analytics />}
           {tab === "milestones" && <Milestones />}
           {tab === "coach" && <Coach />}
