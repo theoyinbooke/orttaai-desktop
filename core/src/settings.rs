@@ -235,9 +235,6 @@ pub struct Settings {
     pub launch_at_login: bool,
     pub start_engine_on_launch: bool,
     pub show_processing_estimate: bool,
-    /// Windows: keep a small pill on screen while idle (hover for the hint,
-    /// click to dictate hands-free), like the Mac's floating handle.
-    pub show_idle_pill: bool,
     pub celebrate_milestones: bool,
     pub has_completed_setup: bool,
     pub auto_download_updates: bool,
@@ -337,7 +334,6 @@ impl Default for Settings {
             launch_at_login: false,
             start_engine_on_launch: true,
             show_processing_estimate: true,
-            show_idle_pill: true,
             celebrate_milestones: true,
             has_completed_setup: false,
             auto_download_updates: true,

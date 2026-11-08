@@ -36,9 +36,13 @@ See [`docs/architecture.md`](docs/architecture.md) and the full build plan for d
   next tap, the pill's stop button, **silence** via Silero VAD, or its time cap, with a
   countdown). Optionally **tap Right Ctrl** on its own to start and again to insert
   (Windows and X11). Mic picker with Bluetooth/disconnect recovery that keeps what was heard.
-  Paste or type, clipboard restored. Floating pill with live waveform and timer.
+  Paste or type, clipboard restored (images too). A pill with live waveform and timer
+  shows only while you dictate, just above the taskbar on Windows. On Windows a **click
+  on the tray icon** starts and stops dictation.
 - **Two speech engines** — **Whisper** (whisper.cpp, every language, optional CUDA) and
   **Express** (NVIDIA **Parakeet** via ONNX Runtime — the fastest option on CPU).
+- **Learn from your edits** — fix a misheard name right after dictating it and Orttaai
+  suggests it for your dictionary (UI Automation on Windows, AT-SPI on Linux).
 - **Text pipeline** — dictionary (multi-word, case-sensitive), fuzzy dictionary,
   snippets, filler/stutter removal, spoken formatting ("new line", lists), automatic
   paragraphs, number formatting, style modes, vocabulary bias.

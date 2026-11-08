@@ -25,16 +25,272 @@ pub fn focused_field_text() -> Option<String> {
 ///
 /// - **Windows**: UI Automation — `ValuePattern.CurrentValue`, falling back to
 ///   `TextPattern.DocumentRange.GetText` (rich edits, browsers).
-/// - **Linux / others**: no API a normal client may use (AT-SPI is unreliable
-///   and absent under Wayland sandboxes), so always `Unreadable`.
+/// - **Linux**: AT-SPI, the accessibility bus (X11 and Wayland alike): the
+///   editable object that last took focus, through its `Text` interface. GTK,
+///   Qt, LibreOffice and Firefox fields are readable; apps that don't expose
+///   accessibility read as `Unreadable`.
 #[cfg(target_os = "windows")]
 pub fn focused_field_read() -> FieldRead {
     uia_field::read()
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(target_os = "linux", feature = "portal"))]
+pub fn focused_field_read() -> FieldRead {
+    atspi_field::read()
+}
+
+#[cfg(not(any(target_os = "windows", all(target_os = "linux", feature = "portal"))))]
 pub fn focused_field_read() -> FieldRead {
     FieldRead::Unreadable
+}
+
+/// Linux: the focused field over AT-SPI. A worker thread joins the
+/// accessibility bus, asks apps to report focus changes, and remembers the
+/// object that last gained focus; reads go to that object. Every step fails
+/// safe to `Unreadable`, and each call to an app is capped so a hung app can't
+/// stall a dictation.
+#[cfg(all(target_os = "linux", feature = "portal"))]
+mod atspi_field {
+    use crate::injection::edit_watch::FieldRead;
+    use std::sync::mpsc;
+    use std::sync::OnceLock;
+    use std::time::Duration;
+    use zbus::zvariant::{OwnedObjectPath, OwnedValue, Structure, Value};
+
+    /// AT-SPI state bits (`AtspiStateType`) and the password role.
+    const STATE_EDITABLE: u32 = 7;
+    const STATE_FOCUSED: u32 = 12;
+    const ROLE_PASSWORD_TEXT: u32 = 40;
+    /// A single call to an app.
+    const CALL_TIMEOUT: Duration = Duration::from_millis(800);
+    /// A whole read, as the watcher sees it.
+    const READ_TIMEOUT: Duration = Duration::from_millis(2500);
+    /// Fields longer than this (a whole document) aren't read.
+    const MAX_CHARS: i32 = 100_000;
+
+    type Request = mpsc::Sender<FieldRead>;
+
+    static WORKER: OnceLock<Option<tokio::sync::mpsc::UnboundedSender<Request>>> = OnceLock::new();
+
+    /// Start listening for focus changes (once). Called at startup so the
+    /// field you're in is known before the first dictation.
+    pub fn start() {
+        worker();
+    }
+
+    fn worker() -> Option<&'static tokio::sync::mpsc::UnboundedSender<Request>> {
+        WORKER
+            .get_or_init(|| {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
+                std::thread::Builder::new()
+                    .name("orttaai-atspi".into())
+                    .spawn(move || {
+                        let rt = match tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                        {
+                            Ok(rt) => rt,
+                            Err(_) => return,
+                        };
+                        rt.block_on(run(rx));
+                    })
+                    .ok()?;
+                Some(tx)
+            })
+            .as_ref()
+    }
+
+    pub fn read() -> FieldRead {
+        let Some(worker) = worker() else {
+            return FieldRead::Unreadable;
+        };
+        let (tx, rx) = mpsc::channel();
+        if worker.send(tx).is_err() {
+            return FieldRead::Unreadable;
+        }
+        rx.recv_timeout(READ_TIMEOUT)
+            .unwrap_or(FieldRead::Unreadable)
+    }
+
+    /// The object that last gained focus: its app's bus name and path.
+    type Focus = std::sync::Arc<std::sync::Mutex<Option<(String, OwnedObjectPath)>>>;
+
+    async fn run(mut requests: tokio::sync::mpsc::UnboundedReceiver<Request>) {
+        let bus = match connect().await {
+            Ok(bus) => bus,
+            Err(e) => {
+                tracing::info!("accessibility bus unavailable, edits can't be read: {e}");
+                // Answer every read so callers never wait out the timeout.
+                while let Some(reply) = requests.recv().await {
+                    let _ = reply.send(FieldRead::Unreadable);
+                }
+                return;
+            }
+        };
+        let focus: Focus = Default::default();
+        tokio::spawn(follow_focus(bus.clone(), focus.clone()));
+        while let Some(reply) = requests.recv().await {
+            let target = focus.lock().unwrap().clone();
+            let read = match target {
+                Some((app, path)) => read_field(&bus, &app, &path)
+                    .await
+                    .unwrap_or(FieldRead::Unreadable),
+                None => FieldRead::Unreadable,
+            };
+            let _ = reply.send(read);
+        }
+    }
+
+    /// The accessibility bus (a separate bus; its address comes from the
+    /// session bus), with focus events switched on.
+    async fn connect() -> zbus::Result<zbus::Connection> {
+        let session = zbus::Connection::session().await?;
+        let address: String = session
+            .call_method(
+                Some("org.a11y.Bus"),
+                "/org/a11y/bus",
+                Some("org.a11y.Bus"),
+                "GetAddress",
+                &(),
+            )
+            .await?
+            .body()
+            .deserialize()?;
+        let bus = zbus::connection::Builder::address(address.as_str())?
+            .build()
+            .await?;
+        // Toolkits only send the events someone has asked the registry for.
+        // The call's signature changed in at-spi2-core 2.46; try both.
+        let registry = |args: &'static str| {
+            let bus = bus.clone();
+            async move {
+                let call = if args == "s" {
+                    bus.call_method(
+                        Some("org.a11y.atspi.Registry"),
+                        "/org/a11y/atspi/registry",
+                        Some("org.a11y.atspi.Registry"),
+                        "RegisterEvent",
+                        &("object:state-changed:focused",),
+                    )
+                    .await
+                } else {
+                    bus.call_method(
+                        Some("org.a11y.atspi.Registry"),
+                        "/org/a11y/atspi/registry",
+                        Some("org.a11y.atspi.Registry"),
+                        "RegisterEvent",
+                        &("object:state-changed:focused", Vec::<String>::new(), ""),
+                    )
+                    .await
+                };
+                call.is_ok()
+            }
+        };
+        if !registry("sass").await {
+            registry("s").await;
+        }
+        Ok(bus)
+    }
+
+    /// Remember each object that gains focus.
+    async fn follow_focus(bus: zbus::Connection, focus: Focus) {
+        use futures_util::StreamExt;
+        let Ok(rule) = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .interface("org.a11y.atspi.Event.Object")
+            .and_then(|r| r.member("StateChanged"))
+            .map(|r| r.build())
+        else {
+            return;
+        };
+        let Ok(mut events) = zbus::MessageStream::for_match_rule(rule, &bus, None).await else {
+            return;
+        };
+        while let Some(Ok(msg)) = events.next().await {
+            let header = msg.header();
+            let (Some(sender), Some(path)) = (header.sender(), header.path()) else {
+                continue;
+            };
+            let body = msg.body();
+            let Ok(body) = body.deserialize::<Structure>() else {
+                continue;
+            };
+            let fields = body.fields();
+            let gained = matches!(
+                (fields.first(), fields.get(1)),
+                (Some(Value::Str(kind)), Some(Value::I32(1))) if kind.as_str() == "focused"
+            );
+            if gained {
+                *focus.lock().unwrap() = Some((sender.to_string(), path.to_owned().into()));
+            }
+        }
+    }
+
+    async fn call<R>(
+        bus: &zbus::Connection,
+        app: &str,
+        path: &OwnedObjectPath,
+        iface: &str,
+        method: &str,
+        args: &(impl serde::Serialize + zbus::zvariant::DynamicType),
+    ) -> Option<R>
+    where
+        R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
+    {
+        let reply = tokio::time::timeout(
+            CALL_TIMEOUT,
+            bus.call_method(Some(app), path.as_ref(), Some(iface), method, args),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        reply.body().deserialize().ok()
+    }
+
+    async fn read_field(
+        bus: &zbus::Connection,
+        app: &str,
+        path: &OwnedObjectPath,
+    ) -> Option<FieldRead> {
+        const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
+        let states: Vec<u32> = call(bus, app, path, ACCESSIBLE, "GetState", &()).await?;
+        let has = |bit: u32| {
+            states
+                .get((bit / 32) as usize)
+                .is_some_and(|word| word & (1 << (bit % 32)) != 0)
+        };
+        // Focus moved on to something we weren't told about, or not a field.
+        if !has(STATE_FOCUSED) || !has(STATE_EDITABLE) {
+            return Some(FieldRead::Unreadable);
+        }
+        let role: u32 = call(bus, app, path, ACCESSIBLE, "GetRole", &()).await?;
+        if role == ROLE_PASSWORD_TEXT {
+            return Some(FieldRead::Secure);
+        }
+        let count: OwnedValue = call(
+            bus,
+            app,
+            path,
+            "org.freedesktop.DBus.Properties",
+            "Get",
+            &("org.a11y.atspi.Text", "CharacterCount"),
+        )
+        .await?;
+        let count = i32::try_from(count).ok()?;
+        if !(0..=MAX_CHARS).contains(&count) {
+            return Some(FieldRead::Unreadable);
+        }
+        let text: String = call(
+            bus,
+            app,
+            path,
+            "org.a11y.atspi.Text",
+            "GetText",
+            &(0i32, count),
+        )
+        .await?;
+        Some(FieldRead::Text(text))
+    }
 }
 
 /// NOTE: `#[cfg(windows)]`-only; verified by the Windows cross-check build.
@@ -187,20 +443,166 @@ pub fn focused_window() -> Option<u64> {
     (win != 0).then_some(win as u64)
 }
 
-/// The window in front, unless it's one of Orttaai's own (the pill, the
-/// main window): a dictation started from the pill must never take the pill
-/// as the app to type into. `None` then means "whatever is in front when the
-/// text is typed", as on a system without window tracking.
+/// The window in front, unless it's the taskbar (clicked to reach Orttaai's
+/// tray icon) or a window of Orttaai's you can't type into (the pill): a
+/// dictation must never take those as the app to type into. Orttaai's main
+/// window counts, so dictating into Chat AI works. `None` then means
+/// "whatever is in front when the text is typed", as on a system without
+/// window tracking.
 #[cfg(target_os = "windows")]
 pub fn focused_window() -> Option<u64> {
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
     let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.0.is_null() {
-        return None;
+    win::is_app_window(hwnd).then_some(hwnd.0 as usize as u64)
+}
+
+/// Start following focus in the background. Windows: which app window is in
+/// front, so a click on the tray icon (which brings the taskbar forward) can
+/// hand focus back to it. Linux: which text field has focus, so edits to a
+/// dictation can be read (learn from edits).
+pub fn track_foreground() {
+    #[cfg(target_os = "windows")]
+    win::track_foreground();
+    #[cfg(all(target_os = "linux", feature = "portal"))]
+    atspi_field::start();
+}
+
+/// After a click on Orttaai's tray icon or its menu, bring back the window that
+/// was in front before the taskbar took it, so the dictation goes there and its
+/// caret shows. Returns whether an app window is in front afterwards (always
+/// `true` off Windows, where clicking the tray doesn't move focus).
+pub fn return_from_tray() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        win::return_from_tray()
     }
-    let mut pid = 0u32;
-    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
-    (pid != std::process::id()).then_some(hwnd.0 as usize as u64)
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
+    }
+}
+
+/// NOTE: `#[cfg(windows)]`-only; verified by the Windows cross-check build.
+#[cfg(target_os = "windows")]
+mod win {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, GetClassNameW, GetForegroundWindow, GetMessageW, GetWindowLongPtrW,
+        GetWindowThreadProcessId, IsWindow, IsWindowVisible, EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE,
+        MSG, WINEVENT_OUTOFCONTEXT, WS_EX_NOACTIVATE,
+    };
+
+    /// The taskbar (main and secondary monitors), the notification area's
+    /// overflow (Windows 10 and 11) and the shell's flyout hosts.
+    const SHELL_CLASSES: &[&str] = &[
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+        "NotifyIconOverflowWindow",
+        "TopLevelWindowForOverflowXamlIsland",
+        "XamlExplorerHostIslandWindow",
+    ];
+
+    /// The last app window that was in front (an HWND; 0 = none yet).
+    static LAST_APP_WINDOW: AtomicU64 = AtomicU64::new(0);
+
+    fn is_shell_surface(hwnd: HWND) -> bool {
+        let mut buf = [0u16; 64];
+        let n = unsafe { GetClassNameW(hwnd, &mut buf) };
+        n > 0 && SHELL_CLASSES.contains(&String::from_utf16_lossy(&buf[..n as usize]).as_str())
+    }
+
+    fn is_own(hwnd: HWND) -> bool {
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        pid == std::process::id()
+    }
+
+    /// One of Orttaai's windows you can type into (the main window, for Chat
+    /// AI or the Memory fields), not the pill (`WS_EX_NOACTIVATE`, never in
+    /// front) or the tray's hidden message window.
+    fn is_own_typing_window(hwnd: HWND) -> bool {
+        let ex = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+        unsafe { IsWindowVisible(hwnd) }.as_bool() && ex & WS_EX_NOACTIVATE.0 == 0
+    }
+
+    /// A window someone could be typing into: any app's, Orttaai's main window
+    /// included, but not the taskbar.
+    pub(super) fn is_app_window(hwnd: HWND) -> bool {
+        !hwnd.0.is_null()
+            && !is_shell_surface(hwnd)
+            && (!is_own(hwnd) || is_own_typing_window(hwnd))
+    }
+
+    fn note(hwnd: HWND) {
+        if is_app_window(hwnd) && unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            LAST_APP_WINDOW.store(hwnd.0 as usize as u64, Ordering::SeqCst);
+        }
+    }
+
+    unsafe extern "system" fn on_foreground(
+        _hook: HWINEVENTHOOK,
+        _event: u32,
+        hwnd: HWND,
+        _object: i32,
+        _child: i32,
+        _thread: u32,
+        _time: u32,
+    ) {
+        note(hwnd);
+    }
+
+    pub(super) fn track_foreground() {
+        static STARTED: std::sync::Once = std::sync::Once::new();
+        STARTED.call_once(|| {
+            let _ = std::thread::Builder::new()
+                .name("orttaai-foreground".into())
+                .spawn(|| unsafe {
+                    // Out-of-context events arrive through this thread's queue.
+                    let hook = SetWinEventHook(
+                        EVENT_SYSTEM_FOREGROUND,
+                        EVENT_SYSTEM_FOREGROUND,
+                        None,
+                        Some(on_foreground),
+                        0,
+                        0,
+                        // Own windows too: the main window can be the one
+                        // to return to (dictating into Chat AI).
+                        WINEVENT_OUTOFCONTEXT,
+                    );
+                    if hook.is_invalid() {
+                        tracing::warn!("couldn't watch the foreground window");
+                        return;
+                    }
+                    note(GetForegroundWindow());
+                    let mut msg = MSG::default();
+                    while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                        DispatchMessageW(&msg);
+                    }
+                });
+        });
+    }
+
+    pub(super) fn return_from_tray() -> bool {
+        let front = unsafe { GetForegroundWindow() };
+        if is_app_window(front) {
+            return true;
+        }
+        let last = LAST_APP_WINDOW.load(Ordering::SeqCst);
+        let hwnd = HWND(last as usize as *mut core::ffi::c_void);
+        if last == 0 || !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+            return false;
+        }
+        super::activate_window(last);
+        for _ in 0..10 {
+            if unsafe { GetForegroundWindow() } == hwnd {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        false
+    }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -246,8 +648,10 @@ pub fn activate_window(window: u64) -> bool {
 #[cfg(target_os = "windows")]
 pub fn activate_window(window: u64) -> bool {
     use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{
-        IsIconic, IsWindow, SetForegroundWindow, ShowWindow, SW_RESTORE,
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindow,
+        SetForegroundWindow, ShowWindow, SW_RESTORE,
     };
     let hwnd = HWND(window as usize as *mut core::ffi::c_void);
     unsafe {
@@ -257,7 +661,27 @@ pub fn activate_window(window: u64) -> bool {
         if IsIconic(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         }
-        SetForegroundWindow(hwnd).as_bool()
+        if SetForegroundWindow(hwnd).as_bool() {
+            return true;
+        }
+        // Refused by the foreground lock: share the front window's input
+        // state for a moment, the way Windows lets the app in front hand over.
+        let front = GetForegroundWindow();
+        if front == hwnd {
+            return true;
+        }
+        let front_thread = GetWindowThreadProcessId(front, None);
+        let me = GetCurrentThreadId();
+        if front_thread == 0
+            || front_thread == me
+            || !AttachThreadInput(me, front_thread, true).as_bool()
+        {
+            return false;
+        }
+        let _ = BringWindowToTop(hwnd);
+        let done = SetForegroundWindow(hwnd).as_bool();
+        let _ = AttachThreadInput(me, front_thread, false);
+        done
     }
 }
 

@@ -267,7 +267,8 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", "Orttaai — Off", false, None::<&str>)?;
     // The engine updates this line with its state ("Recording…", "Ready"…).
     app.manage(engine::TrayStatus(status.clone()));
-    let rec = MenuItem::with_id(app, "rec", "Start / stop recording", true, None::<&str>)?;
+    let rec = MenuItem::with_id(app, "rec", engine::tray_dictate_label("off"), true, None::<&str>)?;
+    app.manage(engine::TrayDictate(rec.clone()));
     let polish = CheckMenuItem::with_id(
         app,
         "polish",
@@ -302,7 +303,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
         ],
     )?;
 
-    TrayIconBuilder::with_id(TRAY_ID)
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
         // The engine swaps in the recording / processing / error variants.
         .icon(engine::tray_icon("off"))
         .tooltip("Orttaai")
@@ -315,20 +316,62 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
             "settings" => show_main(app, Some("settings")),
             "updates" => show_main(app, Some("check-updates")),
             "polish" => toggle_polish_from_tray(app),
-            "rec" => {
-                let state = app.state::<EngineState>();
-                // With the engine off the reason shows in the main window,
-                // which may be hidden: bring it up so it isn't missed.
-                if !state.is_running() {
-                    show_main(app, None);
-                }
-                engine::toggle_recording_impl(app, state.inner());
-            }
+            "rec" => dictate_from_tray(app),
             _ => {}
-        })
-        .build(app)?;
+        });
+    // Windows: the tray icon is the click-to-dictate handle (the menu is on
+    // right-click). Linux trays only open the menu, whatever the click.
+    #[cfg(target_os = "windows")]
+    let tray = tray
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| {
+            use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                dictate_from_tray(tray.app_handle());
+            }
+        });
+    tray.build(app)?;
+    orttaai_core::focus::track_foreground();
     Ok(())
 }
+
+/// Start or stop a dictation from the tray (a click on the icon on Windows, or
+/// the menu item). The taskbar took focus for the click, so the window that
+/// was in front comes back first and the words go there. A second click within
+/// [`TRAY_DOUBLE_CLICK_MS`] (a double-click) is ignored, so it can't start and
+/// at once stop.
+fn dictate_from_tray(app: &AppHandle) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST_CLICK_MS: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    let last = LAST_CLICK_MS.swap(now, Ordering::SeqCst);
+    if now.saturating_sub(last) < TRAY_DOUBLE_CLICK_MS {
+        return;
+    }
+    let app = app.clone();
+    // Waiting for the window to come back mustn't hold up the event loop.
+    std::thread::spawn(move || {
+        let state = app.state::<EngineState>();
+        // With the engine off the reason shows in the main window, which may
+        // be hidden: bring it up so it isn't missed.
+        if !state.is_running() {
+            show_main(&app, None);
+        } else if !orttaai_core::focus::return_from_tray() {
+            tracing::info!("no app window to return to after the tray click");
+        }
+        engine::toggle_recording_impl(&app, state.inner());
+    });
+}
+
+/// Two tray clicks closer than this are one double-click.
+const TRAY_DOUBLE_CLICK_MS: u64 = 400;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// The diagnostic log's first lines: what it holds, and what it never does.

@@ -2,7 +2,7 @@
 // text-pipeline area.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Badge, Button, ConfirmDialog, CopyButton, Icon, IconButton, PageHeader, Spinner, Switch, useToast } from "../ui";
+import { Button, ConfirmDialog, CopyButton, Icon, IconButton, PageHeader, Spinner, Switch, useToast } from "../ui";
 import { Glyph, Row, Section, TabBar, ToggleRow } from "../components/SettingsRows";
 import { useSettings } from "../lib/settings";
 import { useExpressInUse } from "../lib/engine";
@@ -566,7 +566,8 @@ function SuggestionsTab({
     () => suggestions.filter((s) => matches(query, s.candidate_source, s.candidate_target)),
     [suggestions, query],
   );
-  const editsSupported = platform === "windows";
+  // Windows reads the text box through UI Automation, Linux through AT-SPI.
+  const editsSupported = platform === "windows" || platform === "linux";
 
   const analyze = () => {
     setAnalyzing(true);
@@ -583,15 +584,13 @@ function SuggestionsTab({
         <ToggleRow
           k="learn_from_edits"
           disabled={!editsSupported}
-          label={
-            <>
-              Learn from My Edits <Badge tone="neutral">Windows only</Badge>
-            </>
-          }
+          label="Learn from My Edits"
           hint={
             editsSupported
-              ? "When you fix a name or term right after dictating it, Orttaai suggests it here as a dictionary word. Only the word pair is kept, never the text around it, and password fields are never read."
-              : "Needs Windows UI Automation to read the text box you dictated into. Linux desktops don't offer an equivalent, so suggestions come from Analyze History here."
+              ? platform === "linux"
+                ? "When you fix a name or term right after dictating it, Orttaai suggests it here as a dictionary word. Only the word pair is kept, never the text around it, and password fields are never read. Works in apps that share their text boxes with Linux accessibility (GTK and Qt apps, Firefox, LibreOffice)."
+                : "When you fix a name or term right after dictating it, Orttaai suggests it here as a dictionary word. Only the word pair is kept, never the text around it, and password fields are never read."
+              : "Needs a way to read the text box you dictated into, which this system doesn't offer. Suggestions come from Analyze History here."
           }
         />
         <ToggleRow

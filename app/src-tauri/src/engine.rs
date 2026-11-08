@@ -44,14 +44,28 @@ const TICK: Duration = Duration::from_millis(50);
 /// Overlay size (logical px) — matches `tauri.conf.json`.
 const PANEL_W: f64 = 320.0;
 const PANEL_H: f64 = 60.0;
-/// The idle pill's window height (Windows): just the hover hint, so the
-/// invisible part of the window covers as little of the screen as it can.
-const IDLE_PANEL_H: f64 = 32.0;
-/// The panel's bottom gap above the screen edge, below the pill's window.
+/// Linux: the panel's gap above the screen's bottom edge (docks and panels
+/// aren't reliably reported, so it clears the usual ones).
 const PANEL_BOTTOM_GAP: f64 = 96.0;
+/// Windows: the panel's gap above the work area's bottom, which is the top of
+/// a bottom taskbar.
+const PANEL_TASKBAR_GAP: f64 = 4.0;
 
 /// The tray's status line (`status` menu item), updated with engine state.
 pub struct TrayStatus(pub tauri::menu::MenuItem<tauri::Wry>);
+
+/// The tray's start/stop item, relabelled with engine state (on Linux the
+/// menu is how you dictate from the tray, so it says which it will do).
+pub struct TrayDictate(pub tauri::menu::MenuItem<tauri::Wry>);
+
+/// The start/stop item's label for an engine phase.
+pub fn tray_dictate_label(phase: &str) -> &'static str {
+    if phase == "recording" {
+        "Stop Dictation"
+    } else {
+        "Start Dictation"
+    }
+}
 
 // ---- Engine state (Tauri-managed) ------------------------------------------
 
@@ -151,8 +165,6 @@ pub struct EngineState {
     /// Whether the floating panel is on screen, so it is shown only when it
     /// was hidden (showing again could pull focus on Windows).
     panel_shown: AtomicBool,
-    /// Whether the panel window is at the idle pill's compact size.
-    panel_compact: AtomicBool,
 }
 
 impl EngineState {
@@ -614,8 +626,6 @@ pub fn stop_recording(state: State<EngineState>) {
 pub fn suspend_hotkeys(app: AppHandle, suspended: bool) {
     let state = app.state::<EngineState>();
     state.hotkeys_suspended.store(suspended, Ordering::SeqCst);
-    // The idle pill teaches the shortcut, so it steps aside while it's recorded.
-    refresh_panel(&app);
     if suspended {
         if let Some(mut h) = state.hotkey.lock().unwrap().take() {
             let _ = h.unregister();
@@ -986,8 +996,11 @@ fn apply_phase(app: &AppHandle, phase: &str, line: &str) {
     let _ = app.emit("engine-state", phase);
     publish_snapshot(app, |s| s.phase = phase.to_string());
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_tooltip(Some(format!("Orttaai — {line}")));
+        let _ = tray.set_tooltip(Some(tray_tooltip(phase, line)));
         let _ = tray.set_icon(Some(tray_icon(phase)));
+    }
+    if let Some(item) = app.try_state::<TrayDictate>() {
+        let _ = item.0.set_text(tray_dictate_label(phase));
     }
     if let Some(status) = app.try_state::<TrayStatus>() {
         let _ = status.0.set_text(format!("Orttaai — {line}"));
@@ -1012,89 +1025,90 @@ pub fn tray_icon(phase: &str) -> tauri::image::Image<'static> {
     }
 }
 
-/// Whether the idle pill is wanted now: Windows only, with the engine running,
-/// the shortcuts live (not being re-recorded) and Show Pill When Idle on.
-/// Linux never shows it: GNOME/Mutter can route synthesized typing into an
-/// always-on-top window (see [`place_panel`]).
-fn idle_pill_wanted(app: &AppHandle) -> bool {
-    if !cfg!(target_os = "windows") {
-        return false;
-    }
-    let state = app.state::<EngineState>();
-    state.running.load(Ordering::SeqCst)
-        && !state.hotkeys_suspended.load(Ordering::SeqCst)
-        && Settings::load_or_default().show_idle_pill
+/// The tray icon's tooltip. On Windows a click on the icon starts and stops
+/// dictation, so the tooltip says so.
+fn tray_tooltip(phase: &str, line: &str) -> String {
+    let hint = match phase {
+        "idle" if cfg!(target_os = "windows") => " · Click to dictate",
+        "recording" if cfg!(target_os = "windows") => " · Click to stop",
+        _ => "",
+    };
+    format!("Orttaai — {line}{hint}")
 }
 
-/// Re-decide the panel for the current phase (the idle pill's conditions
-/// changed: its setting, or the shortcut recorder).
-pub fn refresh_panel(app: &AppHandle) {
-    let phase = app.state::<EngineState>().snapshot.lock().unwrap().phase.clone();
-    place_panel(app, &phase);
-}
-
-/// Show, hide and size the floating overlay for `phase`.
+/// Show or hide the floating overlay for `phase`.
 ///
-/// Always shown while recording. On Linux it is hidden the instant recording
-/// ends — BEFORE "processing", which is when injection runs: even with
+/// Shown while recording. On Linux it is hidden the instant recording ends —
+/// BEFORE "processing", which is when injection runs: even with
 /// `focusable:false`, GNOME/Mutter does not reliably keep an always-on-top
 /// window out of the focus chain, so a panel left visible during injection can
 /// capture the synthesized keystrokes. Windows keeps a `WS_EX_NOACTIVATE`
-/// window out of focus, so the pill stays up to show the processing estimate
-/// and, when idle, shrinks to the idle pill (hover hint, click to dictate).
+/// window out of focus, so the pill stays up to show the processing estimate.
 /// Errors (after any injection) show briefly everywhere; every other phase
-/// hides it, so it can't get stuck on-screen.
+/// hides it, so it can't get stuck on-screen. Between dictations the tray icon
+/// is the handle (on Windows a click on it dictates), not a pill.
 fn place_panel(app: &AppHandle, phase: &str) {
     let Some(panel) = app.get_webview_window("panel") else {
         return;
     };
-    let idle_pill = phase == "idle" && idle_pill_wanted(app);
     let show = match phase {
         "recording" | "error" => true,
         "processing" => !cfg!(target_os = "linux"),
-        "idle" => idle_pill,
         _ => false,
     };
     let state = app.state::<EngineState>();
-    // Resize only while it's on screen (a hidden panel keeps its last size
-    // until it's next shown) and only when the size changes.
-    if show && state.panel_compact.swap(idle_pill, Ordering::SeqCst) != idle_pill {
-        set_panel_frame(&panel, if idle_pill { IDLE_PANEL_H } else { PANEL_H }, true);
-    }
     // Show only a hidden panel: on Windows `ShowWindow` again can activate it.
     if state.panel_shown.swap(show, Ordering::SeqCst) != show {
-        let _ = if show { panel.show() } else { panel.hide() };
+        if show {
+            // Each dictation, on the screen you're working on.
+            set_panel_frame(&panel);
+            let _ = panel.show();
+        } else {
+            let _ = panel.hide();
+        }
     }
 }
 
-/// Park the panel (`height` logical px tall, resized to it when `resize`) near
-/// the bottom-center of the primary monitor, centred where the recording pill
-/// sits.
-fn set_panel_frame(panel: &tauri::WebviewWindow, height: f64, resize: bool) {
-    let Ok(Some(monitor)) = panel.primary_monitor() else {
+/// Park the panel bottom-center on the monitor under the mouse pointer (the
+/// primary one when that can't be told). On Windows it sits just above the
+/// taskbar, inside the work area, so the taskbar never covers it; elsewhere it
+/// keeps clear of the screen's bottom edge.
+fn set_panel_frame(panel: &tauri::WebviewWindow) {
+    let monitor = panel
+        .cursor_position()
+        .ok()
+        .and_then(|p| panel.monitor_from_point(p.x, p.y).ok().flatten())
+        .or_else(|| panel.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
         return;
     };
     let scale = monitor.scale_factor();
-    let size = monitor.size();
-    let origin = monitor.position();
     let w = (PANEL_W * scale) as i32;
-    let h = (height * scale) as i32;
-    let x = origin.x + (size.width as i32 - w) / 2;
-    // The recording pill's centre line stays put whatever the height.
-    let centre = origin.y + size.height as i32 - ((PANEL_BOTTOM_GAP + PANEL_H / 2.0) * scale) as i32;
-    if resize {
-        let _ = panel.set_size(tauri::LogicalSize::new(PANEL_W, height));
-    }
-    let _ = panel.set_position(tauri::PhysicalPosition::new(x, centre - h / 2));
+    let h = (PANEL_H * scale) as i32;
+    let (x, y) = if cfg!(target_os = "windows") {
+        let area = monitor.work_area();
+        let bottom = area.position.y + area.size.height as i32;
+        (
+            area.position.x + (area.size.width as i32 - w) / 2,
+            bottom - h - (PANEL_TASKBAR_GAP * scale) as i32,
+        )
+    } else {
+        let (origin, size) = (monitor.position(), monitor.size());
+        (
+            origin.x + (size.width as i32 - w) / 2,
+            origin.y + size.height as i32 - h - (PANEL_BOTTOM_GAP * scale) as i32,
+        )
+    };
+    let _ = panel.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
-/// Park the floating panel near the bottom-center of the primary monitor.
+/// Park the floating panel before it's first shown.
 /// (No click-through: `set_ignore_cursor_events` on the not-yet-realized hidden
 /// window panics inside tao's GTK event loop, and `focusable:false` alone
 /// already stops it stealing keyboard focus.)
 pub fn position_panel(app: &tauri::App) {
     if let Some(panel) = app.get_webview_window("panel") {
-        set_panel_frame(&panel, PANEL_H, false);
+        set_panel_frame(&panel);
     }
 }
 
@@ -1121,9 +1135,6 @@ pub fn on_settings_changed(app: &AppHandle, old: &Settings, new: &Settings) {
                 .edit_commands_enabled
                 .then(|| new.edit_shortcut.display());
         });
-    }
-    if old.show_idle_pill != new.show_idle_pill {
-        refresh_panel(app);
     }
     if old.audio_device != new.audio_device && state.monitor.lock().unwrap().is_some() {
         let _ = start_monitor(app, new.audio_device.clone());

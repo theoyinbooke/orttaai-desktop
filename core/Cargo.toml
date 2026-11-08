@@ -58,8 +58,9 @@ express = ["dep:sherpa-onnx", "dep:ort-sys", "dep:rustfft", "dep:bzip2", "dep:ta
 ollama = ["dep:ureq"]
 # Native GNOME/Wayland typing via the XDG RemoteDesktop portal (Linux only).
 # Kept out of `full` so Windows builds never pull in ashpd; the desktop app
-# adds it via a linux-only target dependency.
-portal = ["dep:ashpd", "dep:tokio", "dep:futures-util", "injection"]
+# adds it via a linux-only target dependency. Also reads the focused text field
+# over AT-SPI (learn from edits).
+portal = ["dep:ashpd", "dep:zbus", "dep:tokio", "dep:futures-util", "injection"]
 # GPU acceleration for whisper.cpp. Opt-in build flags (NOT in `full`) because
 # each backend is statically linked — one binary, one backend.
 # `cuda` = NVIDIA (needs the CUDA toolkit at build + driver at runtime); peak throughput.
@@ -101,3 +102,5 @@ arboard = { version = "3.6", default-features = false, features = ["image-data"]
 ashpd = { version = "0.11", optional = true, default-features = false, features = ["tokio"] }
 tokio = { version = "1", optional = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 futures-util = { version = "0.3", optional = true }
+# The accessibility bus (AT-SPI), to read the focused field for learn-from-edits.
+zbus = { version = "5", optional = true, default-features = false, features = ["tokio"] }

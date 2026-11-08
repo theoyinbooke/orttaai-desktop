@@ -9,9 +9,8 @@
 //! the text pipeline's correction finder: the field text before and after the
 //! user's fixes, never stored by this module. Secure fields are never read.
 //!
-//! Field reading is OS-specific ([`crate::focus::focused_field_text`]: UI
-//! Automation on Windows; Linux has no equivalent, so every check reports
-//! `Unreadable` there).
+//! Field reading is OS-specific ([`crate::focus::focused_field_read`]: UI
+//! Automation on Windows, AT-SPI on Linux).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

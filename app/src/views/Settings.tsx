@@ -80,14 +80,14 @@ function General({ linux, windows }: { linux: boolean; windows: boolean }) {
             hint="Shows roughly how long transcription will take in the pill while it finishes a recording."
           />
         )}
-        {/* Windows only: on Linux an always-on-top window can take the typed
-            text, so the pill stays hidden between dictations there. */}
+        {/* Windows: the tray icon is the click-to-dictate handle. */}
         {windows && (
-          <ToggleRow
-            k="show_idle_pill"
-            label="Show Pill When Idle"
-            hint="Keeps a small pill at the bottom of the screen while dictation is ready. Hover it for your shortcut, or click it to start dictating hands-free."
-          />
+          <Row
+            label="Taskbar Icon"
+            hint="Click Orttaai's icon in the corner of the taskbar, next to the clock, to start dictating, and click it again to stop. Right-click it for the menu. If it's hidden behind the ^ arrow, drag it onto the taskbar to keep it in view."
+          >
+            <span className="muted">Click to dictate</span>
+          </Row>
         )}
         <ToggleRow
           k="celebrate_milestones"
