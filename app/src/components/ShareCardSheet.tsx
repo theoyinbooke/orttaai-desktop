@@ -218,8 +218,8 @@ export default function ShareCardSheet({
             <button className="pill-btn" onClick={copy} disabled={busy !== null}>
               {busy === "copy" ? <Spinner /> : <Icon name="copy" size={15} />} Copy
             </button>
-            <button className="pill-btn primary" onClick={share} disabled={busy !== null}>
-              {busy === "share" ? <Spinner /> : <Icon name="share" size={15} />} Share…
+            <button className="pill-btn primary" onClick={share} disabled={busy !== null} title="Saves the image and shows it in its folder, ready to attach">
+              {busy === "share" ? <Spinner /> : <Icon name="share" size={15} />} Show in Folder
             </button>
           </div>
         </div>

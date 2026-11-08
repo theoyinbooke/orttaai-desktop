@@ -8,7 +8,9 @@
     <script>
       // Apply the saved theme before paint to prevent a flash of the wrong theme.
       try {
-        var t = localStorage.getItem("orttaai-theme") || "dark";
+        // Falls back to "system", the appearance setting's default (ui.tsx storedTheme).
+        var t = localStorage.getItem("orttaai-theme");
+        if (t !== "light" && t !== "dark") t = "system";
         var d =
           t === "system"
             ? window.matchMedia("(prefers-color-scheme: dark)").matches

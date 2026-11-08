@@ -109,12 +109,13 @@ impl EditRewriter for LlmRewriter {
     }
 }
 
-/// The model voice edit uses: an instruction-following general model (S1-mini
-/// is a polish-only fine-tune, so it is never used for edits).
+/// The model voice edit uses: the polish model, as Settings says, unless it's
+/// S1-mini (a polish-only fine-tune that can't follow edit instructions); then
+/// the chat or insights model.
 pub fn edit_model(settings: &Settings) -> Option<String> {
     [
-        &settings.chat_model,
         &settings.polish_model,
+        &settings.chat_model,
         &settings.insights_model,
     ]
     .into_iter()
@@ -158,6 +159,12 @@ mod tests {
             ..Default::default()
         };
         assert!(edit_model(&none).is_none());
+        let polish_first = Settings {
+            chat_model: "llama3.2:3b".into(),
+            polish_model: "qwen3:4b".into(),
+            ..Default::default()
+        };
+        assert_eq!(edit_model(&polish_first).as_deref(), Some("qwen3:4b"));
     }
 
     #[test]

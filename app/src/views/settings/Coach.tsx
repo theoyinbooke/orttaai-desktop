@@ -4,7 +4,7 @@
 // since Linux and Windows have no bundle IDs to find them by. (Coach area.)
 import { useCallback, useEffect, useState } from "react";
 import "../../styles/coach.css";
-import { Button, Select } from "../../ui";
+import { Button, Select, useToast } from "../../ui";
 import { Row, Section, ToggleRow, usePatch } from "../../components/SettingsRows";
 import { useSettings } from "../../lib/settings";
 import { useEvent } from "../../lib/api";
@@ -21,6 +21,7 @@ const RULES: { value: Rule; label: string }[] = [
 export default function CoachSettings() {
   const { settings } = useSettings();
   const save = usePatch();
+  const toast = useToast();
   const [apps, setApps] = useState<AppRow[] | null>(null);
   const [newApp, setNewApp] = useState("");
   const [newRule, setNewRule] = useState<Rule>("ai");
@@ -84,7 +85,7 @@ export default function CoachSettings() {
               options={RULES}
               onChange={(r) => coachApi.setAppRule({ key, app_id: null, app_name: key.startsWith("name:") ? key.slice(5) : null }, r)}
             />
-            <Button size="sm" variant="ghost" className="st-btn" onClick={() => coachApi.removeAppRule(key)}>
+            <Button size="sm" variant="ghost" className="st-btn" onClick={() => coachApi.removeAppRule(key).catch((e) => toast(String(e), "error"))}>
               Remove
             </Button>
           </Row>

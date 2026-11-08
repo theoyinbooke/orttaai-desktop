@@ -418,7 +418,11 @@ export default function ChatAI() {
   const [models, setModels] = useState<ModelInfo[] | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
   const [model, setModel] = useState("");
-  const [depth, setDepth] = useState<ThinkingDepth>("medium");
+  // Reply depth is the saved `chat_thinking` setting, so it survives restarts.
+  const depth: ThinkingDepth = settings?.chat_thinking ?? "low";
+  const setDepth = (d: ThinkingDepth) => {
+    if (d !== settings?.chat_thinking) patch({ chat_thinking: d }).catch((e) => toast(String(e), "error"));
+  };
   const [think, setThink] = useState(false);
   const [mode, setMode] = useState<ChatMode>("regular");
   const [documents, setDocuments] = useState<ChatDocument[]>([]);

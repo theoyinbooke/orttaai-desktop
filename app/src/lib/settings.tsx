@@ -9,7 +9,7 @@ export type HotkeyCombo = { key: string; modifiers: Modifier[] };
 export type Settings = {
   model_id: string;
   engine: "whisper" | "express";
-  decode: { language: string | null; preset: "fast" | "balanced" | "accuracy"; temperature: number; n_threads: number };
+  decode: { preset: "fast" | "balanced" | "accuracy"; temperature: number; n_threads: number };
   advanced_decoding: {
     enabled: boolean;
     temperature: number;
@@ -24,7 +24,6 @@ export type Settings = {
   express_live_segments: boolean;
   /** Express (Parakeet) model id, used when `engine` is "express". */
   express_model: string;
-  low_latency: boolean;
   warm_models: boolean;
   /** Custom speech-model folder; null = the default data folder. */
   models_dir: string | null;
@@ -34,6 +33,8 @@ export type Settings = {
   hands_free_silence_stop: boolean;
   hands_free_silence_secs: number;
   hands_free_max_secs: number;
+  /** Tap Right Ctrl to start, tap again to insert (Mac: Right Option). */
+  right_ctrl_dictation_enabled: boolean;
   max_recording_secs: number;
   dictation_language: string;
   audio_device: string | null;
@@ -115,26 +116,35 @@ export type SettingsPatch = DeepPartial<Settings>;
 
 const Ctx = createContext<{
   settings: Settings | null;
+  /** Why the settings couldn't be loaded, until a reload succeeds. */
+  error: string | null;
   patch: (p: SettingsPatch) => Promise<Settings | null>;
   reload: () => void;
-}>({ settings: null, patch: async () => null, reload: () => {} });
+}>({ settings: null, error: null, patch: async () => null, reload: () => {} });
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const reload = useCallback(() => {
-    call<Settings>("get_settings").then(setSettings).catch(() => {});
+    setError(null);
+    call<Settings>("get_settings")
+      .then(setSettings)
+      .catch((e) => setError(String(e)));
   }, []);
   useEffect(reload, [reload]);
-  useEvent<Settings>("settings-changed", setSettings);
+  useEvent<Settings>("settings-changed", (s) => {
+    setSettings(s);
+    setError(null);
+  });
   const patch = useCallback(async (p: SettingsPatch) => {
     const next = await call<Settings>("update_settings", { patch: p });
     setSettings(next);
     return next;
   }, []);
-  return <Ctx.Provider value={{ settings, patch, reload }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ settings, error, patch, reload }}>{children}</Ctx.Provider>;
 }
 
-/** `{ settings, patch, reload }` — `patch` saves immediately and rejects with the error. */
+/** `{ settings, error, patch, reload }` — `patch` saves immediately and rejects with the error. */
 export const useSettings = () => useContext(Ctx);
 
 export function comboToString(c: HotkeyCombo | undefined | null): string {

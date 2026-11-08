@@ -145,12 +145,14 @@ pub struct DecodeTuning {
 /// Decoding options handed to the transcriber.
 ///
 /// The persisted fields live in `Settings::decode`; the `#[serde(skip)]` ones
-/// are per-session runtime inputs the coordinator fills in (vocabulary-bias
-/// prompt, advanced tuning, low-latency mode) and never reach the settings file.
+/// are per-session runtime inputs the coordinator fills in (language,
+/// vocabulary-bias prompt, advanced tuning) and never reach the settings file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DecodeOptions {
-    /// `None` (or `"auto"`) means auto-detect the language.
+    /// `None` (or `"auto"`) means auto-detect the language. Filled in from
+    /// `Settings::dictation_language` for each dictation, so it isn't saved.
+    #[serde(skip)]
     pub language: Option<String>,
     pub preset: DecodePreset,
     pub temperature: f32,
@@ -163,9 +165,6 @@ pub struct DecodeOptions {
     /// Advanced decoding overrides; `None` uses the preset baseline.
     #[serde(skip)]
     pub tuning: Option<DecodeTuning>,
-    /// Low Latency Mode: greedy decode, never a temperature fallback.
-    #[serde(skip)]
-    pub low_latency: bool,
 }
 
 impl Default for DecodeOptions {
@@ -177,7 +176,6 @@ impl Default for DecodeOptions {
             n_threads: 0,
             initial_prompt: None,
             tuning: None,
-            low_latency: false,
         }
     }
 }
@@ -284,12 +282,14 @@ mod tests {
     fn decode_runtime_fields_never_serialize() {
         let opts = DecodeOptions {
             initial_prompt: Some("Orttaai".into()),
-            low_latency: true,
             ..Default::default()
         };
         let json = serde_json::to_string(&opts).unwrap();
         assert!(!json.contains("initial_prompt"));
-        assert!(!json.contains("low_latency"));
+        assert!(
+            !json.contains("language"),
+            "dictation_language is the saved one"
+        );
         let back: DecodeOptions = serde_json::from_str(r#"{"preset":"fast"}"#).unwrap();
         assert_eq!(back.preset, DecodePreset::Fast);
         assert_eq!(back.language.as_deref(), Some("en"));

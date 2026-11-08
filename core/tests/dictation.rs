@@ -362,6 +362,64 @@ fn hotkey_is_ignored_while_processing_or_in_error() {
 }
 
 #[test]
+fn right_key_tap_starts_hands_free_and_the_next_tap_inserts() {
+    // Hands-free is off: this key has no hold, so it's hands-free anyway.
+    let mut s = settings();
+    s.hands_free_enabled = false;
+    let mut r = rig_with(
+        "right control",
+        MockTextInjector::new(),
+        MockAudioCapture::new(0.0),
+        MemoryService::new(),
+        &s,
+    );
+    r.coord.handle_right_key_tap();
+    assert_eq!(r.coord.state(), RecordingState::Recording);
+    assert_eq!(r.coord.mode(), RecordingMode::HandsFree);
+    r.run(1500, &tone(0.05, 0.2));
+    r.coord.handle_right_key_tap();
+    assert_eq!(r.coord.state(), RecordingState::Processing);
+    // A tap while it's being processed does nothing.
+    r.coord.handle_right_key_tap();
+    assert_eq!(r.coord.state(), RecordingState::Processing);
+    let out = r.coord.finish_pending().unwrap();
+    assert_eq!(out.transcript.as_deref(), Some("right control"));
+    assert_eq!(out.kind, SessionKind::Dictation);
+}
+
+#[test]
+fn right_key_tap_stops_a_shortcut_recording_and_leaves_edits_alone() {
+    // Holding the shortcut, then tapping Right Ctrl: it stops, and the
+    // shortcut's release that follows does nothing more.
+    let mut r = rig(
+        "held then tapped",
+        MockTextInjector::new(),
+        MemoryService::new(),
+    );
+    r.coord.handle_hotkey_down();
+    r.run(1500, &tone(0.05, 0.2));
+    r.coord.handle_right_key_tap();
+    assert_eq!(r.coord.state(), RecordingState::Processing);
+    r.coord.handle_hotkey_up();
+    assert_eq!(
+        r.coord.finish_pending().unwrap().transcript.as_deref(),
+        Some("held then tapped")
+    );
+
+    let mut e = edit_rig(Some("an edit"), Some(Box::new(Shout)));
+    e.coord.handle_edit_hotkey_down();
+    e.advance(150);
+    e.coord.handle_edit_hotkey_up();
+    e.coord.handle_right_key_tap();
+    assert_eq!(
+        e.coord.state(),
+        RecordingState::Recording,
+        "Right Ctrl never disturbs an edit"
+    );
+    assert_eq!(e.coord.kind(), SessionKind::Edit);
+}
+
+#[test]
 fn toggle_records_hands_free_then_stops() {
     let mut r = rig("toggled", MockTextInjector::new(), MemoryService::new());
     r.coord.toggle();

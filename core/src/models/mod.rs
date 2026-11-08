@@ -15,7 +15,7 @@ use crate::hardware::HardwareInfo;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -230,6 +230,22 @@ pub fn catalog() -> Vec<ModelSpec> {
     ]
 }
 
+/// With English dictation, multilingual Small uses its English-only
+/// checkpoint, which is more accurate for English (Mac
+/// `TranscriptionModelSelectionPolicy`). Every other model, and Small in any
+/// other language or auto-detect, is used as chosen.
+pub fn english_variant(id: &str, language: &str) -> Option<&'static str> {
+    let lang = language.trim().to_ascii_lowercase();
+    if lang != "en" && !lang.starts_with("en-") {
+        return None;
+    }
+    match id.trim() {
+        "ggml-small-q5_1" => Some("ggml-small.en-q5_1"),
+        "ggml-small" => Some("ggml-small.en"),
+        _ => None,
+    }
+}
+
 pub fn find_spec(id: &str) -> Option<ModelSpec> {
     catalog().into_iter().find(|s| s.id == id)
 }
@@ -426,101 +442,182 @@ pub fn download_verified(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // The partial file survives a dropped connection, so the next try (or the
+    // next click) picks up where it stopped.
     let tmp = dest.with_extension("bin.part");
-    let result = (|| -> Result<()> {
-        let response = ureq::get(url)
-            .call()
-            .map_err(|e| CoreError::Transcription(format!("download request failed: {e}")))?;
-        let total: u64 = response
-            .headers()
-            .get("content-length")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(expected_size);
-        let mut reader = response.into_body().into_reader();
-        let file = std::fs::File::create(&tmp)?;
-        stream_and_verify(
-            &mut reader,
-            file,
-            total,
-            expected_size,
-            expected_sha256,
-            &cancel,
-            &mut on_progress,
-        )
-    })();
-    match result {
-        Ok(()) => {
-            std::fs::rename(&tmp, dest)?;
-            on_progress(Progress {
-                fraction: 1.0,
-                downloaded: expected_size,
-                total: expected_size,
-            });
-            Ok(dest.to_path_buf())
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(e)
-        }
-    }
-}
-
-/// Copy `reader` → `file`, reporting progress, honouring `cancel`, and checking
-/// the size and SHA-256 at the end. Pure I/O so it is unit-testable.
-fn stream_and_verify(
-    reader: &mut dyn Read,
-    mut file: std::fs::File,
-    total: u64,
-    expected_size: u64,
-    expected_sha256: &str,
-    cancel: &AtomicBool,
-    on_progress: &mut dyn FnMut(Progress),
-) -> Result<()> {
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
-    let mut downloaded: u64 = 0;
-    let mut last_report = 0u64;
     on_progress(Progress {
         fraction: 0.0,
         downloaded: 0,
-        total,
+        total: expected_size,
     });
-    loop {
+    let fetched = download_resumable(url, &tmp, expected_size, &cancel, &mut |f| {
+        on_progress(Progress {
+            fraction: f as f64,
+            downloaded: (f as f64 * expected_size as f64) as u64,
+            total: expected_size,
+        })
+    });
+    if let Err(e) = fetched {
         if cancel.load(Ordering::SeqCst) {
+            let _ = std::fs::remove_file(&tmp);
             return Err(CoreError::Transcription(CANCELLED.into()));
         }
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        file.write_all(&buf[..n])?;
-        hasher.update(&buf[..n]);
-        downloaded += n as u64;
-        // ~200 progress events per download at most.
-        if total > 0 && (downloaded - last_report) * 200 >= total {
-            last_report = downloaded;
-            on_progress(Progress {
-                fraction: (downloaded as f64 / total as f64).min(1.0),
-                downloaded,
-                total,
-            });
-        }
+        return Err(e);
     }
-    file.flush()?;
-    file.sync_all()?;
-    if expected_size > 0 && downloaded != expected_size {
-        return Err(CoreError::Transcription(format!(
-            "download incomplete: got {downloaded} of {expected_size} bytes — try again"
+    if let Err(e) = verify_file(&tmp, expected_size, expected_sha256) {
+        // A finished but wrong file must not be resumed next time.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    std::fs::rename(&tmp, dest)?;
+    on_progress(Progress {
+        fraction: 1.0,
+        downloaded: expected_size,
+        total: expected_size,
+    });
+    Ok(dest.to_path_buf())
+}
+
+/// Check a downloaded file's size and SHA-256 (either check is skipped when
+/// its expected value is unknown).
+fn verify_file(path: &Path, expected_size: u64, expected_sha256: &str) -> Result<()> {
+    let size = std::fs::metadata(path)?.len();
+    if expected_size > 0 && size != expected_size {
+        return Err(CoreError::Download(format!(
+            "The download is incomplete (got {size} of {expected_size} bytes). Try again."
         )));
     }
-    let digest = hex(&hasher.finalize());
-    if !expected_sha256.is_empty() && !digest.eq_ignore_ascii_case(expected_sha256) {
-        return Err(CoreError::Transcription(
-            "downloaded file failed its checksum — try again".to_string(),
+    if !expected_sha256.is_empty() && !sha256_file(path)?.eq_ignore_ascii_case(expected_sha256) {
+        return Err(CoreError::Download(
+            "The downloaded file failed its checksum. Try again.".into(),
         ));
     }
     Ok(())
+}
+
+/// Tries in a row that make no progress before a download gives up.
+const DOWNLOAD_ATTEMPTS: u32 = 6;
+/// Longest one request may run. A connection that stalls without being closed
+/// would otherwise block forever; when this runs out the download carries on
+/// from where it is with a fresh request.
+const REQUEST_SECONDS: u64 = 120;
+
+/// GET `url` into `part`, continuing an earlier partial file with an HTTP
+/// Range request and retrying dropped or stalled connections with a short
+/// back-off. Only tries that fetch nothing count towards giving up.
+pub(crate) fn download_resumable(
+    url: &str,
+    part: &Path,
+    size_hint: u64,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(f32),
+) -> Result<()> {
+    let cap = std::time::Duration::from_secs(REQUEST_SECONDS);
+    download_resumable_capped(url, part, size_hint, cancel, on_progress, cap)
+}
+
+fn download_resumable_capped(
+    url: &str,
+    part: &Path,
+    size_hint: u64,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(f32),
+    request_cap: std::time::Duration,
+) -> Result<()> {
+    let cancelled = || CoreError::Download("Download cancelled.".into());
+    use std::time::Duration;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .timeout_recv_response(Some(Duration::from_secs(60)))
+        .timeout_recv_body(Some(request_cap))
+        .build()
+        .into();
+    let mut last_error = String::new();
+    let mut failures = 0u32;
+    let mut progressed = false;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
+        if progressed {
+            // The last request got somewhere: carry on straight away.
+            failures = 0;
+        } else if failures > 0 {
+            if failures >= DOWNLOAD_ATTEMPTS {
+                break;
+            }
+            let wait = [1u64, 2, 4, 8, 8][(failures as usize - 1).min(4)];
+            tracing::warn!("download interrupted ({last_error}); retrying in {wait}s");
+            std::thread::sleep(Duration::from_secs(wait));
+        }
+        let have = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
+        let mut request = agent.get(url);
+        if have > 0 {
+            request = request.header("Range", format!("bytes={have}-"));
+        }
+        let response = match request.call() {
+            Ok(r) => r,
+            // Nothing left to fetch: the earlier attempt got it all.
+            Err(ureq::Error::StatusCode(416)) if have > 0 => return Ok(()),
+            Err(e) => {
+                last_error = e.to_string();
+                failures += 1;
+                progressed = false;
+                continue;
+            }
+        };
+        let resumed = response.status().as_u16() == 206;
+        let length = response
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        let start = if resumed { have } else { 0 };
+        let total = length.map_or(size_hint.max(start), |l| start + l);
+        let mut file = if resumed {
+            std::fs::OpenOptions::new().append(true).open(part)?
+        } else {
+            std::fs::File::create(part)?
+        };
+        let mut reader = response.into_body().into_reader();
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut got = start;
+        let mut reported = u64::MAX;
+        let outcome: std::io::Result<()> = loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(cancelled());
+            }
+            match reader.read(&mut buf) {
+                Ok(0) => break Ok(()),
+                Ok(n) => {
+                    if let Err(e) = std::io::Write::write_all(&mut file, &buf[..n]) {
+                        break Err(e);
+                    }
+                    got += n as u64;
+                    let step = got * 200 / total.max(1);
+                    if step != reported {
+                        reported = step;
+                        on_progress((got as f32 / total.max(1) as f32).min(1.0));
+                    }
+                }
+                Err(e) => break Err(e),
+            }
+        };
+        match outcome {
+            Ok(()) if length.is_none_or(|l| got >= start + l) => return Ok(()),
+            Ok(()) => last_error = "the connection ended early".into(),
+            Err(e) => last_error = e.to_string(),
+        }
+        // A server that ignores Range starts over every time, so only count
+        // progress that a resumed (or first) request made.
+        progressed = got > start && (resumed || have == 0);
+        if !progressed {
+            failures += 1;
+        }
+    }
+    Err(CoreError::Download(format!(
+        "Couldn't finish the download after {DOWNLOAD_ATTEMPTS} tries. Check your connection and try again; it picks up where it stopped. ({last_error})"
+    )))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -630,6 +727,8 @@ mod tests {
         assert_eq!(large.speed, SpeedLabel::Slow);
     }
 
+    use std::io::Write;
+
     fn tmp_file(name: &str) -> (PathBuf, std::fs::File) {
         let dir = std::env::temp_dir().join(format!("orttaai-models-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -642,33 +741,133 @@ mod tests {
     fn verification_accepts_a_good_file_and_rejects_bad_ones() {
         let data = b"hello whisper".to_vec();
         let sha = hex(&Sha256::digest(&data));
-        let cancel = AtomicBool::new(false);
-        let mut events = 0;
-        let (p, f) = tmp_file("good.bin");
-        stream_and_verify(&mut &data[..], f, 13, 13, &sha, &cancel, &mut |_| {
-            events += 1
-        })
-        .unwrap();
-        assert!(events >= 1);
-        assert_eq!(sha256_file(&p).unwrap(), sha);
+        let write = |name: &str, bytes: &[u8]| {
+            let (p, mut f) = tmp_file(name);
+            f.write_all(bytes).unwrap();
+            p
+        };
+        let good = write("good.bin", &data);
+        verify_file(&good, 13, &sha).unwrap();
+        assert_eq!(sha256_file(&good).unwrap(), sha);
 
-        let (_, f) = tmp_file("short.bin");
-        let err = stream_and_verify(&mut &data[..5], f, 13, 13, &sha, &cancel, &mut |_| {});
-        assert!(err.unwrap_err().to_string().contains("incomplete"));
+        let short = write("short.bin", &data[..5]);
+        let err = verify_file(&short, 13, &sha).unwrap_err();
+        assert!(err.to_string().contains("incomplete"));
 
-        let (_, f) = tmp_file("corrupt.bin");
-        let bad = b"hello WHISPER".to_vec();
-        let err = stream_and_verify(&mut &bad[..], f, 13, 13, &sha, &cancel, &mut |_| {});
-        assert!(err.unwrap_err().to_string().contains("checksum"));
+        let corrupt = write("corrupt.bin", b"hello WHISPER");
+        let err = verify_file(&corrupt, 13, &sha).unwrap_err();
+        assert!(err.to_string().contains("checksum"));
+
+        // Unknown size and hash: nothing to check against.
+        verify_file(&corrupt, 0, "").unwrap();
     }
 
     #[test]
-    fn cancel_stops_the_stream() {
-        let data = vec![7u8; 1 << 20];
-        let cancel = AtomicBool::new(true);
-        let (_, f) = tmp_file("cancel.bin");
-        let err = stream_and_verify(&mut &data[..], f, 0, 0, "", &cancel, &mut |_| {}).unwrap_err();
-        assert!(is_cancelled(&err));
+    fn cancel_during_retries_reports_cancelled_and_leaves_no_part() {
+        let (dest, _) = tmp_file("cancelled.bin");
+        let _ = std::fs::remove_file(&dest);
+        let key = "test-cancel-mid-retry";
+        let handle = {
+            let dest = dest.clone();
+            // Nothing listens on port 9, so every attempt fails and retries.
+            std::thread::spawn(move || {
+                download_verified(key, "http://127.0.0.1:9/never", 10, "", &dest, |_| {})
+            })
+        };
+        while !cancel_download(key) {
+            std::thread::yield_now();
+        }
+        let err = handle.join().unwrap().unwrap_err();
+        assert!(is_cancelled(&err), "{err}");
+        assert!(!dest.with_extension("bin.part").exists());
+    }
+
+    /// A server that sends part of the file and then goes quiet without
+    /// closing: the request is cut off at its cap and the rest is fetched with
+    /// a Range request.
+    #[test]
+    fn stalled_connection_is_cut_off_and_resumed() {
+        use std::io::{BufRead, BufReader};
+        use std::net::TcpListener;
+        let body: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = Arc::new(body.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Each connection gets its own thread, so a retry isn't queued behind
+        // the stalled one.
+        std::thread::spawn(move || {
+            for (n, stream) in listener.incoming().take(2).enumerate() {
+                let (served, tx) = (Arc::clone(&served), tx.clone());
+                std::thread::spawn(move || {
+                    let mut stream = stream.unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut range = None;
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if line.trim().is_empty() {
+                            break;
+                        }
+                        let lower = line.to_ascii_lowercase();
+                        if let Some(v) = lower.strip_prefix("range: bytes=") {
+                            range = v.trim().trim_end_matches('-').parse::<usize>().ok();
+                        }
+                    }
+                    tx.send(range).unwrap();
+                    if n == 0 {
+                        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n").unwrap();
+                        stream.write_all(&served[..400]).unwrap();
+                        stream.flush().unwrap();
+                        // Stall, holding the connection open.
+                        std::thread::sleep(std::time::Duration::from_secs(8));
+                    } else {
+                        let from = range.unwrap_or(0);
+                        write!(
+                            stream,
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {from}-999/1000\r\n\r\n",
+                            1000 - from
+                        )
+                        .unwrap();
+                        stream.write_all(&served[from..]).unwrap();
+                    }
+                });
+            }
+        });
+        let (part, _) = tmp_file("stalled.bin.part");
+        let _ = std::fs::remove_file(&part);
+        let started = std::time::Instant::now();
+        download_resumable_capped(
+            &format!("http://127.0.0.1:{port}/model.bin"),
+            &part,
+            1000,
+            &AtomicBool::new(false),
+            &mut |_| {},
+            std::time::Duration::from_secs(2),
+        )
+        .unwrap();
+        assert!(started.elapsed().as_secs() < 7, "cut off at the cap");
+        assert_eq!(std::fs::read(&part).unwrap(), body);
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![None, Some(400)]);
+    }
+
+    #[test]
+    fn english_small_uses_the_english_checkpoint() {
+        assert_eq!(
+            english_variant("ggml-small-q5_1", "en"),
+            Some("ggml-small.en-q5_1")
+        );
+        assert_eq!(
+            english_variant("ggml-small", "en-GB"),
+            Some("ggml-small.en")
+        );
+        assert_eq!(english_variant("ggml-small-q5_1", "auto"), None);
+        assert_eq!(english_variant("ggml-small-q5_1", "fr"), None);
+        assert_eq!(english_variant("ggml-base-q5_1", "en"), None);
+        // Both ends of the swap are real catalog models.
+        assert!(
+            find_spec("ggml-small-q5_1").is_some() && find_spec("ggml-small.en-q5_1").is_some()
+        );
     }
 
     #[test]

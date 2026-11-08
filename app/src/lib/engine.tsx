@@ -4,6 +4,7 @@
 //   audio-monitor-level · sound-cue · transcript · model-progress/done/error/cancelled
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { call, useEvent } from "./api";
+import { useSettings } from "./settings";
 import "../styles/engine.css";
 
 export type EngineState = "off" | "loading" | "idle" | "recording" | "processing" | "error";
@@ -45,6 +46,10 @@ export type EngineSnapshot = {
   last_transcript: string | null;
   wayland: boolean;
   portal_hotkeys: boolean;
+  /** "Tap Right Ctrl" is on and listening. */
+  right_ctrl_active: boolean;
+  /** Why "Tap Right Ctrl" can't work here, or why it failed to start. */
+  right_ctrl_error: string | null;
 };
 
 type Ctx = {
@@ -154,6 +159,31 @@ export function EngineProvider({ children }: { children: ReactNode }) {
 }
 
 export const useEngine = () => useContext(EngineCtx);
+
+/**
+ * Whether dictation really runs on Express with the saved settings. False when
+ * the engine is Express but its English-only model meets a non-English
+ * language — Whisper does the work then, so Whisper-only controls stay live.
+ */
+export function useExpressInUse(): boolean {
+  const { settings } = useSettings();
+  // null until the backend answers; the engine setting is the best guess meanwhile.
+  const [inUse, setInUse] = useState<boolean | null>(null);
+  const engine = settings?.engine;
+  const model = settings?.express_model;
+  const language = settings?.dictation_language;
+  useEffect(() => {
+    if (engine !== "express") return setInUse(false);
+    let live = true;
+    call<boolean>("express_in_use")
+      .then((v) => live && setInUse(v))
+      .catch(() => live && setInUse(null));
+    return () => {
+      live = false;
+    };
+  }, [engine, model, language]);
+  return inUse ?? engine === "express";
+}
 
 /* ---------------------------------------------------------- downloads ----- */
 

@@ -96,8 +96,6 @@ pub const AUTO_PASTE_MIN_CHARS: usize = 40;
 /// read, X11/Wayland/Win32 apps that fetch the selection asynchronously need
 /// the margin, or they'd paste the restored (old) clipboard.
 pub const RESTORE_DELAY_MS: u64 = 250;
-/// Low Latency Mode's restore delay.
-pub const LOW_LATENCY_RESTORE_DELAY_MS: u64 = 150;
 /// Settle time between staging the clipboard and sending the chord.
 const CLIPBOARD_SETTLE_MS: u64 = 20;
 /// Pause before the copy chord so the user's fingers are off the edit
@@ -112,7 +110,6 @@ pub const COPY_POLL_INTERVAL_MS: u64 = 50;
 pub struct InjectionConfig {
     pub mode: InjectionMode,
     pub preserve_clipboard: bool,
-    pub low_latency: bool,
     /// Treat an unverifiable field (`Unknown`) as secure.
     pub strict_secure: bool,
 }
@@ -122,7 +119,6 @@ impl Default for InjectionConfig {
         Self {
             mode: InjectionMode::Auto,
             preserve_clipboard: true,
-            low_latency: false,
             strict_secure: false,
         }
     }
@@ -335,12 +331,7 @@ impl InjectionService {
             return Err(e);
         }
         if preserve || primary.is_some() {
-            let delay = if self.config.low_latency {
-                LOW_LATENCY_RESTORE_DELAY_MS
-            } else {
-                RESTORE_DELAY_MS
-            };
-            (self.sleep)(Duration::from_millis(delay));
+            (self.sleep)(Duration::from_millis(RESTORE_DELAY_MS));
         }
         if preserve {
             if let Err(e) = self.clipboard.restore() {

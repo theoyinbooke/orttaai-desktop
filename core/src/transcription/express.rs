@@ -9,11 +9,11 @@
 //! unpacked to `<data-dir>/models/express/<id>/`.
 
 use crate::error::{CoreError, Result};
+use crate::models::download_resumable;
 use crate::transcription::Transcriber;
 use crate::types::{DecodeOptions, TARGET_SAMPLE_RATE};
 use serde::Serialize;
 use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -82,17 +82,35 @@ pub fn spec(id: &str) -> Option<ExpressModelSpec> {
     catalog().into_iter().find(|s| s.id == id)
 }
 
-/// `<data-dir>/models/express`, created on demand.
+/// `express` in the models folder (Settings › Model Storage, like the Whisper
+/// models), created on demand.
 pub fn express_dir() -> Result<PathBuf> {
-    let dir = crate::store::Store::data_dir()?
-        .join("models")
-        .join("express");
+    let dir = crate::models::models_dir()?.join("express");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
 
+/// Where Express kept its files before it followed the models folder.
+fn legacy_express_dir() -> Option<PathBuf> {
+    Some(crate::models::default_models_dir().ok()?.join("express"))
+}
+
+/// `name` in the Express folder, or in the old default folder when it was
+/// installed there before a custom models folder was chosen.
+fn express_path(name: &str, installed: impl Fn(&Path) -> bool) -> Result<PathBuf> {
+    let dir = express_dir()?.join(name);
+    if !installed(&dir) {
+        if let Some(old) = legacy_express_dir().map(|d| d.join(name)) {
+            if installed(&old) {
+                return Ok(old);
+            }
+        }
+    }
+    Ok(dir)
+}
+
 pub fn model_dir(id: &str) -> Result<PathBuf> {
-    Ok(express_dir()?.join(id))
+    express_path(id, |d| model_files(d).iter().all(|f| f.is_file()))
 }
 
 /// The four files a Parakeet transducer needs.
@@ -145,7 +163,9 @@ const WORD_BOOST_TOKENIZER_URL: &str =
 pub const WORD_BOOST_MB: u32 = 132;
 
 pub fn word_boost_dir() -> Result<PathBuf> {
-    Ok(express_dir()?.join(WORD_BOOST_ID))
+    express_path(WORD_BOOST_ID, |d| {
+        word_boost_files(d).iter().all(|f| f.is_file())
+    })
 }
 
 fn word_boost_files(dir: &Path) -> [PathBuf; 3] {
@@ -181,17 +201,22 @@ pub fn download_word_boost(
             WORD_BOOST_ARCHIVE_BYTES,
             &["model.int8.onnx", "tokens.txt"],
             &staging,
+            &root.join(format!("{WORD_BOOST_ID}.tar.bz2.part")),
             cancel,
             &mut |f| on_progress(f * 0.97),
         )?;
-        let resp = ureq::get(WORD_BOOST_TOKENIZER_URL)
-            .call()
-            .map_err(|e| CoreError::Transcription(format!("download failed: {e}")))?;
-        let mut file = std::fs::File::create(staging.join("tokenizer.json"))?;
-        std::io::copy(&mut resp.into_body().into_reader(), &mut file)?;
+        let tokenizer = staging.join("tokenizer.json.part");
+        download_resumable(
+            WORD_BOOST_TOKENIZER_URL,
+            &tokenizer,
+            360_106,
+            cancel,
+            &mut |_| {},
+        )?;
+        std::fs::rename(&tokenizer, staging.join("tokenizer.json"))?;
         if !word_boost_files(&staging).iter().all(|f| f.is_file()) {
-            return Err(CoreError::Transcription(
-                "downloaded Word Boost files are incomplete".into(),
+            return Err(CoreError::Download(
+                "The Word Boost download is incomplete. Try again.".into(),
             ));
         }
         Ok(())
@@ -210,45 +235,116 @@ pub fn download_word_boost(
     }
 }
 
-/// Stream a `.tar.bz2` and keep the top-level `wanted` files in `dir`.
+/// Download a `.tar.bz2` to `part` (resuming whatever is already there), then
+/// keep its top-level `wanted` files in `dir`. Big model archives are fetched
+/// to a file rather than unpacked from the network, so a dropped connection
+/// (common on Windows Wi-Fi: "forcibly closed by the remote host") resumes
+/// where it stopped, within this call and on the next one.
 fn fetch_archive(
     url: &str,
     size_hint: u64,
     wanted: &[&str],
     dir: &Path,
+    part: &Path,
     cancel: &AtomicBool,
     on_progress: &mut dyn FnMut(f32),
 ) -> Result<()> {
-    let resp = ureq::get(url)
-        .call()
-        .map_err(|e| CoreError::Transcription(format!("download failed: {e}")))?;
-    let total = resp
-        .headers()
-        .get("content-length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(size_hint);
-    let reader = ProgressReader {
-        inner: resp.into_body().into_reader(),
-        read: 0,
-        total,
-        cancel,
-        on_progress,
-    };
-    let decoder = bzip2::read::BzDecoder::new(reader);
+    if let Err(e) = download_resumable(url, part, size_hint, cancel, &mut |f| on_progress(f * 0.97))
+    {
+        // Cancelling means starting over next time; any other failure resumes.
+        if cancel.load(Ordering::Relaxed) {
+            let _ = std::fs::remove_file(part);
+        }
+        return Err(e);
+    }
+    let unpacked = unpack(part, wanted, dir);
+    if unpacked.is_err() {
+        // A finished but unreadable archive must not be resumed next time.
+        let _ = std::fs::remove_file(part);
+    }
+    unpacked?;
+    let _ = std::fs::remove_file(part);
+    on_progress(1.0);
+    Ok(())
+}
+
+/// Raise a last word spoken much more quietly than the rest of the recording,
+/// which Parakeet otherwise tends to drop ("with a good book" -> "with a good").
+/// Port of the Mac's `ExpressAudioConditioner.liftingQuietTail`: on its corpus
+/// 3 of 6 soft endings kept their last word before, 6 of 6 after, with no
+/// change on 50 real recordings. Only the last 1.5 s can change.
+pub fn lift_quiet_tail(samples: &[f32]) -> std::borrow::Cow<'_, [f32]> {
+    use std::borrow::Cow;
+    const FRAME: usize = 320; // 20 ms
+    const TAIL: usize = TARGET_SAMPLE_RATE as usize * 3 / 2;
+    const RAMP: usize = TARGET_SAMPLE_RATE as usize / 10;
+    const MAX_GAIN: f32 = 4.0;
+    /// At least 100 ms of speech in the tail: a soft word, not room hiss.
+    const MIN_TAIL_SPEECH_FRAMES: usize = 5;
+    fn percentile(values: &[f32], fraction: f64) -> f32 {
+        let mut sorted = values.to_vec();
+        sorted.sort_by(f32::total_cmp);
+        sorted[((sorted.len() as f64 * fraction) as usize).min(sorted.len() - 1)]
+    }
+
+    let frame_count = samples.len().saturating_sub(1) / FRAME;
+    let tail_frames = TAIL / FRAME;
+    if frame_count <= tail_frames {
+        return Cow::Borrowed(samples);
+    }
+    let frames: Vec<f32> = (0..frame_count)
+        .map(|i| {
+            let f = &samples[i * FRAME..(i + 1) * FRAME];
+            (f.iter().map(|x| x * x).sum::<f32>() / FRAME as f32).sqrt()
+        })
+        .collect();
+    let floor = percentile(&frames, 0.1);
+    let bar = (3.0 * floor).max(0.008);
+    let speech: Vec<f32> = frames.iter().copied().filter(|&r| r > bar).collect();
+    if speech.is_empty() {
+        return Cow::Borrowed(samples);
+    }
+    let typical = percentile(&speech, 0.5);
+    let tail_speech: Vec<f32> = frames[frame_count - tail_frames..]
+        .iter()
+        .copied()
+        .filter(|&r| r > bar)
+        .collect();
+    if tail_speech.len() < MIN_TAIL_SPEECH_FRAMES {
+        return Cow::Borrowed(samples);
+    }
+    let tail_level = percentile(&tail_speech, 0.5);
+    if tail_level >= 0.5 * typical {
+        return Cow::Borrowed(samples);
+    }
+    let gain = MAX_GAIN.min(typical / tail_level);
+    let mut lifted = samples.to_vec();
+    let start = lifted.len() - tail_frames * FRAME;
+    for (i, s) in lifted[start..].iter_mut().enumerate() {
+        let ramp = (i as f32 / RAMP as f32).min(1.0);
+        *s = (*s * (1.0 + (gain - 1.0) * ramp)).clamp(-1.0, 1.0);
+    }
+    Cow::Owned(lifted)
+}
+
+/// Unpack the `wanted` files that sit directly in the archive's top folder.
+fn unpack(archive_path: &Path, wanted: &[&str], dir: &Path) -> Result<()> {
+    let file = std::fs::File::open(archive_path)?;
+    let decoder = bzip2::read::BzDecoder::new(std::io::BufReader::new(file));
     let mut archive = tar::Archive::new(decoder);
     for entry in archive.entries()? {
         let mut entry = entry?;
         let path = entry.path()?.into_owned();
-        // Archive layout: `<id>/<file>`; keep only the model files we need.
+        // `<id>/<file>`, sometimes written `./<id>/<file>`: count real names only.
+        let depth = path
+            .components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_)))
+            .count();
         let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
             continue;
         };
-        if wanted.contains(&name.as_str()) && path.components().count() <= 2 {
+        if wanted.contains(&name.as_str()) && depth <= 2 {
             entry.unpack(dir.join(&name))?;
-        } else {
-            // Drain skipped entries (test wavs etc.) to keep the stream moving.
-            std::io::copy(&mut entry, &mut std::io::sink())?;
         }
     }
     Ok(())
@@ -263,8 +359,8 @@ pub fn download(
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(f32),
 ) -> Result<PathBuf> {
-    let spec = spec(id)
-        .ok_or_else(|| CoreError::Transcription(format!("unknown Express model '{id}'")))?;
+    let spec =
+        spec(id).ok_or_else(|| CoreError::Download(format!("Unknown Express model '{id}'.")))?;
     let boost_share = if word_boost_installed() { 0.0 } else { 0.15 };
     let root = express_dir()?;
     let final_dir = root.join(spec.id);
@@ -282,6 +378,7 @@ pub fn download(
                 "tokens.txt",
             ],
             &staging,
+            &root.join(format!("{}.tar.bz2.part", spec.id)),
             cancel,
             &mut |f| on_progress(f * (1.0 - boost_share)),
         )
@@ -289,8 +386,8 @@ pub fn download(
             if model_files(&staging).iter().all(|f| f.is_file()) {
                 Ok(())
             } else {
-                Err(CoreError::Transcription(
-                    "downloaded archive is missing model files".into(),
+                Err(CoreError::Download(
+                    "The Express download is incomplete. Try again.".into(),
                 ))
             }
         });
@@ -305,38 +402,21 @@ pub fn download(
             }
         }
     }
+    // Word Boost never stands between you and Express (the Mac loads Express
+    // without it too): if its download fails, Express is ready anyway and the
+    // Model page offers Word Boost's download.
     if boost_share > 0.0 {
-        download_word_boost(cancel, |f| on_progress(1.0 - boost_share + f * boost_share))?;
+        if let Err(e) =
+            download_word_boost(cancel, |f| on_progress(1.0 - boost_share + f * boost_share))
+        {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(e);
+            }
+            tracing::warn!("Express is ready, but Word Boost's download failed: {e}");
+        }
     }
     on_progress(1.0);
     Ok(final_dir)
-}
-
-struct ProgressReader<'a, R: Read> {
-    inner: R,
-    read: u64,
-    total: u64,
-    cancel: &'a AtomicBool,
-    on_progress: &'a mut dyn FnMut(f32),
-}
-
-impl<R: Read> Read for ProgressReader<'_, R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.cancel.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "download cancelled",
-            ));
-        }
-        let n = self.inner.read(buf)?;
-        let before = self.read * 200 / self.total.max(1);
-        self.read += n as u64;
-        let after = self.read * 200 / self.total.max(1);
-        if after != before {
-            (self.on_progress)((self.read as f32 / self.total.max(1) as f32).min(0.99));
-        }
-        Ok(n)
-    }
 }
 
 /// Parakeet via sherpa-onnx, implementing [`Transcriber`].
@@ -428,10 +508,12 @@ impl Transcriber for ExpressTranscriber {
         if samples.is_empty() {
             return Ok(String::new());
         }
-        // Parakeet clips the last word when audio ends abruptly (the Mac's
-        // ExpressAudioConditioner pads too): add 0.4 s of trailing silence.
-        let mut padded = Vec::with_capacity(samples.len() + 6400);
-        padded.extend_from_slice(samples);
+        // A soft last word is lifted, then Parakeet gets 0.4 s of trailing
+        // silence, since it clips the last word when audio ends abruptly
+        // (both from the Mac's ExpressAudioConditioner).
+        let lifted = lift_quiet_tail(samples);
+        let mut padded = Vec::with_capacity(lifted.len() + 6400);
+        padded.extend_from_slice(&lifted);
         padded.extend(std::iter::repeat_n(
             0.0f32,
             (TARGET_SAMPLE_RATE as usize * 2) / 5,
@@ -485,14 +567,12 @@ impl Transcriber for ExpressTranscriber {
             );
             if let Some(out) = w.boost(&text, &timings, &log_probs) {
                 let applied = out.proposals.iter().filter(|p| p.applied).count();
+                // Scores only: the log never holds what was said or the
+                // dictionary words themselves.
                 for p in &out.proposals {
-                    if std::env::var_os("ORTTAAI_WORD_BOOST_DEBUG").is_some() {
-                        eprintln!("word boost proposal: {p:?}");
-                    }
                     tracing::info!(
-                        "Word Boost {}: -> {} [margin {:.2}, spelling {:.2}]",
+                        "Word Boost {} a proposal [margin {:.2}, spelling {:.2}]",
                         if p.applied { "applied" } else { "rejected" },
-                        p.term,
                         p.margin,
                         p.similarity
                     );
@@ -591,6 +671,44 @@ fn default_threads() -> i32 {
 mod tests {
     use super::*;
 
+    fn speech(secs: f32, amp: f32) -> Vec<f32> {
+        let n = (secs * TARGET_SAMPLE_RATE as f32) as usize;
+        (0..n).map(|i| amp * (i as f32 * 0.07).sin()).collect()
+    }
+
+    #[test]
+    fn a_soft_last_word_is_lifted_and_normal_audio_is_left_alone() {
+        // A pause, the body at 0.2, a final word at 0.03: lifted (gain
+        // capped at 4). Real recordings have quiet moments that set the floor.
+        let mut soft = vec![0.0; 16_000];
+        soft.extend(speech(4.0, 0.2));
+        soft.extend(speech(1.5, 0.03));
+        let lifted = lift_quiet_tail(&soft);
+        assert!(matches!(lifted, std::borrow::Cow::Owned(_)));
+        let peak = |s: &[f32]| s.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        let tail = &lifted[lifted.len() - 8000..];
+        assert!(peak(tail) > 0.11 && peak(tail) <= 0.121, "{}", peak(tail));
+        // The body never changes.
+        assert_eq!(&lifted[..soft.len() - 24_000], &soft[..soft.len() - 24_000]);
+
+        // An even recording, a silent tail, and a short clip come back untouched.
+        assert!(matches!(
+            lift_quiet_tail(&speech(5.0, 0.2)),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        let mut silent_tail = vec![0.0; 16_000];
+        silent_tail.extend(speech(4.0, 0.2));
+        silent_tail.extend(vec![0.0; 24_000]);
+        assert!(matches!(
+            lift_quiet_tail(&silent_tail),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            lift_quiet_tail(&speech(1.0, 0.02)),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
     #[test]
     fn catalog_ids_are_unique_and_lookup_works() {
         let c = catalog();
@@ -632,6 +750,52 @@ mod tests {
         let t = ExpressTranscriber::from_dir(Path::new(&dir), 4).unwrap();
         let text = t.transcribe(&samples, &DecodeOptions::default()).unwrap();
         assert!(text.to_lowercase().contains("quarterly report"), "{text}");
+    }
+
+    /// Real network: a download stopped part-way resumes with a Range request,
+    /// and the Word Boost archive (whose entries start with `./`) unpacks.
+    /// `ORTTAAI_DOWNLOAD_TEST=1 cargo test -p orttaai-core --features express -- --ignored download_resumes`
+    #[test]
+    #[ignore]
+    fn download_resumes_and_unpacks() {
+        std::env::var("ORTTAAI_DOWNLOAD_TEST").expect("ORTTAAI_DOWNLOAD_TEST");
+        let dir = std::env::temp_dir().join(format!("orttaai-dl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let part = dir.join("ctc.tar.bz2.part");
+        let url = format!("{RELEASE_BASE}/{WORD_BOOST_ID}.tar.bz2");
+        // Stop at about 30 %, as a dropped connection would.
+        let stop = AtomicBool::new(false);
+        let first = download_resumable(&url, &part, WORD_BOOST_ARCHIVE_BYTES, &stop, &mut |f| {
+            if f > 0.3 {
+                stop.store(true, Ordering::SeqCst);
+            }
+        });
+        assert!(first.is_err());
+        let partial = std::fs::metadata(&part).unwrap().len();
+        assert!(
+            partial > 0 && partial < WORD_BOOST_ARCHIVE_BYTES,
+            "{partial}"
+        );
+        let mut lowest = 1.0f32;
+        let go = AtomicBool::new(false);
+        download_resumable(&url, &part, WORD_BOOST_ARCHIVE_BYTES, &go, &mut |f| {
+            lowest = lowest.min(f)
+        })
+        .unwrap();
+        assert!(
+            lowest >= 0.29,
+            "resumed, not restarted (first progress {lowest})"
+        );
+        assert_eq!(
+            std::fs::metadata(&part).unwrap().len(),
+            WORD_BOOST_ARCHIVE_BYTES
+        );
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        unpack(&part, &["model.int8.onnx", "tokens.txt"], &out).unwrap();
+        assert!(out.join("model.int8.onnx").is_file() && out.join("tokens.txt").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Word Boost end to end: `ORTTAAI_WORD_BOOST_DIR` holds model.int8.onnx and

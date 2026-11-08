@@ -131,7 +131,6 @@ pub struct Settings {
     pub express_live_segments: bool,
     /// Which Express (Parakeet) model to use when `engine` is `express`.
     pub express_model: String,
-    pub low_latency: bool,
     /// Keep the model resident and run a silent warm-up decode at start.
     pub warm_models: bool,
     /// Custom folder for speech models; `None` = `<data-dir>/models`.
@@ -146,6 +145,10 @@ pub struct Settings {
     pub hands_free_silence_secs: f32,
     /// Hands-free hard cap in seconds (120–1800).
     pub hands_free_max_secs: u32,
+    /// Tap Right Ctrl to start a hands-free recording and tap it again to
+    /// insert (Mac "Tap Right Option to Dictate"). Off by default.
+    #[serde(default)]
+    pub right_ctrl_dictation_enabled: bool,
     /// Push-to-talk hard cap in seconds (10–300).
     pub max_recording_secs: u32,
     pub dictation_language: String,
@@ -256,7 +259,6 @@ impl Default for Settings {
             express_word_boost: true,
             express_live_segments: false,
             express_model: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8".to_string(),
-            low_latency: false,
             warm_models: true,
             models_dir: None,
 
@@ -265,6 +267,7 @@ impl Default for Settings {
             hands_free_silence_stop: true,
             hands_free_silence_secs: 4.0,
             hands_free_max_secs: 600,
+            right_ctrl_dictation_enabled: false,
             max_recording_secs: 90,
             dictation_language: "en".to_string(),
             audio_device: None,
@@ -353,13 +356,10 @@ pub const PARAKEET_V3_LANGUAGES: &[&str] = &[
 ];
 
 impl Settings {
-    /// The language dictation runs in (Mac `effectiveDictationLanguage`):
-    /// Low Latency Mode turns "auto" into English.
+    /// The language dictation runs in (Mac `effectiveDictationLanguage`).
     pub fn effective_language(&self) -> String {
         let lang = self.dictation_language.trim().to_lowercase();
-        if self.low_latency && lang == "auto" {
-            "en".to_string()
-        } else if lang.is_empty() {
+        if lang.is_empty() {
             "auto".to_string()
         } else {
             lang
@@ -485,9 +485,6 @@ mod tests {
         assert!(!s.express_active(), "French dictates with Whisper");
         s.dictation_language = "auto".into();
         assert!(!s.express_active(), "auto may not be English");
-        s.low_latency = true;
-        assert!(s.express_active(), "Low Latency Mode makes auto English");
-        s.low_latency = false;
         s.express_model = super::MULTILINGUAL_EXPRESS_MODELS[0].into();
         assert!(s.express_active(), "the multilingual model handles auto");
         s.dictation_language = "de".into();

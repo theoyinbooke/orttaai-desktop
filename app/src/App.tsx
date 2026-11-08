@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import "./App.css";
-import { Icon, ShellContext, ThemeProvider, ToastProvider, useTheme, useToast } from "./ui";
+import { Button, Icon, ShellContext, ThemeProvider, ToastProvider, useTheme, useToast } from "./ui";
 import { TABS, type AppInfo, type Tab } from "./types";
 import { call, setPendingChatPrefill, useEvent } from "./lib/api";
 import { SettingsProvider, useSettings } from "./lib/settings";
 import { EngineProvider } from "./lib/engine";
-import { phaseLabel, useUpdater } from "./lib/updater";
+import { phaseLabel, UpdaterProvider, useAppUpdater } from "./lib/updater";
 import { AI_SETTINGS_ROUTE, requestAISection } from "./lib/navigation";
 import Home from "./views/Home";
 import ChatAI from "./views/ChatAI";
@@ -66,16 +65,7 @@ export function AppearanceSync() {
 
 /** Mac AppUpdateSidebarButton: hidden while there is nothing to say. */
 function UpdateRow() {
-  const { settings } = useSettings();
-  const { phase, act, checkNow } = useUpdater(settings?.auto_download_updates ?? true);
-  const toast = useToast();
-  useEvent<string>("navigate", (r) => {
-    if (r === "check-updates") checkNow(false);
-  });
-  useEffect(() => {
-    if (phase.kind === "uptodate") toast("You're on the latest version.", "success");
-    if (phase.kind === "failed") toast(`Update check failed: ${phase.message}`, "warn");
-  }, [phase.kind]); // eslint-disable-line react-hooks/exhaustive-deps
+  const { phase, act } = useAppUpdater();
   if (phase.kind !== "available" && phase.kind !== "downloading" && phase.kind !== "ready" && phase.kind !== "installing") {
     return null;
   }
@@ -167,7 +157,7 @@ function AppShell() {
   });
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [pending, setPending] = useState(0);
-  const { patch } = useSettings();
+  const { settings, error: settingsError, patch, reload: reloadSettings } = useSettings();
   const toast = useToast();
 
   useEffect(() => {
@@ -223,12 +213,6 @@ function AppShell() {
       return !c;
     });
 
-  function openFeedback() {
-    const body = `<!-- Describe your feedback, bug, or feature request below. -->\n\n\n---\nOrttaai v${info?.version ?? "?"} · ${info?.platform ?? "?"} · ${info?.session ?? "?"} · ${info?.gpu_backend ?? "?"}`;
-    const url = `https://github.com/theoyinbooke/orttaai-desktop/issues/new?body=${encodeURIComponent(body)}`;
-    openUrl(url).catch((e) => toast(String(e), "error"));
-  }
-
   // Coach brings its own slim rail; the sidebar steps aside.
   const coach = tab === "coach";
   const showRail = collapsed || coach;
@@ -267,6 +251,15 @@ function AppShell() {
 
         <main className={`content section-${tab}`}>
           <WindowControls />
+          {!settings && settingsError && (
+            <div className="empty-state" role="alert" style={{ margin: 24 }}>
+              <h3>Couldn't load your settings</h3>
+              <p>{settingsError}</p>
+              <Button className="empty-action" size="sm" variant="primary" onClick={reloadSettings}>
+                Try Again
+              </Button>
+            </div>
+          )}
           {tab === "home" && <Home onNavigate={setTab} />}
           {tab === "chat" && <ChatAI />}
           {tab === "graph" && <MemoryGraph />}
@@ -276,7 +269,7 @@ function AppShell() {
           {tab === "coach" && <Coach />}
           {tab === "models" && <Models />}
           {tab === "settings" && <SettingsView info={info} onRunSetup={openSetup} />}
-          {tab === "about" && <About info={info} onFeedback={openFeedback} />}
+          {tab === "about" && <About info={info} />}
         </main>
         <WhatsNew />
         <Celebrations />
@@ -291,7 +284,9 @@ export default function App() {
       <ToastProvider>
         <SettingsProvider>
           <EngineProvider>
-            <AppShell />
+            <UpdaterProvider>
+              <AppShell />
+            </UpdaterProvider>
           </EngineProvider>
         </SettingsProvider>
       </ToastProvider>

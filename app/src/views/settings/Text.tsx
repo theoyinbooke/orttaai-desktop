@@ -64,7 +64,7 @@ export default function TextSettings() {
           label="Fuzzy Dictionary Matching"
           hint={
             settings.dictionary_enabled
-              ? "Corrects near-miss spellings of your dictionary words, like Tematope for Temitope."
+              ? "Corrects near-miss spellings of your dictionary words, like Tematope for Temitope. English only."
               : "Needs Dictionary Replacements."
           }
         />

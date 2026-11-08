@@ -20,6 +20,7 @@ use orttaai_core::coordinator::{
     CoordinatorConfig, CoordinatorStatus, DictationCoordinator, DictationOutcome,
 };
 use orttaai_core::hardware::{self, HardwareInfo};
+use orttaai_core::hotkey::right_ctrl::RightCtrlListener;
 use orttaai_core::hotkey::{default_manager, HotkeyBinding, HotkeyCallback, HotkeyManager};
 use orttaai_core::injection::edit_watch::{EditObserver, EditWatcher, SystemFieldReader};
 use orttaai_core::injection::{InjectionService, SystemTextInjector, TextInjector};
@@ -55,6 +56,8 @@ pub enum Cmd {
     HotkeyUp,
     EditDown,
     EditUp,
+    /// A clean tap of Right Ctrl: start hands-free, or stop.
+    RightCtrlTap,
     /// Tray / click-to-record: start hands-free, or stop.
     Toggle,
     /// The overlay's stop button.
@@ -72,7 +75,13 @@ impl Cmd {
     fn is_gesture(&self) -> bool {
         matches!(
             self,
-            Cmd::HotkeyDown | Cmd::HotkeyUp | Cmd::EditDown | Cmd::EditUp | Cmd::Toggle | Cmd::Stop
+            Cmd::HotkeyDown
+                | Cmd::HotkeyUp
+                | Cmd::EditDown
+                | Cmd::EditUp
+                | Cmd::RightCtrlTap
+                | Cmd::Toggle
+                | Cmd::Stop
         )
     }
 }
@@ -97,6 +106,11 @@ pub struct EngineSnapshot {
     pub last_transcript: Option<String>,
     pub wayland: bool,
     pub portal_hotkeys: bool,
+    /// "Tap Right Ctrl" is on and listening.
+    pub right_ctrl_active: bool,
+    /// Why "Tap Right Ctrl" can't work here (Wayland, an unsupported system),
+    /// or why the listener failed to start.
+    pub right_ctrl_error: Option<String>,
 }
 
 struct Monitor {
@@ -116,6 +130,8 @@ impl Drop for Monitor {
 #[derive(Default)]
 pub struct EngineState {
     hotkey: Mutex<Option<Box<dyn HotkeyManager>>>,
+    /// The "Tap Right Ctrl" listener while it's on.
+    right_ctrl: Mutex<Option<RightCtrlListener>>,
     commands: Mutex<Option<Sender<Cmd>>>,
     running: AtomicBool,
     starting: AtomicBool,
@@ -130,6 +146,11 @@ pub struct EngineState {
 }
 
 impl EngineState {
+    /// Whether the dictation engine is running.
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
     fn send(&self, cmd: Cmd) -> bool {
         match self.commands.lock().unwrap().as_ref() {
             Some(tx) => tx.send(cmd).is_ok(),
@@ -175,6 +196,10 @@ pub fn engine_status(app: AppHandle) -> EngineSnapshot {
         snap.edit_hotkey = s.edit_commands_enabled.then(|| s.edit_shortcut.display());
         snap.wayland = is_wayland();
         snap.portal_hotkeys = orttaai_core::hotkey::uses_portal();
+        if !snap.right_ctrl_active && snap.right_ctrl_error.is_none() {
+            snap.right_ctrl_error =
+                orttaai_core::hotkey::right_ctrl::unavailable_reason().map(str::to_string);
+        }
     })
 }
 
@@ -217,8 +242,13 @@ fn resolve_model(settings: &Settings, explicit: Option<String>) -> Result<PathBu
     if let Some(p) = explicit {
         return Ok(PathBuf::from(p));
     }
-    let path = models::local_path(&settings.model_id).map_err(|e| e.to_string())?;
-    if !models::is_downloaded(&settings.model_id) {
+    // English dictation on multilingual Small uses Small · English when it's
+    // downloaded (Mac TranscriptionModelSelectionPolicy).
+    let id = models::english_variant(&settings.model_id, &settings.effective_language())
+        .filter(|en| models::is_downloaded(en))
+        .unwrap_or(&settings.model_id);
+    let path = models::local_path(id).map_err(|e| e.to_string())?;
+    if !models::is_downloaded(id) {
         return Err(format!(
             "The speech model “{}” isn't downloaded yet — download it in Models.",
             settings.model_id
@@ -427,6 +457,39 @@ fn transcriber_id(path: &std::path::Path) -> String {
         .to_string()
 }
 
+/// Watch Right Ctrl when "Tap Right Ctrl to Dictate" is on (Mac: the Right
+/// Option listener). Listen-only: keys still reach the focused app.
+fn start_right_ctrl(app: &AppHandle, settings: &Settings, tx: &Sender<Cmd>) {
+    let state = app.state::<EngineState>();
+    let reason = orttaai_core::hotkey::right_ctrl::unavailable_reason();
+    if !settings.right_ctrl_dictation_enabled || reason.is_some() {
+        publish_snapshot(app, |s| {
+            s.right_ctrl_active = false;
+            s.right_ctrl_error = reason.map(str::to_string);
+        });
+        return;
+    }
+    let tx = tx.clone();
+    match RightCtrlListener::start(Box::new(move || {
+        let _ = tx.send(Cmd::RightCtrlTap);
+    })) {
+        Ok(listener) => {
+            *state.right_ctrl.lock().unwrap() = Some(listener);
+            publish_snapshot(app, |s| {
+                s.right_ctrl_active = true;
+                s.right_ctrl_error = None;
+            });
+        }
+        Err(e) => {
+            eprintln!("orttaai: Tap Right Ctrl unavailable: {e}");
+            publish_snapshot(app, |s| {
+                s.right_ctrl_active = false;
+                s.right_ctrl_error = Some(e.to_string());
+            });
+        }
+    }
+}
+
 /// (Re-)register the global shortcuts: push-to-talk, plus edit-selection when
 /// voice edit is on. Failure never stops the engine — the user can still
 /// dictate with click-to-record or the tray.
@@ -435,12 +498,14 @@ fn register_hotkeys(app: &AppHandle, settings: &Settings) {
     if let Some(mut old) = state.hotkey.lock().unwrap().take() {
         let _ = old.unregister();
     }
+    state.right_ctrl.lock().unwrap().take();
     if state.hotkeys_suspended.load(Ordering::SeqCst) {
         return;
     }
     let Some(tx) = state.commands.lock().unwrap().clone() else {
         return;
     };
+    start_right_ctrl(app, settings, &tx);
     let cb = |cmd: fn() -> Cmd| -> HotkeyCallback {
         let tx = tx.clone();
         Box::new(move || {
@@ -494,6 +559,7 @@ fn register_hotkeys(app: &AppHandle, settings: &Settings) {
 
 #[tauri::command]
 pub fn stop_dictation(app: AppHandle, state: State<EngineState>) -> Result<(), String> {
+    state.right_ctrl.lock().unwrap().take();
     if let Some(mut hotkey) = state.hotkey.lock().unwrap().take() {
         hotkey.unregister().map_err(|e| e.to_string())?;
     }
@@ -506,6 +572,7 @@ pub fn stop_dictation(app: AppHandle, state: State<EngineState>) -> Result<(), S
     publish_snapshot(&app, |s| {
         s.status = None;
         s.model_id = None;
+        s.right_ctrl_active = false;
     });
     Ok(())
 }
@@ -541,6 +608,7 @@ pub fn suspend_hotkeys(app: AppHandle, suspended: bool) {
         if let Some(mut h) = state.hotkey.lock().unwrap().take() {
             let _ = h.unregister();
         }
+        state.right_ctrl.lock().unwrap().take();
         publish_snapshot(&app, |_| {});
     } else if state.running.load(Ordering::SeqCst) {
         let settings = Settings::load_or_default();
@@ -564,10 +632,30 @@ pub fn validate_shortcut(combo: HotkeyCombo, other: Option<HotkeyCombo>) -> Resu
 
 // ---- Worker ------------------------------------------------------------------
 
+/// What decides which speech model is loaded. Express fixes its thread count
+/// when it loads, so for Express that counts too; the last field is whether
+/// English dictation swaps in an English-only Small.
+type ModelKey = (String, Option<String>, SpeechEngine, String, bool, i32, bool);
+
+fn model_key(s: &Settings) -> ModelKey {
+    let express = s.express_active();
+    (
+        s.model_id.clone(),
+        s.models_dir.clone(),
+        s.engine,
+        s.express_model.clone(),
+        express,
+        if express { s.decode.n_threads } else { 0 },
+        models::english_variant(&s.model_id, &s.effective_language()).is_some(),
+    )
+}
+
 struct Worker {
     app: AppHandle,
     coord: DictationCoordinator,
     settings: Settings,
+    /// The model the engine has loaded (or last tried to load).
+    loaded: ModelKey,
     last: Option<CoordinatorStatus>,
     watcher: EditWatcher,
 }
@@ -591,6 +679,7 @@ impl Worker {
         Self {
             app,
             coord,
+            loaded: model_key(&settings),
             settings,
             last: None,
             watcher: EditWatcher::new(Arc::new(SystemFieldReader), forward),
@@ -610,6 +699,10 @@ impl Worker {
             }
             self.coord.tick();
             self.publish();
+            // A model change made mid-dictation is applied once it's done.
+            if self.reload_model_if_needed() {
+                self.apply_settings();
+            }
             if self.coord.has_pending() {
                 let result = self.coord.finish_pending();
                 self.on_outcome(result);
@@ -638,6 +731,7 @@ impl Worker {
             Cmd::HotkeyUp => self.coord.handle_hotkey_up(),
             Cmd::EditDown => self.coord.handle_edit_hotkey_down(),
             Cmd::EditUp => self.coord.handle_edit_hotkey_up(),
+            Cmd::RightCtrlTap => self.coord.handle_right_key_tap(),
             Cmd::Toggle => self.coord.toggle(),
             Cmd::Stop => self
                 .coord
@@ -674,46 +768,60 @@ impl Worker {
     }
 
     fn reconfigure(&mut self, next: Settings) {
-        let mut next = next;
-        let model_changed = next.model_id != self.settings.model_id
-            || next.models_dir != self.settings.models_dir
-            || next.engine != self.settings.engine
-            || next.express_model != self.settings.express_model
-            || next.express_active() != self.settings.express_active();
-        if model_changed && self.coord.state() == RecordingState::Idle {
-            emit_state(&self.app, "loading");
-            match load_transcriber(&next, None) {
-                Ok(((t, id), fallback)) => {
-                    if let Some(why) = fallback {
-                        let _ = self.app.emit("engine-warning", why);
-                        next.engine = SpeechEngine::Whisper;
-                    }
-                    self.coord.replace_transcriber(t);
-                    if next.warm_models {
-                        let _ = self.coord.warm_up();
-                    }
-                    publish_snapshot(&self.app, |s| s.model_id = Some(id));
-                }
-                Err(e) => {
-                    let _ = self.app.emit(
-                        "engine-error",
-                        format!(
-                            "Couldn't switch speech models: {e} Still using the previous model."
-                        ),
-                    );
-                }
-            }
-            emit_state(&self.app, "idle");
-        }
-        self.coord
-            .set_config(CoordinatorConfig::from_settings(&next));
-        self.coord
-            .set_decode_options(decode_options_from_settings(&next));
-        self.coord.set_pipeline(pipeline::build_pipeline(&next));
-        self.coord.set_rewriter(pipeline::build_rewriter(&next));
-        self.coord.set_vocabulary(vocabulary_terms(&next));
-        self.coord.set_word_boost_terms(&word_boost_terms(&next));
+        // Turning Keep the Model Ready on warms the model now, not at the next load.
+        let warm_now = next.warm_models && !self.settings.warm_models;
         self.settings = next;
+        let reloaded = self.reload_model_if_needed();
+        self.apply_settings();
+        if warm_now && !reloaded && self.coord.state() == RecordingState::Idle {
+            let _ = self.coord.warm_up();
+        }
+    }
+
+    fn apply_settings(&mut self) {
+        let next = &self.settings;
+        self.coord
+            .set_config(CoordinatorConfig::from_settings(next));
+        self.coord
+            .set_decode_options(decode_options_from_settings(next));
+        self.coord.set_pipeline(pipeline::build_pipeline(next));
+        self.coord.set_rewriter(pipeline::build_rewriter(next));
+        self.coord.set_vocabulary(vocabulary_terms(next));
+        self.coord.set_word_boost_terms(&word_boost_terms(next));
+    }
+
+    /// Load the model the settings ask for, once the engine is idle: a change
+    /// made while dictating waits for that dictation instead of being lost.
+    /// Returns whether a load was attempted.
+    fn reload_model_if_needed(&mut self) -> bool {
+        let wanted = model_key(&self.settings);
+        if wanted == self.loaded || self.coord.state() != RecordingState::Idle {
+            return false;
+        }
+        emit_state(&self.app, "loading");
+        match load_transcriber(&self.settings, None) {
+            Ok(((t, id), fallback)) => {
+                if let Some(why) = fallback {
+                    let _ = self.app.emit("engine-warning", why);
+                    self.settings.engine = SpeechEngine::Whisper;
+                }
+                self.coord.replace_transcriber(t);
+                if self.settings.warm_models {
+                    let _ = self.coord.warm_up();
+                }
+                publish_snapshot(&self.app, |s| s.model_id = Some(id));
+            }
+            Err(e) => {
+                let _ = self.app.emit(
+                    "engine-error",
+                    format!("Couldn't switch speech models: {e} Still using the previous model."),
+                );
+            }
+        }
+        // Also after a failure, so a broken model isn't retried every tick.
+        self.loaded = model_key(&self.settings);
+        emit_state(&self.app, "idle");
+        true
     }
 
     /// Diff the coordinator status into events, cues, overlay and tray.
@@ -764,9 +872,15 @@ impl Worker {
         let Some(text) = outcome.transcript.clone() else {
             return;
         };
-        let id = outcome
-            .to_record(now_unix())
-            .and_then(|r| persist::save_record(&r));
+        let record = outcome.to_record(now_unix());
+        let id = record.as_ref().and_then(persist::save_record);
+        if record.is_some() && id.is_none() {
+            // Mac: a "History save failed" notice; the text was still delivered.
+            let _ = self.app.emit(
+                "engine-warning",
+                "Couldn't save this dictation to History. It was still typed where you dictated.",
+            );
+        }
         if !outcome.dictionary_hits.is_empty() || !outcome.snippet_hits.is_empty() {
             if let Ok(store) = Store::open_default() {
                 let _ = store.record_memory_usage(&outcome.dictionary_hits, &outcome.snippet_hits);
@@ -917,7 +1031,8 @@ pub fn on_settings_changed(app: &AppHandle, old: &Settings, new: &Settings) {
         state.send(Cmd::Reconfigure(Box::new(new.clone())));
         let shortcuts_changed = old.push_to_talk != new.push_to_talk
             || old.edit_shortcut != new.edit_shortcut
-            || old.edit_commands_enabled != new.edit_commands_enabled;
+            || old.edit_commands_enabled != new.edit_commands_enabled
+            || old.right_ctrl_dictation_enabled != new.right_ctrl_dictation_enabled;
         if shortcuts_changed && !state.hotkeys_suspended.load(Ordering::SeqCst) {
             let app2 = app.clone();
             let settings = new.clone();

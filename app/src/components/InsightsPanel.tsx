@@ -393,6 +393,7 @@ function tickerStats(stats: InsightStat[], snapshot: WritingInsightSnapshot | nu
 
 export default function InsightsPanel({ onClose }: { onClose?: () => void }) {
   const [payload, setPayload] = useState<DashboardPayload | null>(null);
+  const [summaryFailed, setSummaryFailed] = useState(false);
   const [request, setRequest] = useState<WritingInsightsRequest>(DEFAULT_INSIGHTS_REQUEST);
   const [snapshot, setSnapshot] = useState<WritingInsightSnapshot | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -418,7 +419,12 @@ export default function InsightsPanel({ onClose }: { onClose?: () => void }) {
   preliminaryRef.current = preliminary;
 
   const loadSummary = useCallback(() => {
-    call<DashboardPayload>("home_summary").then(setPayload).catch(() => {});
+    call<DashboardPayload>("home_summary")
+      .then((p) => {
+        setPayload(p);
+        setSummaryFailed(false);
+      })
+      .catch(() => setSummaryFailed(true));
   }, []);
   const loadHistory = useCallback(() => writing.history(24).then((items) => (setHistory(items), items)), []);
 
@@ -657,6 +663,7 @@ export default function InsightsPanel({ onClose }: { onClose?: () => void }) {
 
       <div className="ip-body">
         {stats.length > 0 && <InsightStatTicker stats={stats} scanning={generating} />}
+        {summaryFailed && !payload && <p className="muted small">Couldn't load your dictation stats.</p>}
         {startedAt !== null && <ProgressRow startedAt={startedAt} sampleCount={snapshot?.sample_count ?? null} />}
         {error && <div className="ip-error">{error}</div>}
 

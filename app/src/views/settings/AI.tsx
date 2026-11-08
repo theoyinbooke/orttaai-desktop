@@ -276,6 +276,9 @@ export default function AISettings() {
           title="Local Text Polish"
           info="Polishes each dictation on this computer before it's inserted, a paragraph at a time. Whatever can't be polished safely or in time is inserted unpolished."
         />
+        {settings.style_mode === "raw" && (
+          <MNotice kind="info">Polish is skipped in the Raw writing style. Pick another style in Settings › Text to use it.</MNotice>
+        )}
         <MDivider />
         <MRow
           title="Polish Engine"
@@ -309,6 +312,11 @@ export default function AISettings() {
               format={(v) => `${v} ms`}
               onCommit={(v) => save({ polish_timeout_ms: v })}
             />
+            {settings.polish_timeout_ms < minimumPolishTimeoutMs(polishModelName(settings)) && (
+              <MFootnote>
+                Orttaai waits at least {minimumPolishTimeoutMs(polishModelName(settings))} ms for {polishModelName(settings)}.
+              </MFootnote>
+            )}
             <MDivider />
             <MStepperRow
               title="Max Characters"
@@ -578,11 +586,23 @@ export default function AISettings() {
   );
 }
 
+const polishModelName = (s: Settings) => s.polish_model.trim() || "gemma4:e2b";
+
+/** The least time polish gets for a model, whatever the timeout says (core/src/polish.rs `recommended_minimum_timeout_ms`). */
+function minimumPolishTimeoutMs(model: string): number {
+  const lower = model.toLowerCase();
+  if (lower.includes("qwen3.5:0.8b")) return 1300;
+  if (lower.includes("qwen3.5:2b")) return 1400;
+  if (lower.includes("qwen3.5:4b")) return 1500;
+  if (lower.includes("gemma4:e2b")) return 2500;
+  if (lower.includes("gemma4:e4b")) return 3000;
+  return 600;
+}
+
 function polishRecommendation(s: Settings): string {
-  const lower = (s.polish_model || "gemma4:e2b").toLowerCase();
+  const lower = polishModelName(s).toLowerCase();
   if (lower.includes(":4b")) return "This model is usually too heavy for fast polish. `gemma4:e2b` is the eval-proven default.";
-  const recommended = lower.includes("gemma4:e4b") ? 3000 : lower.includes("gemma4:e2b") ? 2500 : 600;
-  if (s.polish_timeout_ms < recommended) return "Current timeout is aggressive for this model. Expect cold-start fallbacks until it is warmed.";
+  if (s.polish_timeout_ms < minimumPolishTimeoutMs(lower)) return "Current timeout is aggressive for this model. Expect cold-start fallbacks until it is warmed.";
   return "Warm the model once after launch to keep polish inside the timeout budget.";
 }
 

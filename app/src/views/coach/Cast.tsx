@@ -2,7 +2,7 @@
 // their voice, and the local models that judge, write and play the partners.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Icon, Switch } from "../../ui";
+import { Icon, Switch, useToast } from "../../ui";
 import { useEvent } from "../../lib/api";
 import { useSettings, type SettingsPatch } from "../../lib/settings";
 import {
@@ -486,6 +486,7 @@ export function VoiceRow() {
 function JudgeCheckCard({ info, judge }: { info: ModelsInfo; judge: JudgeState | null }) {
   const { catalog } = useCoach();
   const { patch } = useSettings();
+  const toast = useToast();
   const grades = [...info.grades].sort((a, b) => Number(passes(b, catalog)) - Number(passes(a, catalog)) || b.accuracy - a.accuracy);
   const checking = judge?.state === "checking" ? judge : null;
   return (
@@ -509,7 +510,7 @@ function JudgeCheckCard({ info, judge }: { info: ModelsInfo; judge: JudgeState |
             </span>
           </span>
         ) : (
-          <Btn disabled={info.chat_models.length === 0} onClick={() => coachApi.checkJudges(info.chat_models)}>
+          <Btn disabled={info.chat_models.length === 0} onClick={() => coachApi.checkJudges(info.chat_models).catch((e) => toast(String(e), "error"))}>
             {grades.length ? "Check again" : "Check my models"}
           </Btn>
         )}

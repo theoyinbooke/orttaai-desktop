@@ -105,7 +105,15 @@ function Waveform({ countingDown, level }: { countingDown: boolean; level: Mutab
 export default function Panel() {
   const [status, setStatus] = useState<CoordinatorStatus | null>(null);
   const [phase, setPhase] = useState<string>("idle");
+  // The stop button's failure, shown briefly in the pill (it has no room for more).
+  const [stopError, setStopError] = useState<string | null>(null);
   const level = useLevel();
+
+  useEffect(() => {
+    if (!stopError) return;
+    const t = window.setTimeout(() => setStopError(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [stopError]);
 
   useEffect(() => {
     invoke<EngineSnapshot>("engine_status")
@@ -158,6 +166,11 @@ export default function Panel() {
       <div className="pill-controls">
         <span className="pill-spacer" />
         {status?.recovering && <span className="pill-badge" title="Reconnecting the microphone">Reconnecting…</span>}
+        {stopError && (
+          <span className="pill-badge" role="alert" title={stopError}>
+            Couldn't stop
+          </span>
+        )}
         {edit && (
           <span className="pill-badge" title="Speak how to change the selected text" aria-label="Recording edit instruction">
             EDIT
@@ -179,8 +192,11 @@ export default function Panel() {
         </span>
         <button
           className="pill-stop"
-          onClick={() => invoke("stop_recording").catch(() => {})}
-          title="Stop dictation"
+          onClick={() => {
+            setStopError(null);
+            invoke("stop_recording").catch((e) => setStopError(String(e)));
+          }}
+          title={stopError ? `Couldn't stop: ${stopError}` : "Stop dictation"}
           aria-label="Stop dictation"
         >
           <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">

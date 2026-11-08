@@ -191,7 +191,6 @@ impl CoordinatorConfig {
             injection: InjectionConfig {
                 mode: s.injection_mode,
                 preserve_clipboard: s.preserve_clipboard,
-                low_latency: s.low_latency,
                 strict_secure: s.strict_secure,
             },
         }
@@ -791,6 +790,31 @@ impl DictationCoordinator {
             ReleaseAction::PromoteToHandsFree => self.promote_to_hands_free(),
             ReleaseAction::StopRecording => self.stop_recording(StopReason::HoldRelease),
             ReleaseAction::Ignore => {}
+        }
+    }
+
+    /// A clean tap of Right Ctrl (Mac: a tap of Right Option): the first
+    /// starts a hands-free recording, the next stops it and inserts the text.
+    /// There's no hold on this key, so it's hands-free whatever the
+    /// hands-free setting says. Ignored during a voice edit, while anything is
+    /// being processed, and while an error shows.
+    pub fn handle_right_key_tap(&mut self) {
+        match self.state {
+            RecordingState::Idle => {
+                self.begin_session(SessionKind::Dictation);
+                self.promote_to_hands_free();
+            }
+            RecordingState::Recording => {
+                if self.kind == SessionKind::Dictation {
+                    // A shortcut still held would otherwise stop it again on release.
+                    self.gesture.reset();
+                    tracing::info!("recording stopped by a Right Ctrl tap");
+                    self.stop_recording(StopReason::HotkeyTapStop);
+                }
+            }
+            RecordingState::Processing | RecordingState::Error => {
+                tracing::info!("ignoring a Right Ctrl tap while {:?}", self.state);
+            }
         }
     }
 
@@ -1423,12 +1447,7 @@ impl DictationCoordinator {
             return;
         }
         let pending = self.audio.samples_from(covered);
-        let vocabulary: &[String] = if self.config.vocabulary_bias {
-            &self.vocabulary
-        } else {
-            &[]
-        };
-        live.start_next(&pending, &self.transcriber, &self.options, vocabulary);
+        live.start_next(&pending, &self.transcriber, &self.options);
     }
 
     fn poll_word_boost(&mut self) {
@@ -1478,13 +1497,10 @@ impl DictationCoordinator {
                 if tail.len() >= TARGET_SAMPLE_RATE as usize / 4
                     && crate::live::has_speech(tail, crate::live::FAINT_ENERGY_FLOOR)
                 {
-                    let vocabulary: &[String] = if self.config.vocabulary_bias {
-                        &self.vocabulary
-                    } else {
-                        &[]
-                    };
+                    // The rest of a live recording is decoded like the pieces
+                    // before it: without a prompt (see `live::live_options`).
                     let mut o = opts.clone();
-                    o.initial_prompt = crate::live::piece_prompt(vocabulary, tail, &texts);
+                    o.initial_prompt = None;
                     let text =
                         strip_nonspeech_markers(self.transcriber.transcribe(tail, &o)?.trim());
                     if !text.is_empty() {

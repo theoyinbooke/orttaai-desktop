@@ -45,9 +45,6 @@ fn options_follow_settings_and_effective_language() {
         ..Settings::default()
     };
     assert_eq!(TextOptions::from_settings(&s).language, "auto");
-    s.low_latency = true;
-    assert_eq!(TextOptions::from_settings(&s).language, "en");
-    s.low_latency = false;
     // Express doesn't force English: with "auto" it isn't active and Whisper
     // dictates in whatever language is spoken (Mac isExpressEngineActive).
     s.engine = crate::settings::SpeechEngine::Express;
@@ -606,8 +603,7 @@ fn fuzzy_dictionary_honours_its_switches_and_language() {
             .any(|c| c.starts_with("Dictionary (fuzzy)")));
     }
     let s = Settings {
-        dictation_language: "auto".into(),
-        low_latency: true,
+        dictation_language: "en".into(),
         ..Settings::default()
     };
     let p = processor(TextOptions::from_settings(&s), fuzzy_memory());

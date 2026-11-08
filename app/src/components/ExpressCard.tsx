@@ -235,7 +235,7 @@ export function MSwitch({ k, title, disabled }: { k: BoolKey; title: string; dis
 
 export function MToggleRow({ k, title, info, disabled }: { k: BoolKey; title: string; info?: string; disabled?: boolean }) {
   return (
-    <MRow title={title} info={info}>
+    <MRow title={title} info={info} disabled={disabled}>
       <MSwitch k={k} title={title} disabled={disabled} />
     </MRow>
   );
@@ -251,6 +251,7 @@ export function MSliderRow({
   step,
   format,
   onCommit,
+  disabled,
 }: {
   title: string;
   info?: string;
@@ -260,13 +261,14 @@ export function MSliderRow({
   step: number;
   format: (v: number) => string;
   onCommit: (v: number) => void;
+  disabled?: boolean;
 }) {
   const clamped = Math.min(max, Math.max(min, value));
   const [draft, setDraft] = useState(clamped);
   useEffect(() => setDraft(clamped), [clamped]);
   const commit = () => draft !== clamped && onCommit(draft);
   return (
-    <MRow title={title} info={info}>
+    <MRow title={title} info={info} disabled={disabled}>
       <span className="mset-slider">
         <input
           type="range"
@@ -275,6 +277,7 @@ export function MSliderRow({
           max={max}
           step={step}
           value={draft}
+          disabled={disabled}
           aria-label={title}
           aria-valuetext={format(draft)}
           style={{ "--pct": `${((draft - min) / (max - min)) * 100}%` } as React.CSSProperties}
@@ -298,6 +301,7 @@ export function MStepperRow({
   step = 1,
   format = (v) => String(v),
   onChange,
+  disabled,
 }: {
   title: string;
   info?: string;
@@ -307,15 +311,16 @@ export function MStepperRow({
   step?: number;
   format?: (v: number) => string;
   onChange: (v: number) => void;
+  disabled?: boolean;
 }) {
   return (
-    <MRow title={title} info={info}>
+    <MRow title={title} info={info} disabled={disabled}>
       <span className="mset-stepper" role="group" aria-label={title}>
-        <button type="button" disabled={value <= min} aria-label={`Decrease ${title}`} onClick={() => onChange(Math.max(min, value - step))}>
+        <button type="button" disabled={disabled || value <= min} aria-label={`Decrease ${title}`} onClick={() => onChange(Math.max(min, value - step))}>
           <Glyph name="minus" size={10} />
         </button>
         <output>{format(value)}</output>
-        <button type="button" disabled={value >= max} aria-label={`Increase ${title}`} onClick={() => onChange(Math.min(max, value + step))}>
+        <button type="button" disabled={disabled || value >= max} aria-label={`Increase ${title}`} onClick={() => onChange(Math.min(max, value + step))}>
           <Glyph name="plus" size={10} />
         </button>
       </span>
@@ -542,6 +547,10 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
           ? "Boosting 1 dictionary word."
           : `Boosting ${boosted} dictionary words.`;
 
+  // Word Boost rescoring needs the whole recording, so live segments are skipped
+  // while it has dictionary words to boost (unknown count: assume it does).
+  const liveSegmentsBlocked = usingExpress && settings.express_word_boost && boosted !== 0;
+
   const polishModel =
     settings.polish_engine === "s1_mini" ? `S1-mini on ${providerName}` : `${settings.polish_model} on ${providerName}`;
   const polishStatus = settings.polish_enabled ? `Polishes with ${polishModel}.` : `Off. When on, polishes with ${polishModel}.`;
@@ -619,9 +628,9 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
       <DetailRow
         title="Decode while I speak"
         info="Each stretch of speech is decoded at your pauses while you're still talking, so a long dictation finishes about as fast as a short one. Off by default while it's being tested."
-        detail="Long dictations finish sooner."
+        detail={liveSegmentsBlocked ? "Off while Word Boost is on: Word Boost needs the whole recording." : "Long dictations finish sooner."}
       >
-        <MSwitch k="express_live_segments" title="Decode while I speak" disabled={!usingExpress} />
+        <MSwitch k="express_live_segments" title="Decode while I speak" disabled={!usingExpress || liveSegmentsBlocked} />
       </DetailRow>
       <MDivider />
       <DetailRow

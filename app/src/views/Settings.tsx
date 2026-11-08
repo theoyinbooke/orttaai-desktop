@@ -21,7 +21,7 @@ const PANES: { value: Pane; label: string; icon: ReactNode }[] = [
   { value: "general", label: "General", icon: <Icon name="sliders" size={13} /> },
 ];
 
-export default function Settings(_props: { info: AppInfo | null; onRunSetup: () => void }) {
+export default function Settings({ info }: { info: AppInfo | null; onRunSetup: () => void }) {
   const [pane, setPane] = useState<Pane>("dictation");
   // Each section opens at its top (the Mac rebuilds the scroll view per tab).
   useEffect(() => {
@@ -35,14 +35,14 @@ export default function Settings(_props: { info: AppInfo | null; onRunSetup: () 
         {pane === "text" && <TextSettings />}
         {pane === "audio" && <AudioSettings />}
         {pane === "coach" && <CoachSettings />}
-        {pane === "general" && <General />}
+        {pane === "general" && <General linux={info?.platform === "linux"} />}
       </div>
     </div>
   );
 }
 
 /** App-level behaviour and the destructive resets (Mac GeneralSettingsView). */
-function General() {
+function General({ linux }: { linux: boolean }) {
   const { settings } = useSettings();
   const save = usePatch();
   const toast = useToast();
@@ -72,11 +72,14 @@ function General() {
           label="Start Dictation on Launch"
           hint="Loads the speech model as soon as Orttaai opens, so the shortcut works right away."
         />
-        <ToggleRow
-          k="show_processing_estimate"
-          label="Show Processing Estimate"
-          hint="Shows roughly how long transcription will take in the pill while it finishes a recording."
-        />
+        {/* Linux hides the pill while it processes, so the estimate would never show. */}
+        {!linux && (
+          <ToggleRow
+            k="show_processing_estimate"
+            label="Show Processing Estimate"
+            hint="Shows roughly how long transcription will take in the pill while it finishes a recording."
+          />
+        )}
         <ToggleRow
           k="celebrate_milestones"
           label="Celebrate Milestones"

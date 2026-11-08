@@ -4,10 +4,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AI_SETTINGS_ROUTE, takeAISection } from "../lib/navigation";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ConfirmDialog, PageHeader, Segmented, Spinner, Switch } from "../ui";
 import { call, useEvent } from "../lib/api";
 import { useSettings } from "../lib/settings";
-import { formatBytes, useDownloads, type DownloadState, type HardwareInfo, type ModelInfo } from "../lib/engine";
+import { formatBytes, useDownloads, useExpressInUse, type DownloadState, type HardwareInfo, type ModelInfo } from "../lib/engine";
 import { usePatch } from "../components/SettingsRows";
 import ExpressCard, {
   Glyph,
@@ -222,6 +223,8 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
   const [hw, setHw] = useState<HardwareInfo | null>(null);
   const [storage, setStorage] = useState<Storage | null>(null);
   const [vad, setVad] = useState<VadStatus | null>(null);
+  const [vadError, setVadError] = useState(false);
+  const [hwError, setHwError] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [sort, setSortState] = useState<SortMode>(() => (stored(SORT_KEY) === "recommended" ? "recommended" : "size"));
   const [expanded, setExpanded] = useState(false);
@@ -256,12 +259,19 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
       .catch((e) => setSwitchError(String(e)))
       .finally(() => setFetching(false));
     refreshStorage();
-    call<VadStatus>("vad_status").then(setVad).catch(() => {});
+    call<VadStatus>("vad_status")
+      .then((v) => {
+        setVad(v);
+        setVadError(false);
+      })
+      .catch(() => setVadError(true));
   }, [refreshStorage]);
 
   useEffect(() => {
     refresh(true);
-    call<HardwareInfo>("hardware_info").then(setHw).catch(() => {});
+    call<HardwareInfo>("hardware_info")
+      .then(setHw)
+      .catch(() => setHwError(true));
   }, [refresh]);
 
   const switchTo = useCallback(
@@ -320,6 +330,7 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
   });
 
   const sorted = useMemo(() => sortModels(models, sort), [models, sort]);
+  const usingExpress = useExpressInUse();
   if (!settings) return null;
 
   const current = models.find((m) => m.id === settings.model_id);
@@ -358,13 +369,17 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
       })
       .catch((e) => setStorageError(String(e)));
 
-  const toggleLowLatency = (on: boolean) => {
-    // Low latency can't use Auto-detect (Mac applyLowLatencyDefaults).
-    if (on && settings.dictation_language === "auto") save({ low_latency: true, dictation_language: "en" });
-    else save({ low_latency: on });
-  };
+  const chooseFolder = () =>
+    openDialog({ directory: true, defaultPath: storage?.dir })
+      .then((picked) => {
+        if (typeof picked === "string") applyFolder(picked);
+      })
+      .catch((e) => setStorageError(String(e)));
 
-  const computeLabel = !hw ? "…" : hw.gpu_backend === "cuda" ? "NVIDIA GPU (CUDA)" : hw.gpu_backend === "vulkan" ? "GPU (Vulkan)" : "CPU";
+  // Express ignores the Whisper decoding controls below (Decode Threads still applies).
+  const whisperOnly = (info: string) => (usingExpress ? `Whisper only. ${info}` : info);
+
+  const computeLabel = !hw ? (hwError ? "Unknown" : "…") : hw.gpu_backend === "cuda" ? "NVIDIA GPU (CUDA)" : hw.gpu_backend === "vulkan" ? "GPU (Vulkan)" : "CPU";
 
   return (
     <>
@@ -537,14 +552,17 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
             </div>
           )}
           <div className="mset-storage-actions">
+            <MButton glyph="folderPlus" onClick={chooseFolder}>
+              Choose Folder…
+            </MButton>
             <MButton
-              glyph="folderPlus"
+              title="Type a folder path instead"
               onClick={() => {
                 setFolder(storage?.custom ? storage.dir : "");
                 setChoosing((v) => !v);
               }}
             >
-              Choose Folder…
+              Enter Path…
             </MButton>
             <MButton
               glyph="folder"
@@ -567,20 +585,21 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
       </MCard>
 
       <MCard title="Performance" info="Changes apply from your next dictation.">
-        <MRow
-          title="Low Latency Mode"
-          info="Optimizes for the fastest result. Accuracy may drop slightly on difficult audio, and the dictation language can't be Auto-detect."
-        >
-          <Switch checked={settings.low_latency} label="Low Latency Mode" onChange={toggleLowLatency} />
-        </MRow>
-        <MDivider />
+        {usingExpress && (
+          <MFootnote>Decoding Profile, Advanced Decoding and Recognize Dictionary Words are Whisper only. Express uses Word Boost for dictionary words.</MFootnote>
+        )}
         <MRow title="Compute Mode" info="Which chip runs the speech model on this computer. It follows the Orttaai build you installed.">
           <span className="mset-value">{computeLabel}</span>
         </MRow>
+        {hwError && !hw && <MFootnote>Couldn't load this computer's hardware details.</MFootnote>}
         <MDivider />
         <MStepperRow
           title="Decode Threads"
-          info="CPU threads for transcription. Auto picks about your performance cores."
+          info={
+            usingExpress
+              ? "CPU threads for transcription. Auto picks about your performance cores. Express uses the new count after the engine restarts."
+              : "CPU threads for transcription. Auto picks about your performance cores."
+          }
           value={settings.decode.n_threads}
           min={0}
           max={Math.max(4, hw?.logical_cores ?? 16)}
@@ -588,9 +607,10 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
           onChange={(v) => save({ decode: { n_threads: v } })}
         />
         <MDivider />
-        <MRow title="Decoding Profile" info={PROFILE_INFO}>
+        <MRow title="Decoding Profile" info={whisperOnly(PROFILE_INFO)} disabled={usingExpress}>
           <Segmented
             value={settings.decode.preset}
+            disabled={usingExpress}
             options={[
               { value: "fast", label: "Fast" },
               { value: "balanced", label: "Balanced" },
@@ -609,14 +629,21 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
         <MToggleRow
           k="vocabulary_bias"
           title="Recognize Dictionary Words"
-          info="Primes the recognizer with your dictionary's names and terms so they're heard right."
+          info={
+            usingExpress
+              ? "Whisper only. Express uses Word Boost for dictionary words."
+              : "Primes the recognizer with your dictionary's names and terms so they're heard right."
+          }
+          disabled={usingExpress}
         />
         <MDivider />
         <MRow
           title="Silero VAD"
           info="Tells your voice from silence however loud or quiet the microphone, so hands-free recordings stop when you've finished. Without it Orttaai listens for loudness instead."
         >
-          {vad?.installed ? (
+          {!vad && vadError ? (
+            <span className="mset-caption">Couldn't load the voice detector status.</span>
+          ) : vad?.installed ? (
             <span className="mset-ready">
               <Glyph name="checkCircleFill" size={11} /> Installed
             </span>
@@ -636,10 +663,12 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
         <MDivider />
         <MRow
           title="Advanced Decoding"
-          info="Replaces the decoding profile with manual Whisper settings. Leave it off unless you are tuning accuracy."
+          info={whisperOnly("Replaces the decoding profile with manual Whisper settings. Leave it off unless you are tuning accuracy.")}
+          disabled={usingExpress}
         >
           <Switch
             checked={adv.enabled}
+            disabled={usingExpress}
             label="Advanced Decoding"
             onChange={(v) => save({ advanced_decoding: { enabled: v } })}
           />
@@ -658,6 +687,7 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
                 max={1}
                 step={0.05}
                 format={(v) => v.toFixed(2)}
+                disabled={usingExpress}
                 onCommit={(v) => save({ advanced_decoding: { temperature: v } })}
               />
               <MStepperRow
@@ -665,7 +695,8 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
                 info="Candidates compared when a fallback samples above zero temperature."
                 value={adv.best_of}
                 min={1}
-                max={20}
+                max={10}
+                disabled={usingExpress}
                 onChange={(v) => save({ advanced_decoding: { best_of: v } })}
               />
               <MStepperRow
@@ -674,6 +705,7 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
                 value={adv.temperature_fallback_count}
                 min={0}
                 max={10}
+                disabled={usingExpress}
                 onChange={(v) => save({ advanced_decoding: { temperature_fallback_count: v } })}
               />
               <MSliderRow
@@ -684,6 +716,7 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
                 max={1}
                 step={0.05}
                 format={(v) => v.toFixed(2)}
+                disabled={usingExpress}
                 onCommit={(v) => save({ advanced_decoding: { no_speech_threshold: v } })}
               />
               <MSliderRow
@@ -694,6 +727,7 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
                 max={0}
                 step={0.1}
                 format={(v) => v.toFixed(1)}
+                disabled={usingExpress}
                 onCommit={(v) => save({ advanced_decoding: { logprob_threshold: v } })}
               />
               <MSliderRow
@@ -704,6 +738,7 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
                 max={4}
                 step={0.1}
                 format={(v) => v.toFixed(1)}
+                disabled={usingExpress}
                 onCommit={(v) => save({ advanced_decoding: { compression_ratio_threshold: v } })}
               />
             </div>

@@ -2,8 +2,9 @@
 // track, an animated scene, one title line, the step's content, and a footer that
 // says what's still needed before Continue. The Mac's four steps, with the
 // permissions step adapted to what Linux and Windows actually ask for.
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Children, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { AppearanceSync, BrandMark } from "../App";
 import { Button, Icon, Select, ThemeProvider, ToastProvider, useToast } from "../ui";
 import { call, useEvent } from "../lib/api";
@@ -162,8 +163,11 @@ function PermissionRow({
 
 function Permissions({ onChange }: { onChange: (ok: boolean) => void }) {
   const { settings } = useSettings();
+  const { snapshot, refresh: refreshEngine } = useEngine();
   const [check, setCheck] = useState<PlatformCheck | null>(null);
   const [attempt, setAttempt] = useState(0);
+  // What opening the microphone settings said when it couldn't (Linux has no one place).
+  const [micHint, setMicHint] = useState<string | null>(null);
   const { metered, error } = useLevelMonitor(settings?.audio_device ?? null, attempt > 0);
 
   const recheck = useCallback(() => {
@@ -179,26 +183,42 @@ function Permissions({ onChange }: { onChange: (ok: boolean) => void }) {
 
   const micOk = !!metered && !error && (check?.microphones ?? 0) > 0;
   useEffect(() => onChange(micOk), [micOk, onChange]);
+  useEffect(() => {
+    if (micOk) setMicHint(null);
+  }, [micOk]);
+
+  const windows = check?.platform === "windows";
+  const allowMic = () => {
+    setMicHint(null);
+    call("open_microphone_settings").catch((e) => setMicHint(String(e)));
+    setAttempt((a) => a + 1);
+  };
 
   const wayland = check?.session === "wayland";
-  const typingOk = !wayland || !!check?.portal_typing || !!check?.wtype;
-  const hotkeyOk = !wayland || !!check?.portal_hotkeys;
-  const typingDetail = !check
-    ? "So it can type into the app you're using."
-    : wayland
-      ? typingOk
-        ? "So it can type into the app you're using. Your desktop asks once; choose Allow."
-        : "Typing needs your desktop's remote-input portal, or wtype on Sway and Hyprland."
-      : "So it can type into the app you're using.";
+  // A running engine with no way to type leaves each dictation on the clipboard.
+  const noInjector = !!snapshot?.running && !snapshot.injector;
+  const typingOk = !noInjector && (!wayland || !!check?.portal_typing || !!check?.wtype);
+  // The engine reports when the shortcut couldn't be registered (another app owns it, say).
+  const hotkeyError = snapshot?.hotkey_error ?? null;
+  const hotkeyOk = !hotkeyError && (!wayland || !!check?.portal_hotkeys);
+  const typingDetail = noInjector
+    ? "Orttaai can't type here yet. Text will be left on the clipboard."
+    : !check
+      ? "So it can type into the app you're using."
+      : wayland
+        ? typingOk
+          ? "So it can type into the app you're using. Your desktop asks once; choose Allow."
+          : "Typing needs your desktop's remote-input portal, or wtype on Sway and Hyprland."
+        : "So it can type into the app you're using.";
 
   return (
     <div className="setup-list">
       <PermissionRow
         icon="mic"
         title="Microphone"
-        detail={micOk ? "So Orttaai can hear you while you hold the key." : error ?? (check && check.microphones === 0 ? "No microphone found. Connect one to continue." : "So Orttaai can hear you while you hold the key.")}
+        detail={micOk ? "So Orttaai can hear you while you hold the key." : micHint ?? error ?? (check && check.microphones === 0 ? "No microphone found. Connect one to continue." : "So Orttaai can hear you while you hold the key.")}
         granted={micOk}
-        action={{ label: "Allow", run: () => setAttempt((a) => a + 1) }}
+        action={{ label: windows ? "Open Settings" : "Try Again", run: allowMic }}
       />
       {check && !micOk && (error || check.microphones === 0) && (
         <div className="setup-trouble" role="status">
@@ -206,7 +226,7 @@ function Permissions({ onChange }: { onChange: (ok: boolean) => void }) {
             <Icon name="alert" size={13} /> Microphone not detected
           </b>
           <span>
-            {check.platform === "windows"
+            {windows
               ? "Check Settings › Privacy & security › Microphone, then allow access for desktop apps."
               : "Check that a microphone is connected and not muted in your sound settings."}
           </span>
@@ -217,13 +237,25 @@ function Permissions({ onChange }: { onChange: (ok: boolean) => void }) {
         title="Typing into apps"
         detail={typingDetail}
         granted={typingOk}
-        action={{ label: "Check Again", run: recheck }}
+        action={{
+          label: "Check Again",
+          run: () => {
+            recheck();
+            refreshEngine();
+          },
+        }}
       />
       <PermissionRow
         icon="keyboard"
         title="Global shortcut"
         optional
-        detail={hotkeyOk ? "Lets the key work in every app." : "If your desktop asks, assign a key to push-to-talk. You can also click to record."}
+        detail={
+          hotkeyError
+            ? `Not working: ${hotkeyError}`
+            : hotkeyOk
+              ? "Lets the key work in every app."
+              : "If your desktop asks, assign a key to push-to-talk. You can also click to record."
+        }
         granted={hotkeyOk}
         action={{ label: "Check Again", run: recheck }}
       />
@@ -252,6 +284,7 @@ function EngineChoice({
   actionTitle,
   disabled,
   onAction,
+  children,
 }: {
   icon: string;
   title: string;
@@ -262,25 +295,55 @@ function EngineChoice({
   actionTitle: string;
   disabled: boolean;
   onAction: () => void;
+  /** Download progress, loading status or an error for this engine. */
+  children?: ReactNode;
 }) {
   return (
     <div className={`setup-row engine ${selected ? "granted" : ""}`}>
-      <span className={`setup-tile big ${selected ? "ok" : ""}`}>
-        <Icon name={selected ? "check" : icon} size={19} />
-      </span>
-      <div className="setup-row-text">
-        <b className="big">
-          {title}
-          {badge && <em className="setup-badge">{badge}</em>}
-        </b>
-        <code className="setup-id">{subtitle}</code>
-        <span className="one-line" title={detail}>
-          {detail}
+      <div className="setup-engine-head">
+        <span className={`setup-tile big ${selected ? "ok" : ""}`}>
+          <Icon name={selected ? "check" : icon} size={19} />
         </span>
+        <div className="setup-row-text">
+          <b className="big">
+            {title}
+            {badge && <em className="setup-badge">{badge}</em>}
+          </b>
+          <code className="setup-id">{subtitle}</code>
+          <span className="one-line" title={detail}>
+            {detail}
+          </span>
+        </div>
+        <Button size="sm" variant={selected ? "ghost" : "primary"} disabled={disabled} onClick={onAction}>
+          {actionTitle}
+        </Button>
       </div>
-      <Button size="sm" variant={selected ? "ghost" : "primary"} disabled={disabled} onClick={onAction}>
-        {actionTitle}
-      </Button>
+      {Children.toArray(children).length > 0 && <div className="setup-engine-extra">{children}</div>}
+    </div>
+  );
+}
+
+function DownloadProgress({ label, fraction }: { label: string; fraction: number }) {
+  const pct = Math.round(fraction * 100);
+  return (
+    <div className="setup-progress" role="status">
+      <div className="setup-bar">
+        <i style={{ width: `${pct}%` }} />
+      </div>
+      <div className="setup-progress-line">
+        <span>{label}</span>
+        <code>{pct}%</code>
+      </div>
+      <span className="setup-note">First-time download can take a few minutes. If the connection drops, it picks up where it stopped.</span>
+    </div>
+  );
+}
+
+function LoadingModel() {
+  return (
+    <div className="setup-progress" role="status">
+      <span>Loading model...</span>
+      <span className="setup-note">Running a quick warm-up for faster first dictation.</span>
     </div>
   );
 }
@@ -296,10 +359,17 @@ function EngineStep({ onReady }: { onReady: (ready: boolean) => void }) {
   const [storage, setStorage] = useState<{ dir: string; custom: boolean; free_gb: number } | null>(null);
   const [editingFolder, setEditingFolder] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expressError, setExpressError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    call<ModelInfo[]>("list_models").then(setModels).catch(() => {});
-    call<ExpressModel[]>("express_models").then(setExpress).catch(() => {});
+    setLoadError(null);
+    call<ModelInfo[]>("list_models")
+      .then(setModels)
+      .catch((e) => setLoadError(`Couldn't list the speech models. ${e}`));
+    call<ExpressModel[]>("express_models")
+      .then(setExpress)
+      .catch((e) => setLoadError(`Couldn't list the Express models. ${e}`));
     call<{ dir: string; custom: boolean; free_gb: number }>("models_storage").then(setStorage).catch(() => {});
   }, []);
   const { downloads, start } = useDownloads(load);
@@ -340,22 +410,24 @@ function EngineStep({ onReady }: { onReady: (ready: boolean) => void }) {
   useEvent<{ id: string }>("express-cancelled", () => setExpressProgress(null));
   useEvent<{ id: string; error: string }>("express-error", (e) => {
     setExpressProgress(null);
-    setError(`Couldn't download Express. ${e.error}`);
+    setExpressError(`Couldn't download Express. ${e.error}`);
   });
 
   const pickExpress = () => {
     if (!expressModel) return;
     setError(null);
+    setExpressError(null);
     if (expressModel.downloaded) return useExpress();
     setExpressProgress(0);
     call("express_download", { id: expressModel.id }).catch((e) => {
       setExpressProgress(null);
-      setError(String(e));
+      setExpressError(String(e));
     });
   };
   const pickWhisper = () => {
     if (!whisper) return;
     setError(null);
+    setExpressError(null);
     if (!whisper.downloaded) {
       start(whisper.id);
       return;
@@ -374,15 +446,20 @@ function EngineStep({ onReady }: { onReady: (ready: boolean) => void }) {
   }, [pendingWhisper, whisper?.downloaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const anyInstalled = !!whisper?.downloaded || !!expressModel?.downloaded;
-  const saveFolder = () => {
-    const path = editingFolder?.trim() || null;
+  const applyFolder = (path: string | null) =>
     call("set_models_dir", { path })
       .then(() => {
         setEditingFolder(null);
         load();
       })
       .catch((e) => setError(String(e)));
-  };
+  const saveFolder = () => applyFolder(editingFolder?.trim() || null);
+  const chooseFolder = () =>
+    openDialog({ directory: true, defaultPath: storage?.dir })
+      .then((picked) => {
+        if (typeof picked === "string") applyFolder(picked);
+      })
+      .catch((e) => setError(String(e)));
 
   return (
     <div className="setup-list">
@@ -397,7 +474,11 @@ function EngineStep({ onReady }: { onReady: (ready: boolean) => void }) {
           actionTitle={usingExpress ? (running ? "Ready" : "Loading...") : expressProgress !== null ? "Downloading..." : expressModel.downloaded ? "Use Downloaded" : anyInstalled ? "Download Instead" : "Download"}
           disabled={busy || usingExpress || !english}
           onAction={pickExpress}
-        />
+        >
+          {expressProgress !== null && <DownloadProgress label="Downloading Express models..." fraction={expressProgress} />}
+          {usingExpress && engine === "loading" && <LoadingModel />}
+          {expressError && <p className="setup-error small">{expressError}</p>}
+        </EngineChoice>
       )}
       {whisper && (
         <EngineChoice
@@ -410,29 +491,15 @@ function EngineStep({ onReady }: { onReady: (ready: boolean) => void }) {
           actionTitle={usingWhisper ? (running ? "Ready" : "Loading...") : whisperDl && !whisperDl.error ? "Downloading..." : whisper.downloaded ? "Use Downloaded" : anyInstalled ? "Download Instead" : "Download"}
           disabled={busy || usingWhisper}
           onAction={pickWhisper}
-        />
+        >
+          {pendingWhisper && <DownloadProgress label="Downloading model files..." fraction={whisperDl?.fraction ?? 0} />}
+          {usingWhisper && engine === "loading" && <LoadingModel />}
+          {whisperDl?.error && <p className="setup-error small">Couldn't download the model. {whisperDl.error}</p>}
+        </EngineChoice>
       )}
-      {!models.length && <p className="setup-note">Loading the engines…</p>}
+      {!models.length && !loadError && <p className="setup-note">Loading the engines…</p>}
 
-      {(expressProgress !== null || (whisperDl && !whisperDl.error)) && (
-        <div className="setup-progress" role="status">
-          <div className="setup-bar">
-            <i style={{ width: `${Math.round((expressProgress ?? whisperDl?.fraction ?? 0) * 100)}%` }} />
-          </div>
-          <div className="setup-progress-line">
-            <span>{expressProgress !== null ? "Downloading Express models..." : "Downloading model files..."}</span>
-            <code>{Math.round((expressProgress ?? whisperDl?.fraction ?? 0) * 100)}%</code>
-          </div>
-          <span className="setup-note">First-time download can take a few minutes.</span>
-        </div>
-      )}
-      {(usingExpress || usingWhisper) && engine === "loading" && (
-        <div className="setup-progress" role="status">
-          <span>Loading model...</span>
-          <span className="setup-note">Running a quick warm-up for faster first dictation.</span>
-        </div>
-      )}
-      {whisperDl?.error && <p className="setup-error">Couldn't download the model. Check your connection and try again. ({whisperDl.error})</p>}
+      {loadError && <p className="setup-error">{loadError}</p>}
       {error && <p className="setup-error">{error}</p>}
 
       <div className="setup-storage">
@@ -454,7 +521,10 @@ function EngineStep({ onReady }: { onReady: (ready: boolean) => void }) {
             )}
           </span>
         </div>
-        <button className="setup-ghost" disabled={busy} onClick={() => setEditingFolder(storage?.dir ?? "")} title="Where Orttaai keeps speech models">
+        <button className="setup-ghost" disabled={busy} onClick={chooseFolder} title="Choose where Orttaai keeps speech models">
+          Choose…
+        </button>
+        <button className="setup-ghost" disabled={busy} onClick={() => setEditingFolder(storage?.dir ?? "")} title="Type a folder path instead">
           Change…
         </button>
       </div>
@@ -469,10 +539,7 @@ function EngineStep({ onReady }: { onReady: (ready: boolean) => void }) {
               size="sm"
               onClick={() => {
                 setEditingFolder("");
-                call("set_models_dir", { path: null }).then(() => {
-                  setEditingFolder(null);
-                  load();
-                });
+                applyFolder(null);
               }}
             >
               Use Default Location

@@ -12,24 +12,34 @@ pub fn save_transcript(text: &str, duration_ms: i64, source: Option<String>) -> 
     save_record(&record)
 }
 
-/// Persist a fully populated record; returns its id.
+/// Tries before a history save gives up, and the wait between them (Mac
+/// `historySaveAttempts` / `historySaveRetryDelayNs`): a busy or locked
+/// database usually frees up within a moment.
+const SAVE_ATTEMPTS: u32 = 3;
+const SAVE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Persist a fully populated record; returns its id, or `None` when every
+/// attempt failed.
 pub fn save_record(record: &TranscriptionRecord) -> Option<i64> {
-    match Store::open_default() {
-        Ok(store) => match store.insert_transcription(record) {
-            Ok(id) => {
+    for attempt in 1..=SAVE_ATTEMPTS {
+        let saved = Store::open_default().and_then(|store| {
+            let id = store.insert_transcription(record)?;
+            Ok((store, id))
+        });
+        match saved {
+            Ok((store, id)) => {
                 after_save(&store, id);
-                Some(id)
+                return Some(id);
             }
             Err(e) => {
-                eprintln!("orttaai: failed to persist transcription: {e}");
-                None
+                tracing::warn!("history save attempt {attempt} failed: {e}");
+                if attempt < SAVE_ATTEMPTS {
+                    std::thread::sleep(SAVE_RETRY_DELAY);
+                }
             }
-        },
-        Err(e) => {
-            eprintln!("orttaai: failed to open history store: {e}");
-            None
         }
     }
+    None
 }
 
 /// Post-save hooks. Areas append their own calls here (one line each).

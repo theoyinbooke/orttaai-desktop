@@ -32,7 +32,8 @@ See [`docs/architecture.md`](docs/architecture.md) and the full build plan for d
 
 - **Dictation** — hold the shortcut to talk, or **tap it for hands-free** (stops on the
   next tap, the pill's stop button, **silence** via Silero VAD, or its time cap, with a
-  countdown). Mic picker with Bluetooth/disconnect recovery that keeps what was heard.
+  countdown). Optionally **tap Right Ctrl** on its own to start and again to insert
+  (Windows and X11). Mic picker with Bluetooth/disconnect recovery that keeps what was heard.
   Paste or type, clipboard restored. Floating pill with live waveform and timer.
 - **Two speech engines** — **Whisper** (whisper.cpp, every language, optional CUDA) and
   **Express** (NVIDIA **Parakeet** via ONNX Runtime — the fastest option on CPU).
@@ -200,6 +201,26 @@ on Windows** (CI does this). Cross-builds use `scripts/windows-crt-env.sh`.
 | **Windows** | WASAPI (`cpal`) | `SendInput` (`enigo`) | `RegisterHotKey` | Easiest target — all solid |
 | **Linux X11** | ALSA/Pipe (`cpal`) | `xdotool` | `XGrabKey` | Reliable |
 | **Linux Wayland** | PipeWire (`cpal`) | `wtype` | XDG portal | Brittle hotkey; see gaps doc |
+
+## Troubleshooting log
+
+If Orttaai crashes or shows an error you want to report, you can turn on a
+diagnostic log. Quit Orttaai, then start it with `ORTTAAI_LOG=info` set:
+
+- **Windows (PowerShell):** `$env:ORTTAAI_LOG="info"; & "$env:LOCALAPPDATA\Orttaai\Orttaai.exe"`
+- **Linux:** `ORTTAAI_LOG=info orttaai`
+
+The log is written to `orttaai.log` in Orttaai's data folder
+(`%APPDATA%\orttaai\Orttaai\data` on Windows, `~/.local/share/orttaai` on Linux).
+Attach it to your bug report.
+
+**The log never contains your dictations or your data.** It does not record what
+you say or type, your transcripts, dictionary, snippets, clipboard or selected
+text. It holds only technical events, such as the engine starting, models
+loading, audio device changes, timings and error messages, that help us
+troubleshoot a crash or an error. Your home folder is written as `~`, so file
+paths don't show your account name. The same note is written at the top of the
+file, and the log stays on your computer unless you choose to send it.
 
 ## Known OS-level gaps
 

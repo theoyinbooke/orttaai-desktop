@@ -28,16 +28,22 @@ function resolve(choice: ThemeChoice): "light" | "dark" {
 export function applyTheme(choice: ThemeChoice) {
   document.documentElement.dataset.theme = resolve(choice);
 }
+/** The cached appearance; falls back to "system", the setting's default. */
 export function storedTheme(): ThemeChoice {
-  const v = localStorage.getItem(THEME_KEY) as ThemeChoice | null;
-  return v === "light" || v === "dark" || v === "system" ? v : "dark";
+  let v: string | null = null;
+  try {
+    v = localStorage.getItem(THEME_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+  return v === "light" || v === "dark" || v === "system" ? v : "system";
 }
 
 const ThemeCtx = createContext<{
   choice: ThemeChoice;
   resolved: "light" | "dark";
   setChoice: (c: ThemeChoice) => void;
-}>({ choice: "dark", resolved: "dark", setChoice: () => {} });
+}>({ choice: "system", resolved: "dark", setChoice: () => {} });
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [choice, setChoiceState] = useState<ThemeChoice>(storedTheme);

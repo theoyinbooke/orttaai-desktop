@@ -5,6 +5,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { Badge, Button, ConfirmDialog, CopyButton, Icon, IconButton, PageHeader, Spinner, Switch, useToast } from "../ui";
 import { Glyph, Row, Section, TabBar, ToggleRow } from "../components/SettingsRows";
 import { useSettings } from "../lib/settings";
+import { useExpressInUse } from "../lib/engine";
 import {
   countLabel,
   matches,
@@ -238,6 +239,7 @@ function DictionaryTab({ entries, query, onError }: { entries: DictionaryEntry[]
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState<DictionaryEntry | null>(null);
   const firstField = useRef<HTMLInputElement>(null);
+  const usingExpress = useExpressInUse();
   const shown = useMemo(() => entries.filter((e) => matches(query, e.source, e.target)), [entries, query]);
   const valid = source.trim() !== "" && target.trim() !== "";
 
@@ -280,7 +282,12 @@ function DictionaryTab({ entries, query, onError }: { entries: DictionaryEntry[]
         <ToggleRow
           k="vocabulary_bias"
           label="Bias Recognition to My Words"
-          hint="Nudges speech recognition toward the words in your dictionary, so names are heard right the first time."
+          hint={
+            usingExpress
+              ? "Whisper only. Express uses Word Boost for dictionary words."
+              : "Nudges speech recognition toward the words in your dictionary, so names are heard right the first time."
+          }
+          disabled={usingExpress}
         />
       </Section>
 

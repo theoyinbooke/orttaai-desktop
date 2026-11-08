@@ -10,6 +10,9 @@
 use crate::error::{CoreError, Result};
 use crate::types::HotkeyCombo;
 
+pub mod right_ctrl;
+pub mod tap;
+
 /// Fired on key-down and key-up.
 pub type HotkeyCallback = Box<dyn Fn() + Send + 'static>;
 

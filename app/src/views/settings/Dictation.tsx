@@ -6,7 +6,7 @@ import { call } from "../../lib/api";
 import { useSettings } from "../../lib/settings";
 import { Notice, Row, Section, ToggleRow, usePatch } from "../../components/SettingsRows";
 import ShortcutRecorder from "../../components/ShortcutRecorder";
-import type { ModelInfo } from "../../lib/engine";
+import { useEngine, useExpressInUse, type ModelInfo } from "../../lib/engine";
 import "../../styles/engine.css";
 
 export const SUPPORTED_LANGUAGES: { code: string; name: string }[] = [
@@ -42,16 +42,22 @@ function presets(values: number[], current: number, min: number, max: number, la
 
 export default function DictationSettings() {
   const { settings } = useSettings();
+  const { snapshot } = useEngine();
   const save = usePatch();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [platform, setPlatform] = useState<{ platform: string; session: string } | null>(null);
+  const [expressModels, setExpressModels] = useState<{ id: string; multilingual: boolean }[]>([]);
+  const expressInUse = useExpressInUse();
   useEffect(() => {
     call<ModelInfo[]>("list_models").then(setModels).catch(() => {});
+    call<{ id: string; multilingual: boolean }[]>("express_models").then(setExpressModels).catch(() => {});
     call<{ platform: string; session: string }>("app_info").then(setPlatform).catch(() => {});
   }, []);
   if (!settings) return null;
 
   const hf = settings.hands_free_enabled;
+  // "Tap Right Ctrl" recordings are always hands-free, so they use the same limits.
+  const handsFreeLimits = hf || settings.right_ctrl_dictation_enabled;
   // A custom stored value is only listed while silence stop is on (Mac).
   const silenceOptions = [
     { value: "off", label: "Off" },
@@ -64,10 +70,23 @@ export default function DictationSettings() {
     ),
   ];
   const silenceValue = settings.hands_free_silence_stop ? String(settings.hands_free_silence_secs) : "off";
-  const languages = SUPPORTED_LANGUAGES.filter((l) => !(settings.low_latency && l.code === "auto"));
   const activeModel = models.find((m) => m.id === settings.model_id);
-  const englishOnlyMismatch = activeModel?.english_only && settings.dictation_language !== "en";
+  // Only matters when Whisper does the work.
+  const englishOnlyMismatch = !expressInUse && activeModel?.english_only && settings.dictation_language !== "en";
   const linux = platform?.platform === "linux";
+  // Express takes no language: v2 is English only (other languages fall back to
+  // Whisper), the multilingual model detects the language itself.
+  const expressChosen = settings.engine === "express";
+  const expressModel = expressModels.find((m) => m.id === settings.express_model) ?? expressModels[0];
+  const languageHint = expressChosen && expressModel
+    ? expressModel.multilingual
+      ? "Express detects the language you speak by itself. This choice applies when Whisper is in use."
+      : expressInUse
+        ? "Express is English only. Pick another language and dictation uses your Whisper model instead."
+        : "Express is English only, so dictation in this language uses your Whisper model."
+    : "The language you speak. Auto-detect handles any language but is slower.";
+  const rightCtrl = settings.right_ctrl_dictation_enabled;
+  const rightCtrlError = snapshot?.right_ctrl_error ?? null;
 
   return (
     <>
@@ -92,7 +111,18 @@ export default function DictationSettings() {
           label="Hands-Free Dictation"
           hint="Tap the shortcut to start, and tap again to stop, instead of holding it. The pill's stop button and Click to record work hands-free too."
         />
-        {hf && (
+        <ToggleRow
+          k="right_ctrl_dictation_enabled"
+          label="Tap Right Ctrl to Dictate"
+          hint={
+            !rightCtrl && rightCtrlError
+              ? rightCtrlError
+              : "Tap the Right Ctrl key once to start talking, and tap it again to insert the text. Ctrl shortcuts still work as usual."
+          }
+          disabled={!rightCtrl && !!rightCtrlError}
+        />
+        {rightCtrl && rightCtrlError && <Notice kind="warning">{rightCtrlError}</Notice>}
+        {handsFreeLimits && (
           <>
             <Row
               label="Stop After Silence"
@@ -135,15 +165,11 @@ export default function DictationSettings() {
       <Section title="Language">
         <Row
           label="Dictation Language"
-          hint={
-            settings.low_latency
-              ? "The language you speak. Auto-detect is unavailable while Low Latency Mode is on (Model › Speech)."
-              : "The language you speak. Auto-detect handles any language but is slower."
-          }
+          hint={languageHint}
         >
           <Select
             value={settings.dictation_language}
-            options={languages.map((l) => ({ value: l.code, label: l.name }))}
+            options={SUPPORTED_LANGUAGES.map((l) => ({ value: l.code, label: l.name }))}
             onChange={(v) => save({ dictation_language: v })}
             ariaLabel="Dictation language"
             className="eng-select"

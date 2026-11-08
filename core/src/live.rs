@@ -13,7 +13,7 @@
 //! Only one piece decodes at a time; a piece that fails stays uncommitted and
 //! is simply decoded with the tail at the end.
 
-use crate::transcription::{bias_prompt_for, Transcriber};
+use crate::transcription::Transcriber;
 use crate::types::DecodeOptions;
 use crate::vad::{frame_rms, FRAME_SAMPLES, SAMPLE_RATE, SPEECH_ENERGY_THRESHOLD};
 use std::sync::Arc;
@@ -41,8 +41,6 @@ const SILENCE_PAD: usize = SAMPLE_RATE * 3 / 10;
 pub const PAUSE_MIN_CLIP: usize = 2 * SAMPLE_RATE;
 pub const SEGMENT_MIN: usize = 8 * SAMPLE_RATE;
 const SEGMENT_GAP_SEARCH: usize = 20 * SAMPLE_RATE;
-/// The committed text carried into the next clip's prompt (about 100 tokens).
-const CONTEXT_CHARS: usize = 400;
 
 /// The pause threshold for `samples`: the quietest tenth of its 100 ms frames,
 /// with a small margin for room noise, capped below quiet speech.
@@ -163,28 +161,15 @@ pub fn commit_text(decoded: &str, audio: &[f32]) -> Option<String> {
     (!has_speech(audio, FAINT_ENERGY_FLOOR)).then(String::new)
 }
 
-/// The prompt for a piece: the dictionary bias, then the end of what has been
-/// committed so far, so the decoder continues the same sentence.
-pub fn piece_prompt(vocabulary: &[String], clip: &[f32], committed: &[String]) -> Option<String> {
-    let bias = bias_prompt_for(vocabulary, clip);
-    let context = committed.join(" ");
-    let context = context.trim();
-    let tail = if context.chars().count() > CONTEXT_CHARS {
-        let skip = context.chars().count() - CONTEXT_CHARS;
-        let rest: String = context.chars().skip(skip).collect();
-        // Start at a word.
-        rest.split_once(' ')
-            .map(|(_, r)| r.to_string())
-            .unwrap_or(rest)
-    } else {
-        context.to_string()
-    };
-    match (bias, tail.is_empty()) {
-        (Some(b), false) => Some(format!("{b} {tail}")),
-        (Some(b), true) => Some(b),
-        (None, false) => Some(tail),
-        (None, true) => None,
-    }
+/// Live pieces are decoded without a prompt, like the Mac
+/// (`currentLivePromptTokens` returns nil): its ASR corpus measured prompted
+/// live clips at 6.60% WER against 4.36% without, with median latency doubled
+/// and dictionary words hallucinated into unrelated speech. The whole-recording
+/// path keeps the dictionary bias.
+fn live_options(options: &DecodeOptions) -> DecodeOptions {
+    let mut opts = options.clone();
+    opts.initial_prompt = None;
+    opts
 }
 
 struct Inflight {
@@ -269,7 +254,6 @@ impl LiveSession {
         pending: &[f32],
         transcriber: &Arc<dyn Transcriber>,
         options: &DecodeOptions,
-        vocabulary: &[String],
     ) -> bool {
         if self.inflight.is_some() {
             return false;
@@ -278,8 +262,7 @@ impl LiveSession {
             return false;
         };
         let clip = pending[..len].to_vec();
-        let mut opts = options.clone();
-        opts.initial_prompt = piece_prompt(vocabulary, &clip, &self.committed);
+        let opts = live_options(options);
         let transcriber = Arc::clone(transcriber);
         let audio = clip.clone();
         let handle = std::thread::Builder::new()
@@ -377,11 +360,12 @@ mod tests {
     }
 
     #[test]
-    fn prompt_carries_the_end_of_the_committed_text() {
-        let committed = vec!["a ".repeat(300)];
-        let p = piece_prompt(&[], &tone(1.0, 0.2), &committed).unwrap();
-        assert!(p.chars().count() <= CONTEXT_CHARS);
-        assert_eq!(piece_prompt(&[], &tone(1.0, 0.2), &[]), None);
+    fn live_pieces_are_never_prompted() {
+        let o = DecodeOptions {
+            initial_prompt: Some("Orttaai.".into()),
+            ..DecodeOptions::default()
+        };
+        assert_eq!(live_options(&o).initial_prompt, None);
     }
 
     #[test]
@@ -390,9 +374,9 @@ mod tests {
         let mut s = LiveSession::new(LiveMode::Clips);
         let mut audio = tone(2.5, 0.2);
         audio.extend(quiet(0.8));
-        assert!(s.start_next(&audio, &t, &DecodeOptions::default(), &[]));
+        assert!(s.start_next(&audio, &t, &DecodeOptions::default()));
         assert!(
-            !s.start_next(&audio, &t, &DecodeOptions::default(), &[]),
+            !s.start_next(&audio, &t, &DecodeOptions::default()),
             "one at a time"
         );
         let (texts, covered) = s.finish();

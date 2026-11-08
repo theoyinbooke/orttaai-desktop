@@ -16,6 +16,10 @@ pub enum CoreError {
     #[error("transcription failed: {0}")]
     Transcription(String),
 
+    /// A model download that failed, worded for the person reading it.
+    #[error("{0}")]
+    Download(String),
+
     #[error("audio capture failed: {0}")]
     Audio(String),
 

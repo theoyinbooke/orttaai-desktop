@@ -4,8 +4,7 @@ import type { ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button, Icon, PageHeader, useToast } from "../ui";
 import type { AppInfo } from "../types";
-import { useSettings } from "../lib/settings";
-import { phaseLabel, useUpdater, type UpdatePhase } from "../lib/updater";
+import { phaseLabel, useAppUpdater, type UpdatePhase } from "../lib/updater";
 import { Glyph, Notice, Row, Section, ToggleRow } from "../components/SettingsRows";
 
 const REPO = "https://github.com/theoyinbooke/orttaai-desktop";
@@ -96,9 +95,8 @@ function issueUrl(kind: "bug" | "support", info: AppInfo | null) {
   return `${REPO}/issues/new?${q.toString()}`;
 }
 
-export default function About({ info }: { info: AppInfo | null; onFeedback: () => void }) {
-  const { settings } = useSettings();
-  const { phase, act } = useUpdater(settings?.auto_download_updates ?? true);
+export default function About({ info }: { info: AppInfo | null }) {
+  const { phase, act } = useAppUpdater();
   const toast = useToast();
   const open = (url: string) => () => {
     openUrl(url).catch((e) => toast(String(e), "error"));

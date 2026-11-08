@@ -53,10 +53,12 @@ fn sync_launch_at_login(app: &AppHandle, settings: &Settings) {
     use tauri_plugin_autostart::ManagerExt;
     let launcher = app.autolaunch();
     let enabled = launcher.is_enabled().unwrap_or(false);
+    // On, it's written every time: the entry holds the program's path, which
+    // an update can change (the Linux binary is now `orttaai`, was `app`).
     let result = match (settings.launch_at_login, enabled) {
-        (true, false) => launcher.enable(),
+        (true, _) => launcher.enable(),
         (false, true) => launcher.disable(),
-        _ => Ok(()),
+        (false, false) => Ok(()),
     };
     if let Err(e) = result {
         use tauri::Emitter;
@@ -269,7 +271,15 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
             "setup" => show_main(app, Some("setup")),
             "settings" => show_main(app, Some("settings")),
             "updates" => show_main(app, Some("check-updates")),
-            "rec" => engine::toggle_recording_impl(app, app.state::<EngineState>().inner()),
+            "rec" => {
+                let state = app.state::<EngineState>();
+                // With the engine off the reason shows in the main window,
+                // which may be hidden: bring it up so it isn't missed.
+                if !state.is_running() {
+                    show_main(app, None);
+                }
+                engine::toggle_recording_impl(app, state.inner());
+            }
             _ => {}
         });
     if let Some(icon) = app.default_window_icon().cloned() {
@@ -280,13 +290,92 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// The diagnostic log's first lines: what it holds, and what it never does.
+const LOG_PRIVACY_NOTE: &str = "\
+Orttaai diagnostic log. It never records what you dictate, your transcripts, \
+dictionary, snippets, clipboard, selected text or anything else you type or say. \
+It holds only technical events (engine start, model loading, audio device \
+changes, timings and error messages) that help troubleshoot a crash or an error. \
+Your home folder is written as ~, so file paths don't show your account name.\n";
+
+/// The log file, with the user's home folder written as `~` so paths in it
+/// don't carry the account name.
+struct MaskedLog {
+    file: std::fs::File,
+    /// The home folder as it appears in log lines: plain, and with Windows
+    /// backslashes escaped (paths printed with `{:?}`).
+    home: Vec<String>,
+}
+
+impl std::io::Write for MaskedLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Ok(text) = std::str::from_utf8(buf) {
+            if self.home.iter().any(|h| text.contains(h.as_str())) {
+                let mut masked = text.to_string();
+                for h in &self.home {
+                    masked = masked.replace(h.as_str(), "~");
+                }
+                self.file.write_all(masked.as_bytes())?;
+                return Ok(buf.len());
+            }
+        }
+        self.file.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
+/// Off unless asked for: `ORTTAAI_LOG=info` (any tracing filter) writes the
+/// engine's log to `orttaai.log` in Orttaai's data folder, for a bug report.
+/// See [`LOG_PRIVACY_NOTE`] for what it may contain.
+fn init_diagnostic_log() {
+    let Ok(filter) = std::env::var("ORTTAAI_LOG") else {
+        return;
+    };
+    let Ok(dir) = orttaai_core::store::Store::data_dir() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("orttaai.log");
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    use std::io::Write;
+    let _ = write!(file, "\n{LOG_PRIVACY_NOTE}");
+    let home: Vec<String> = ["USERPROFILE", "HOME"]
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .map(|h| h.trim_end_matches(['/', '\\']).to_string())
+        .filter(|h| h.len() > 1)
+        .flat_map(|h| {
+            let escaped = h.replace('\\', "\\\\");
+            // Longest first, so the escaped form is replaced before the plain one.
+            [escaped, h]
+        })
+        .collect();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+        .with_ansi(false)
+        .with_writer(std::sync::Mutex::new(MaskedLog { file, home }))
+        .try_init();
+}
+
 pub fn run() {
+    init_diagnostic_log();
     tauri::Builder::default()
         // Must be first: a second launch focuses the running instance instead.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app, None);
         }))
         .plugin(tauri_plugin_opener::init())
+        // Native folder picker (Model Storage).
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -336,6 +425,8 @@ pub fn run() {
             open_setup_window,
             finish_setup,
             settings_cmds::get_settings,
+            settings_cmds::open_microphone_settings,
+            settings_cmds::express_in_use,
             settings_cmds::update_settings,
             settings_cmds::reset_settings,
             settings_cmds::clear_history,
@@ -494,4 +585,29 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::MaskedLog;
+    use std::io::Write;
+
+    #[test]
+    fn the_home_folder_never_reaches_the_log() {
+        let path = std::env::temp_dir().join(format!("orttaai-log-test-{}", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        let home = r"C:\Users\Ada Lovelace".to_string();
+        let mut log = MaskedLog {
+            file,
+            home: vec![home.replace('\\', r"\\"), home],
+        };
+        writeln!(log, r"loading model from 'C:\Users\Ada Lovelace\AppData\m.bin'").unwrap();
+        writeln!(log, r#"open failed: "C:\\Users\\Ada Lovelace\\x""#).unwrap();
+        writeln!(log, "engine started").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(!text.contains("Lovelace"), "{text}");
+        assert!(text.contains(r"'~\AppData\m.bin'") && text.contains(r#""~\\x""#), "{text}");
+        assert!(text.contains("engine started"));
+    }
 }

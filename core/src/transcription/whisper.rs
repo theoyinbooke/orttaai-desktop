@@ -23,7 +23,7 @@ pub struct WhisperParams {
     pub no_speech_thold: f32,
 }
 
-/// Map the preset / Advanced Decoding / Low Latency onto whisper.cpp.
+/// Map the preset and Advanced Decoding onto whisper.cpp.
 ///
 /// Preset baselines follow the Mac (`resolvedDecodingOptions`) with one
 /// desktop rule from `docs/performance.md`: Fast and Balanced never take the
@@ -68,10 +68,6 @@ pub fn whisper_params(opts: &DecodeOptions) -> WhisperParams {
         p.entropy_thold = t.compression_ratio_threshold;
         p.logprob_thold = t.logprob_threshold;
         p.no_speech_thold = t.no_speech_threshold;
-    }
-    if opts.low_latency {
-        p.temperature_inc = 0.0;
-        p.best_of = 1;
     }
     p
 }
@@ -249,9 +245,6 @@ mod tests {
         o.preset = DecodePreset::Accuracy;
         let a = whisper_params(&o);
         assert!((a.temperature_inc - 0.2).abs() < 1e-6);
-        o.low_latency = true;
-        assert_eq!(whisper_params(&o).temperature_inc, 0.0);
-        assert_eq!(whisper_params(&o).best_of, 1);
     }
 
     #[test]

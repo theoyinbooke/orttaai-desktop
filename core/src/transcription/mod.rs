@@ -54,16 +54,12 @@ pub fn warm_up(transcriber: &dyn Transcriber, opts: &DecodeOptions) -> Result<()
 }
 
 /// Decode options for the current settings: the dictation language (`"auto"`
-/// = detect; never auto in Low Latency Mode, matching the Mac), the preset,
+/// = detect), the preset,
 /// Advanced Decoding overrides (validated) and thread count.
 pub fn decode_options_from_settings(settings: &Settings) -> DecodeOptions {
     let lang = settings.dictation_language.trim();
     let language = if lang.is_empty() || lang.eq_ignore_ascii_case("auto") {
-        if settings.low_latency {
-            Some("en".to_string())
-        } else {
-            None
-        }
+        None
     } else {
         Some(lang.to_ascii_lowercase())
     };
@@ -83,7 +79,6 @@ pub fn decode_options_from_settings(settings: &Settings) -> DecodeOptions {
         n_threads: settings.decode.n_threads,
         initial_prompt: None,
         tuning,
-        low_latency: settings.low_latency,
     }
 }
 
@@ -246,10 +241,6 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(decode_options_from_settings(&s).language, None);
-        s.low_latency = true;
-        let o = decode_options_from_settings(&s);
-        assert_eq!(o.language.as_deref(), Some("en"));
-        assert!(o.low_latency);
         s.dictation_language = "FR".into();
         assert_eq!(
             decode_options_from_settings(&s).language.as_deref(),

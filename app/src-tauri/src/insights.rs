@@ -448,34 +448,66 @@ pub fn reveal_share_card(path: String) -> Result<(), String> {
 fn native_copy(bytes: &[u8], mime: Option<&str>) -> Result<(), String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
+    // Only the tools for this session: wl-copy needs Wayland, xclip/xsel X11.
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let x11 = std::env::var_os("DISPLAY").is_some();
     let mut candidates: Vec<(&str, Vec<&str>)> = Vec::new();
     match mime {
         Some(m) => {
-            candidates.push(("wl-copy", vec!["--type", m]));
-            candidates.push(("xclip", vec!["-selection", "clipboard", "-t", m]));
+            if wayland {
+                candidates.push(("wl-copy", vec!["--type", m]));
+            }
+            if x11 {
+                candidates.push(("xclip", vec!["-selection", "clipboard", "-t", m]));
+            }
         }
         None => {
-            candidates.push(("wl-copy", vec![]));
-            candidates.push(("xclip", vec!["-selection", "clipboard"]));
-            candidates.push(("xsel", vec!["--clipboard", "--input"]));
+            if wayland {
+                candidates.push(("wl-copy", vec![]));
+            }
+            if x11 {
+                candidates.push(("xclip", vec!["-selection", "clipboard"]));
+                candidates.push(("xsel", vec!["--clipboard", "--input"]));
+            }
         }
     }
+    let mut failure = None;
     for (bin, args) in candidates {
-        if let Ok(mut child) = Command::new(bin)
+        let Ok(mut child) = Command::new(bin)
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-        {
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(bytes).map_err(err)?;
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(bytes).map_err(err)?;
+        }
+        // These tools keep running to serve the clipboard, so a tool that's
+        // still running a moment later has it. One that exits at once either
+        // handed it to a helper (success) or failed.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => return Ok(()),
+                Ok(Some(status)) => {
+                    failure = Some(format!("{bin} failed ({status})"));
+                    break;
+                }
+                Ok(None) if std::time::Instant::now() >= deadline => return Ok(()),
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                Err(e) => {
+                    failure = Some(format!("{bin}: {e}"));
+                    break;
+                }
             }
-            // wl-copy/xclip fork to serve the selection; don't wait on them.
-            return Ok(());
         }
     }
-    Err("No clipboard tool found (install wl-clipboard or xclip).".into())
+    Err(failure.unwrap_or_else(|| {
+        "No clipboard tool found (install wl-clipboard or xclip).".into()
+    }))
 }
 
 #[cfg(not(target_os = "linux"))]

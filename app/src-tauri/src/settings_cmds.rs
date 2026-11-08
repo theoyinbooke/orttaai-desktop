@@ -5,6 +5,27 @@ use crate::err;
 use orttaai_core::settings::Settings;
 use tauri::{AppHandle, Emitter};
 
+/// Open the system's microphone privacy page (Windows: Settings › Privacy ›
+/// Microphone). Linux has no single place for it, so it says so.
+#[tauri::command]
+pub fn open_microphone_settings() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        tauri_plugin_opener::open_url("ms-settings:privacy-microphone", None::<&str>).map_err(err)
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Open your desktop's sound settings and check the input device.".into())
+    }
+}
+
+/// Whether dictation uses Express with the saved settings. With an
+/// English-only Express model and another language, Whisper does the work.
+#[tauri::command]
+pub fn express_in_use() -> bool {
+    Settings::load_or_default().express_active()
+}
+
 #[tauri::command]
 pub fn get_settings() -> Settings {
     Settings::load_or_default()
