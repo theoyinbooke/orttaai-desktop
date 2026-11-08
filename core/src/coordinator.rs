@@ -458,6 +458,9 @@ pub struct DictationCoordinator {
     target_window: Option<u64>,
     /// Pieces of the current recording decoded while it's still going.
     live: Option<crate::live::LiveSession>,
+    /// The rest of the recording decoded at the speaker's latest pause, to
+    /// stand in for the decode at release.
+    early: Option<crate::live::EarlyDecode>,
     /// Word Boost scoring the recording's finished chunks while it goes.
     preparing: Option<std::thread::JoinHandle<()>>,
     prepared_samples: usize,
@@ -506,6 +509,7 @@ impl DictationCoordinator {
             windows: Box::new(crate::focus::SystemWindowFocus),
             target_window: None,
             live: None,
+            early: None,
             preparing: None,
             prepared_samples: 0,
             last_live_poll: Duration::ZERO,
@@ -911,6 +915,7 @@ impl DictationCoordinator {
                 self.last_silence_check = now;
                 self.last_live_poll = now;
                 self.live = self.live_mode_for(kind).map(crate::live::LiveSession::new);
+                self.early = None;
                 self.prepared_samples = 0;
                 self.transcriber.discard_prepared_word_boost();
                 self.countdown = None;
@@ -984,6 +989,7 @@ impl DictationCoordinator {
                 if now.saturating_sub(self.last_live_poll) >= LIVE_POLL {
                     self.last_live_poll = now;
                     self.poll_live();
+                    self.poll_early_decode();
                 }
             }
             RecordingState::Error => {
@@ -1102,6 +1108,7 @@ impl DictationCoordinator {
     fn end_session(&mut self) {
         self.session = None;
         self.live = None;
+        self.early = None;
         if let Some(handle) = self.preparing.take() {
             let _ = handle.join();
             self.transcriber.discard_prepared_word_boost();
@@ -1234,7 +1241,8 @@ impl DictationCoordinator {
         }
         let t0 = Instant::now();
         let live = self.live.take();
-        let raw = match self.decode_recording(&p.samples, live, &opts) {
+        let early = self.early.take();
+        let raw = match self.decode_recording(&p.samples, live, early, &opts) {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("transcription failed: {e}");
@@ -1493,10 +1501,23 @@ impl DictationCoordinator {
         &self,
         samples: &[f32],
         live: Option<crate::live::LiveSession>,
+        mut early: Option<crate::live::EarlyDecode>,
         opts: &DecodeOptions,
     ) -> Result<String> {
         if let Some(live) = live {
             let (mut texts, covered) = live.finish();
+            // The rest was decoded at the last pause and only silence followed.
+            if let Some(text) = early
+                .take()
+                .and_then(|e| e.take_if_current(covered, samples))
+            {
+                tracing::info!("used the decode started at the last pause");
+                let text = strip_nonspeech_markers(text.trim());
+                if !text.is_empty() {
+                    texts.push(text);
+                }
+                return Ok(texts.join(" "));
+            }
             if covered > 0 && covered <= samples.len() {
                 let tail = &samples[covered..];
                 tracing::info!(
@@ -1520,7 +1541,64 @@ impl DictationCoordinator {
                 return Ok(texts.join(" "));
             }
         }
+        if let Some(text) = early.and_then(|e| e.take_if_current(0, samples)) {
+            tracing::info!("used the decode started at the last pause");
+            return Ok(text);
+        }
         self.transcriber.transcribe(samples, opts)
+    }
+
+    /// At a pause after new speech, decode what the live pieces won't cover
+    /// (the whole recording when there are none, as with Express), so the
+    /// result is ready when the key comes up (Mac: Express early decode and
+    /// Whisper's speculative tail). One at a time; the next pause after more
+    /// speech starts a fresh one.
+    fn poll_early_decode(&mut self) {
+        if self.kind != SessionKind::Dictation {
+            return;
+        }
+        if self.early.as_ref().is_some_and(|e| !e.is_finished()) {
+            return;
+        }
+        let captured = self.audio.captured_samples();
+        let base = match &self.live {
+            Some(live) => {
+                let (_, covered) = live.committed();
+                // A piece the live session will commit itself, or is decoding,
+                // isn't worth decoding twice.
+                if live.busy() || captured.saturating_sub(covered) >= live.min_pending() {
+                    return;
+                }
+                covered
+            }
+            None => 0,
+        };
+        let probe_start = captured
+            .saturating_sub(crate::live::EARLY_DECODE_PROBE)
+            .max(base);
+        let recent = self.audio.samples_from(probe_start);
+        let Some(end) = crate::live::paused_after_speech(&recent) else {
+            return;
+        };
+        let speech_end = probe_start + end;
+        if self
+            .early
+            .as_ref()
+            .is_some_and(|e| e.covers(base, speech_end))
+        {
+            return;
+        }
+        let audio = self.audio.samples_from(base);
+        let mut opts = self.options.clone();
+        // As at release: live pieces run unprompted; a whole-recording decode
+        // gets the dictionary bias.
+        opts.initial_prompt = if self.live.is_none() && self.config.vocabulary_bias {
+            bias_prompt_for(&self.vocabulary, &audio)
+        } else {
+            None
+        };
+        self.early =
+            crate::live::EarlyDecode::start(base, audio, speech_end, &self.transcriber, opts);
     }
 
     /// Type `text` into the window the session started in. If focus moved while

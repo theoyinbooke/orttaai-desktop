@@ -187,11 +187,20 @@ pub fn focused_window() -> Option<u64> {
     (win != 0).then_some(win as u64)
 }
 
+/// The window in front, unless it's one of Orttaai's own (the pill, the
+/// main window): a dictation started from the pill must never take the pill
+/// as the app to type into. `None` then means "whatever is in front when the
+/// text is typed", as on a system without window tracking.
 #[cfg(target_os = "windows")]
 pub fn focused_window() -> Option<u64> {
-    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
     let hwnd = unsafe { GetForegroundWindow() };
-    (!hwnd.0.is_null()).then_some(hwnd.0 as usize as u64)
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    (pid != std::process::id()).then_some(hwnd.0 as usize as u64)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]

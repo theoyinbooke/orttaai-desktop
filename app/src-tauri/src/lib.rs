@@ -25,7 +25,7 @@ use engine::{EngineState, TRAY_ID};
 use orttaai_core::settings::Settings;
 use serde::Serialize;
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem},
     tray::TrayIconBuilder,
     AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
 };
@@ -42,6 +42,12 @@ pub(crate) fn on_settings_changed(app: &AppHandle, old: &Settings, new: &Setting
     engine::on_settings_changed(app, old, new);
     // == semantic: index on enable / embedding-model change ==
     semantic::on_settings_changed(app, old, new);
+    // == tray: the Polish check mark follows the setting ==
+    if old.polish_enabled != new.polish_enabled {
+        if let Some(polish) = app.try_state::<TrayPolish>() {
+            let _ = polish.0.set_checked(new.polish_enabled);
+        }
+    }
     // == general: launch at login ==
     if old.launch_at_login != new.launch_at_login {
         sync_launch_at_login(app, new);
@@ -232,11 +238,45 @@ pub(crate) fn show_main(app: &AppHandle, route: Option<&str>) {
     }
 }
 
+/// The tray's "Polish" check item, kept in step with `Settings::polish_enabled`.
+struct TrayPolish(CheckMenuItem<tauri::Wry>);
+
+/// The tray's Polish item was clicked: flip `polish_enabled` and save it the
+/// way the Settings page does, so every window and the engine follow. With no
+/// polish model set up it still flips; the AI page explains what's missing.
+fn toggle_polish_from_tray(app: &AppHandle) {
+    let enabled = !Settings::load_or_default().polish_enabled;
+    let saved = settings_cmds::update_settings(
+        app.clone(),
+        serde_json::json!({ "polish_enabled": enabled }),
+    );
+    if let Err(e) = saved {
+        use tauri::Emitter;
+        let _ = app.emit("engine-warning", format!("Couldn't change Polish: {e}"));
+    }
+    // The menu toggles its own check on click; put it back to the saved value
+    // (also when nothing changed, or the save failed).
+    if let Some(polish) = app.try_state::<TrayPolish>() {
+        let _ = polish
+            .0
+            .set_checked(Settings::load_or_default().polish_enabled);
+    }
+}
+
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", "Orttaai — Off", false, None::<&str>)?;
     // The engine updates this line with its state ("Recording…", "Ready"…).
     app.manage(engine::TrayStatus(status.clone()));
     let rec = MenuItem::with_id(app, "rec", "Start / stop recording", true, None::<&str>)?;
+    let polish = CheckMenuItem::with_id(
+        app,
+        "polish",
+        "Polish",
+        true,
+        Settings::load_or_default().polish_enabled,
+        None::<&str>,
+    )?;
+    app.manage(TrayPolish(polish.clone()));
     let home = MenuItem::with_id(app, "home", "Home", true, None::<&str>)?;
     let analytics = MenuItem::with_id(app, "analytics", "Analytics", true, None::<&str>)?;
     let setup = MenuItem::with_id(app, "setup", "Run Setup…", true, None::<&str>)?;
@@ -250,6 +290,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
             &status,
             &sep()?,
             &rec,
+            &polish,
             &sep()?,
             &home,
             &analytics,
@@ -261,7 +302,9 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
         ],
     )?;
 
-    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+    TrayIconBuilder::with_id(TRAY_ID)
+        // The engine swaps in the recording / processing / error variants.
+        .icon(engine::tray_icon("off"))
         .tooltip("Orttaai")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -271,6 +314,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
             "setup" => show_main(app, Some("setup")),
             "settings" => show_main(app, Some("settings")),
             "updates" => show_main(app, Some("check-updates")),
+            "polish" => toggle_polish_from_tray(app),
             "rec" => {
                 let state = app.state::<EngineState>();
                 // With the engine off the reason shows in the main window,
@@ -281,11 +325,8 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 engine::toggle_recording_impl(app, state.inner());
             }
             _ => {}
-        });
-    if let Some(icon) = app.default_window_icon().cloned() {
-        builder = builder.icon(icon);
-    }
-    builder.build(app)?;
+        })
+        .build(app)?;
     Ok(())
 }
 

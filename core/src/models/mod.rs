@@ -324,6 +324,64 @@ pub fn delete(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Name of the Express subfolder Orttaai creates inside a models folder.
+const EXPRESS_SUBDIR: &str = "express";
+
+/// Every file or folder Orttaai downloaded into the models folder `dir` that
+/// is present now: catalog Whisper models (and their `.part` files), the
+/// Silero voice detector, and the Express and Word Boost model folders. Only
+/// known names are listed, so a user's own files in a custom models folder are
+/// never included, nor is `dir` itself. Doesn't create anything.
+pub fn owned_paths_in(dir: &Path) -> Vec<PathBuf> {
+    let mut names: Vec<String> = catalog()
+        .into_iter()
+        .flat_map(|s| [format!("{}.bin", s.id), format!("{}.bin.part", s.id)])
+        .collect();
+    names.push(crate::vad::SILERO_MODEL_FILE.to_string());
+    names.push(format!("{}.part", crate::vad::SILERO_MODEL_FILE));
+    names.push(".orttaai-write-test".to_string());
+    let mut paths: Vec<PathBuf> = names.into_iter().map(|n| dir.join(n)).collect();
+    #[cfg(feature = "express")]
+    {
+        let express = dir.join(EXPRESS_SUBDIR);
+        paths.extend(
+            crate::transcription::express::owned_entry_names()
+                .into_iter()
+                .map(|n| express.join(n)),
+        );
+    }
+    paths.retain(|p| p.symlink_metadata().is_ok());
+    paths
+}
+
+/// Delete everything [`owned_paths_in`] lists for `dir`, then the `express`
+/// subfolder if that left it empty. Best-effort: returns the paths that could
+/// not be removed with why, and carries on past them. `dir` itself and any
+/// other file in it are left alone.
+pub fn delete_owned_in(dir: &Path) -> Vec<(PathBuf, std::io::Error)> {
+    let mut failures = Vec::new();
+    for path in owned_paths_in(dir) {
+        // A symlink is removed itself, never followed.
+        let is_dir = path
+            .symlink_metadata()
+            .map(|m| m.file_type().is_dir())
+            .unwrap_or(false);
+        let result = if is_dir {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if let Err(e) = result {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                failures.push((path, e));
+            }
+        }
+    }
+    // Only succeeds when empty, so a user's own files in there survive.
+    let _ = std::fs::remove_dir(dir.join(EXPRESS_SUBDIR));
+    failures
+}
+
 /// The catalog annotated with on-disk status and hardware fit.
 pub fn list(hw: Option<&HardwareInfo>, language: &str) -> Result<Vec<ModelInfo>> {
     let dir = models_dir()?;
@@ -883,6 +941,77 @@ mod tests {
         assert!(flag.load(Ordering::SeqCst));
         drop(CancelGuard("x-test".into()));
         assert!(!active_downloads().contains(&"x-test".to_string()));
+    }
+
+    fn fresh_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("orttaai-owned-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn owned_paths_lists_only_orttaai_files() {
+        let dir = fresh_dir("list");
+        std::fs::write(dir.join("ggml-base.en-q5_1.bin"), b"m").unwrap();
+        std::fs::write(dir.join("ggml-tiny-q5_1.bin.part"), b"p").unwrap();
+        std::fs::write(dir.join(crate::vad::SILERO_MODEL_FILE), b"v").unwrap();
+        std::fs::write(dir.join("my-notes.txt"), b"mine").unwrap();
+        std::fs::write(dir.join("my-model.bin"), b"mine").unwrap();
+        let got = owned_paths_in(&dir);
+        assert!(got.contains(&dir.join("ggml-base.en-q5_1.bin")));
+        assert!(got.contains(&dir.join("ggml-tiny-q5_1.bin.part")));
+        assert!(got.contains(&dir.join(crate::vad::SILERO_MODEL_FILE)));
+        assert!(!got.contains(&dir.join("my-notes.txt")));
+        assert!(!got.contains(&dir.join("my-model.bin")));
+        assert!(!got.contains(&dir), "never the folder itself");
+        assert_eq!(got.len(), 3, "only what is present: {got:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_owned_keeps_user_files_and_the_folder() {
+        let dir = fresh_dir("delete");
+        std::fs::write(dir.join("ggml-large-v3-turbo-q5_0.bin"), b"m").unwrap();
+        std::fs::write(dir.join(crate::vad::SILERO_MODEL_FILE), b"v").unwrap();
+        std::fs::write(dir.join("vacation.jpg"), b"mine").unwrap();
+        std::fs::create_dir_all(dir.join("my-folder")).unwrap();
+        std::fs::write(dir.join("my-folder/keep.txt"), b"mine").unwrap();
+        #[cfg(feature = "express")]
+        {
+            use crate::transcription::express::WORD_BOOST_ID;
+            let express = dir.join(EXPRESS_SUBDIR);
+            let id = crate::transcription::express::catalog()[0].id;
+            std::fs::create_dir_all(express.join(id)).unwrap();
+            std::fs::write(express.join(id).join("tokens.txt"), b"t").unwrap();
+            std::fs::create_dir_all(express.join(WORD_BOOST_ID)).unwrap();
+            std::fs::write(express.join(format!("{id}.tar.bz2.part")), b"a").unwrap();
+            assert!(owned_paths_in(&dir).contains(&express.join(id)));
+        }
+        assert!(delete_owned_in(&dir).is_empty());
+        assert!(owned_paths_in(&dir).is_empty());
+        assert!(dir.is_dir(), "the models folder itself stays");
+        assert!(dir.join("vacation.jpg").is_file());
+        assert!(dir.join("my-folder/keep.txt").is_file());
+        assert!(
+            !dir.join(EXPRESS_SUBDIR).exists(),
+            "empty express folder goes"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "express")]
+    #[test]
+    fn delete_owned_keeps_user_files_in_express_folder() {
+        let dir = fresh_dir("express");
+        let express = dir.join(EXPRESS_SUBDIR);
+        let id = crate::transcription::express::catalog()[1].id;
+        std::fs::create_dir_all(express.join(id)).unwrap();
+        std::fs::write(express.join("mine.txt"), b"mine").unwrap();
+        assert!(delete_owned_in(&dir).is_empty());
+        assert!(!express.join(id).exists());
+        assert!(express.join("mine.txt").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

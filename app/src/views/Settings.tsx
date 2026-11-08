@@ -35,14 +35,14 @@ export default function Settings({ info }: { info: AppInfo | null; onRunSetup: (
         {pane === "text" && <TextSettings />}
         {pane === "audio" && <AudioSettings />}
         {pane === "coach" && <CoachSettings />}
-        {pane === "general" && <General linux={info?.platform === "linux"} />}
+        {pane === "general" && <General linux={info?.platform === "linux"} windows={info?.platform === "windows"} />}
       </div>
     </div>
   );
 }
 
 /** App-level behaviour and the destructive resets (Mac GeneralSettingsView). */
-function General({ linux }: { linux: boolean }) {
+function General({ linux, windows }: { linux: boolean; windows: boolean }) {
   const { settings } = useSettings();
   const save = usePatch();
   const toast = useToast();
@@ -80,6 +80,15 @@ function General({ linux }: { linux: boolean }) {
             hint="Shows roughly how long transcription will take in the pill while it finishes a recording."
           />
         )}
+        {/* Windows only: on Linux an always-on-top window can take the typed
+            text, so the pill stays hidden between dictations there. */}
+        {windows && (
+          <ToggleRow
+            k="show_idle_pill"
+            label="Show Pill When Idle"
+            hint="Keeps a small pill at the bottom of the screen while dictation is ready. Hover it for your shortcut, or click it to start dictating hands-free."
+          />
+        )}
         <ToggleRow
           k="celebrate_milestones"
           label="Celebrate Milestones"
@@ -98,7 +107,7 @@ function General({ linux }: { linux: boolean }) {
         </Row>
         <Row
           label="Reset App Data"
-          hint="Clears history, Personal Memory, insights, conversations, badges and Coach progress. Settings and downloaded models are kept."
+          hint="Removes settings, history, Personal Memory, insights and the speech models Orttaai downloaded, then restarts Orttaai into setup. Files you saved, like share cards, are kept."
         >
           <Button size="sm" className="st-btn st-danger" onClick={() => setConfirm("reset")}>
             Reset App Data…
@@ -111,7 +120,7 @@ function General({ linux }: { linux: boolean }) {
         body={
           confirm === "history"
             ? "This will permanently delete all transcriptions. This cannot be undone."
-            : "This clears history, Personal Memory, insights, conversations, badges and Coach progress. This cannot be undone."
+            : "This removes your settings, history, Personal Memory, insights and the speech models Orttaai downloaded; Orttaai then restarts into setup. Files you saved, like share cards, are kept. This cannot be undone."
         }
         confirmLabel={confirm === "history" ? "Clear History" : "Reset"}
         onCancel={() => setConfirm(null)}
@@ -119,7 +128,7 @@ function General({ linux }: { linux: boolean }) {
           const cmd = confirm === "history" ? "clear_history" : "reset_app_data";
           setConfirm(null);
           call(cmd)
-            .then(() => toast(cmd === "clear_history" ? "History cleared" : "App data reset", "success"))
+            .then(() => toast(cmd === "clear_history" ? "History cleared" : "App data reset. Restarting…", "success"))
             .catch((e) => toast(String(e), "error"));
         }}
       />
