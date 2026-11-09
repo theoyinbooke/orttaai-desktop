@@ -16,7 +16,8 @@ const icon = (name: string) => <Icon name={name} size={13} />;
 
 const CREDITS: { name: string; detail: string; icon: ReactNode }[] = [
   { name: "whisper.cpp", detail: "On-device speech recognition, MIT License", icon: icon("waveform") },
-  { name: "Parakeet TDT 0.6B", detail: "Express speech model by NVIDIA, CC BY 4.0", icon: icon("bolt") },
+  { name: "Fluid Speech Mini", detail: "Express speech model by FluidVoice, built on NVIDIA Parakeet TDT 0.6B v3 and Moondream Parakeet Ultra, CC BY 4.0", icon: icon("bolt") },
+  { name: "Parakeet TDT 0.6B", detail: "Multilingual Express model by NVIDIA, CC BY 4.0", icon: icon("bolt") },
   { name: "sherpa-onnx", detail: "Runs Express on this computer, Apache 2.0", icon: glyph("cpu") },
   { name: "Parakeet CTC 110M", detail: "Word Boost model by NVIDIA, CC BY 4.0", icon: icon("textCheck") },
   { name: "FluidAudio", detail: "Word Boost's rescoring, ported from FluidInference, Apache 2.0", icon: icon("textCheck") },

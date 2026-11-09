@@ -1,12 +1,13 @@
-//! "Express" engine — NVIDIA Parakeet TDT 0.6B (int8) through sherpa-onnx.
+//! "Express" engine. English runs Fluid Speech Mini (FluidVoice), the model
+//! the Mac's Express engine runs as Core ML, here as its ONNX build on the ONNX
+//! Runtime that `sherpa-onnx` links statically ([`super::fluid`]). Other
+//! languages run NVIDIA Parakeet TDT 0.6B v3 (int8) through sherpa-onnx; PCs
+//! that installed the earlier English model, Parakeet TDT 0.6B v2, keep it
+//! until they switch.
 //!
-//! The macOS app's Express engine runs Parakeet on the Neural Engine via CoreML.
-//! On Linux/Windows the same model family runs on CPU through ONNX Runtime
-//! (statically linked by `sherpa-onnx`), typically 10–20× faster than real time
-//! on a modern CPU — the fastest option on machines without an NVIDIA GPU.
-//!
-//! Models are downloaded as `.tar.bz2` archives from the sherpa-onnx releases and
-//! unpacked to `<data-dir>/models/express/<id>/`.
+//! Fluid Speech Mini's files come from Hugging Face, pinned to one revision and
+//! checked by SHA-256; the Parakeet models are `.tar.bz2` archives from the
+//! sherpa-onnx releases. Each unpacks to `<models>/express/<id>/`.
 
 use crate::error::{CoreError, Result};
 use crate::models::download_resumable;
@@ -18,7 +19,78 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+use super::fluid;
+
 const RELEASE_BASE: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models";
+
+/// Fluid Speech Mini, the English Express model (the Mac's).
+pub const FLUID_MINI_ID: &str = "fluid-speech-mini-onnx";
+/// The English model before Fluid Speech Mini.
+pub const PARAKEET_V2_ID: &str = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
+const FLUID_MINI_BASE: &str = "https://huggingface.co/FluidVoice-Labs/fluid-speech-mini-onnx/resolve/fc592620325027419883cf272e70588d8a788c0a";
+
+/// One file of a model downloaded file by file.
+#[derive(Debug, Clone, Copy)]
+pub struct ModelFile {
+    pub name: &'static str,
+    pub bytes: u64,
+    pub sha256: &'static str,
+}
+
+const FLUID_MINI_FILES: &[ModelFile] = &[
+    ModelFile {
+        name: "encoder.onnx.data",
+        bytes: 253_429_760,
+        sha256: "f865c582bec1bd57aa7f2242f3739f38987b7bf471fee4dca7d5c2714eec0747",
+    },
+    ModelFile {
+        name: "decoder.onnx",
+        bytes: 24_461_296,
+        sha256: "9ac7e6c22952c242d56df0992ba19489a05b87a8ed37e23798469b9316099af8",
+    },
+    ModelFile {
+        name: "joint.onnx",
+        bytes: 11_840_320,
+        sha256: "2e704908834b9f8cc7db88757b8966bac266e19bc00a527c46e9950281205253",
+    },
+    ModelFile {
+        name: "frontend.onnx",
+        bytes: 8_697_130,
+        sha256: "cdbea06631920f25f6183e1389129e9c37106a766c6e130b7f0389b9531b43b7",
+    },
+    ModelFile {
+        name: "tokenizer.json",
+        bytes: 1_159_959,
+        sha256: "7c200d88ac60da4de246cbd38e981a732f2e82580fdd285cb757d8d1f4af9627",
+    },
+    ModelFile {
+        name: "encoder.onnx",
+        bytes: 426_102,
+        sha256: "f8b3a45e71a33b44179a21ef6d6474779747846c4b01c9fd690abcebb88bea86",
+    },
+    ModelFile {
+        name: "mel_filters.npy",
+        bytes: 131_712,
+        sha256: "ce607f7ae1ce68fd01c02e1177fb1d11ee209c6176d35e47011917ca7d9cd4f2",
+    },
+    ModelFile {
+        name: "config.json",
+        bytes: 508,
+        sha256: "0c4d0c84dadc0d439dfe3c843a4b482bf3ebb50421f781fcbafc7236903234f4",
+    },
+];
+
+/// Where a model comes from.
+#[derive(Debug, Clone, Copy)]
+pub enum ModelSource {
+    /// A sherpa-onnx release archive holding a Parakeet transducer.
+    SherpaArchive,
+    /// Files fetched one by one (Fluid Speech Mini).
+    Files {
+        base: &'static str,
+        files: &'static [ModelFile],
+    },
+}
 
 /// A downloadable Express model.
 #[derive(Debug, Clone, Serialize)]
@@ -30,6 +102,10 @@ pub struct ExpressModelSpec {
     pub multilingual: bool,
     /// Download size in bytes (used to verify the archive).
     pub archive_bytes: u64,
+    /// Replaced by a newer model: listed only while installed.
+    pub previous: bool,
+    #[serde(skip)]
+    pub source: ModelSource,
 }
 
 /// A catalog entry plus whether it is installed.
@@ -44,13 +120,18 @@ pub struct ExpressModelInfo {
 pub fn catalog() -> Vec<ExpressModelSpec> {
     vec![
         ExpressModelSpec {
-            id: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
-            name: "Express · English (Parakeet v2)",
-            description: "Fastest on CPU. English only, with punctuation and casing.",
+            id: FLUID_MINI_ID,
+            name: "Express · English (Fluid Speech Mini)",
+            description: "The Mac's Express model. English only, best with names and with other voices in the room.",
             // With Word Boost's model (WORD_BOOST_MB), which comes with it.
-            approx_size_mb: 763,
+            approx_size_mb: 418,
             multilingual: false,
-            archive_bytes: 482_440_461,
+            archive_bytes: 300_146_787,
+            previous: false,
+            source: ModelSource::Files {
+                base: FLUID_MINI_BASE,
+                files: FLUID_MINI_FILES,
+            },
         },
         ExpressModelSpec {
             id: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
@@ -59,6 +140,18 @@ pub fn catalog() -> Vec<ExpressModelSpec> {
             approx_size_mb: 772,
             multilingual: true,
             archive_bytes: 487_170_055,
+            previous: false,
+            source: ModelSource::SherpaArchive,
+        },
+        ExpressModelSpec {
+            id: PARAKEET_V2_ID,
+            name: "Express · English (Parakeet v2)",
+            description: "The earlier English model. Fluid Speech Mini replaces it.",
+            approx_size_mb: 763,
+            multilingual: false,
+            archive_bytes: 482_440_461,
+            previous: true,
+            source: ModelSource::SherpaArchive,
         },
     ]
 }
@@ -75,6 +168,16 @@ mod catalog_tests {
                 spec.id
             );
         }
+    }
+}
+
+/// The model id a dictation records: Fluid Speech Mini under the Mac's id, so
+/// History and Insights name it the same on every device.
+pub fn recorded_model_id(id: &str) -> &str {
+    if id == FLUID_MINI_ID {
+        "fluid-speech-mini"
+    } else {
+        id
     }
 }
 
@@ -110,7 +213,7 @@ fn express_path(name: &str, installed: impl Fn(&Path) -> bool) -> Result<PathBuf
 }
 
 pub fn model_dir(id: &str) -> Result<PathBuf> {
-    express_path(id, |d| model_files(d).iter().all(|f| f.is_file()))
+    express_path(id, has_model)
 }
 
 /// The four files a Parakeet transducer needs.
@@ -123,24 +226,30 @@ fn model_files(dir: &Path) -> [PathBuf; 4] {
     ]
 }
 
+/// Whether `dir` holds a whole model of either kind.
+fn has_model(dir: &Path) -> bool {
+    fluid::is_model_dir(dir) || model_files(dir).iter().all(|f| f.is_file())
+}
+
 pub fn is_installed(id: &str) -> bool {
-    model_dir(id)
-        .map(|d| model_files(&d).iter().all(|f| f.is_file()))
-        .unwrap_or(false)
+    model_dir(id).map(|d| has_model(&d)).unwrap_or(false)
 }
 
 pub fn list() -> Result<Vec<ExpressModelInfo>> {
-    catalog()
-        .into_iter()
-        .map(|spec| {
-            let dir = model_dir(spec.id)?;
-            Ok(ExpressModelInfo {
-                downloaded: is_installed(spec.id),
-                path: dir.to_string_lossy().into_owned(),
-                spec,
-            })
-        })
-        .collect()
+    let mut models = Vec::new();
+    for spec in catalog() {
+        let downloaded = is_installed(spec.id);
+        if spec.previous && !downloaded {
+            continue;
+        }
+        let dir = model_dir(spec.id)?;
+        models.push(ExpressModelInfo {
+            downloaded,
+            path: dir.to_string_lossy().into_owned(),
+            spec,
+        });
+    }
+    Ok(models)
 }
 
 pub fn delete(id: &str) -> Result<()> {
@@ -384,6 +493,28 @@ pub fn download(
     let final_dir = root.join(spec.id);
     if !is_installed(spec.id) {
         let staging = root.join(format!("{}.part", spec.id));
+        if let ModelSource::Files { base, files } = spec.source {
+            // Finished files stay in the staging folder, so a failed download
+            // picks up where it stopped; cancelling starts over.
+            let fetched = fetch_files(base, files, &staging, cancel, &mut |f| {
+                on_progress(f * (1.0 - boost_share))
+            });
+            match fetched {
+                Ok(()) => {
+                    let _ = std::fs::remove_dir_all(&final_dir);
+                    std::fs::rename(&staging, &final_dir)?;
+                }
+                Err(e) => {
+                    if cancel.load(Ordering::Relaxed) {
+                        let _ = std::fs::remove_dir_all(&staging);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+    }
+    if matches!(spec.source, ModelSource::SherpaArchive) && !is_installed(spec.id) {
+        let staging = root.join(format!("{}.part", spec.id));
         let _ = std::fs::remove_dir_all(&staging);
         std::fs::create_dir_all(&staging)?;
         let result = fetch_archive(
@@ -437,9 +568,89 @@ pub fn download(
     Ok(final_dir)
 }
 
-/// Parakeet via sherpa-onnx, implementing [`Transcriber`].
+/// Download `files` from `base` into `dir`, each checked by size and SHA-256,
+/// reporting progress by bytes in `0.0..=1.0`. Files already there are kept.
+fn fetch_files(
+    base: &str,
+    files: &[ModelFile],
+    dir: &Path,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(f32),
+) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let total: u64 = files.iter().map(|f| f.bytes).sum::<u64>().max(1);
+    let mut done = 0u64;
+    for file in files {
+        let path = dir.join(file.name);
+        let complete = std::fs::metadata(&path).is_ok_and(|m| m.len() == file.bytes);
+        if !complete {
+            let part = dir.join(format!("{}.part", file.name));
+            let before = done;
+            download_resumable(
+                &format!("{base}/{}", file.name),
+                &part,
+                file.bytes,
+                cancel,
+                &mut |f| on_progress((before as f32 + f * file.bytes as f32) / total as f32),
+            )?;
+            if let Err(e) = crate::models::verify_file(&part, file.bytes, file.sha256) {
+                // A finished but wrong file must not be resumed next time.
+                let _ = std::fs::remove_file(&part);
+                return Err(e);
+            }
+            std::fs::rename(&part, &path)?;
+        }
+        done += file.bytes;
+        on_progress(done as f32 / total as f32);
+    }
+    Ok(())
+}
+
+/// The model behind Express: Fluid Speech Mini, or a Parakeet transducer
+/// through sherpa-onnx.
+enum Recognizer {
+    Fluid(Box<fluid::FluidModel>),
+    Sherpa(OfflineRecognizer),
+}
+
+/// Express's text and, for Word Boost, its token timings.
+struct Recognized {
+    text: String,
+    tokens: Vec<String>,
+    starts: Option<Vec<f32>>,
+    durations: Vec<f32>,
+}
+
+impl Recognizer {
+    fn recognize(&self, samples: &[f32]) -> Result<Option<Recognized>> {
+        match self {
+            Self::Fluid(model) => {
+                let out = model.transcribe(samples)?;
+                Ok(Some(Recognized {
+                    text: out.text,
+                    tokens: out.tokens,
+                    starts: Some(out.starts),
+                    durations: out.durations,
+                }))
+            }
+            Self::Sherpa(recognizer) => {
+                let stream = recognizer.create_stream();
+                stream.accept_waveform(TARGET_SAMPLE_RATE as i32, samples);
+                recognizer.decode(&stream);
+                Ok(stream.get_result().map(|r| Recognized {
+                    text: r.text.clone(),
+                    tokens: r.tokens.clone(),
+                    starts: r.timestamps.clone(),
+                    durations: r.durations.clone().unwrap_or_default(),
+                }))
+            }
+        }
+    }
+}
+
+/// Express, implementing [`Transcriber`].
 pub struct ExpressTranscriber {
-    recognizer: Mutex<Option<OfflineRecognizer>>,
+    recognizer: Mutex<Option<Recognizer>>,
     model: Option<String>,
     threads: i32,
     /// Word Boost, loaded when its model is on disk and there are words to boost.
@@ -461,18 +672,26 @@ impl ExpressTranscriber {
         }
     }
 
-    /// Load from an unpacked model directory (encoder/decoder/joiner/tokens).
+    /// Load from a model directory: Fluid Speech Mini's files, or a Parakeet
+    /// transducer's (encoder/decoder/joiner/tokens).
     pub fn from_dir(dir: &Path, threads: i32) -> Result<Self> {
         let mut t = Self::new();
         if threads > 0 {
             t.threads = threads;
         }
         t.load_dir(dir)?;
-        t.model = dir.file_name().map(|n| n.to_string_lossy().into_owned());
+        t.model = dir
+            .file_name()
+            .map(|n| recorded_model_id(&n.to_string_lossy()).to_string());
         Ok(t)
     }
 
     fn load_dir(&mut self, dir: &Path) -> Result<()> {
+        if dir.join("joint.onnx").is_file() {
+            let model = fluid::FluidModel::load(dir, self.threads)?;
+            *self.recognizer.lock().unwrap() = Some(Recognizer::Fluid(Box::new(model)));
+            return Ok(());
+        }
         let [encoder, decoder, joiner, tokens] = model_files(dir);
         for f in [&encoder, &decoder, &joiner, &tokens] {
             if !f.is_file() {
@@ -495,7 +714,7 @@ impl ExpressTranscriber {
         config.decoding_method = Some("greedy_search".into());
         let recognizer = OfflineRecognizer::create(&config)
             .ok_or_else(|| CoreError::Transcription("could not load the Express model".into()))?;
-        *self.recognizer.lock().unwrap() = Some(recognizer);
+        *self.recognizer.lock().unwrap() = Some(Recognizer::Sherpa(recognizer));
         Ok(())
     }
 }
@@ -510,7 +729,7 @@ impl Transcriber for ExpressTranscriber {
     fn load_model(&mut self, model_id: &str) -> Result<()> {
         let dir = model_dir(model_id)?;
         self.load_dir(&dir)?;
-        self.model = Some(model_id.to_string());
+        self.model = Some(recorded_model_id(model_id).to_string());
         Ok(())
     }
 
@@ -542,7 +761,7 @@ impl Transcriber for ExpressTranscriber {
             .unwrap()
             .clone()
             .filter(|w| w.active());
-        // Word Boost scores the same audio while Parakeet decodes it, so both
+        // Word Boost scores the same audio while Express decodes it, so both
         // share one clock and the boost costs little extra time.
         let (result, log_probs) = std::thread::scope(|scope| {
             let scorer = boost.as_ref().map(|w| {
@@ -554,12 +773,7 @@ impl Transcriber for ExpressTranscriber {
                 guard
                     .as_ref()
                     .ok_or(CoreError::ModelNotLoaded)
-                    .map(|recognizer| {
-                        let stream = recognizer.create_stream();
-                        stream.accept_waveform(TARGET_SAMPLE_RATE as i32, &padded);
-                        recognizer.decode(&stream);
-                        stream.get_result()
-                    })
+                    .and_then(|recognizer| recognizer.recognize(&padded))
             };
             let log_probs = scorer.and_then(|h| match h.join() {
                 Ok(Ok(lp)) => Some(lp),
@@ -576,12 +790,12 @@ impl Transcriber for ExpressTranscriber {
         };
         let mut text = result.text.clone();
         if let (Some(w), Some(log_probs), Some(starts)) =
-            (boost.as_ref(), log_probs, result.timestamps.as_ref())
+            (boost.as_ref(), log_probs, result.starts.as_ref())
         {
             let timings = crate::wordboost::rescore::TokenTiming::from_starts_and_durations(
                 &result.tokens,
                 starts,
-                result.durations.as_deref().unwrap_or(&[]),
+                &result.durations,
             );
             if let Some(out) = w.boost(&text, &timings, &log_probs) {
                 let applied = out.proposals.iter().filter(|p| p.applied).count();
@@ -730,9 +944,35 @@ mod tests {
     #[test]
     fn catalog_ids_are_unique_and_lookup_works() {
         let c = catalog();
-        assert_eq!(c.len(), 2);
-        assert!(spec("sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8").is_some());
+        assert_eq!(c.len(), 3);
+        let ids: std::collections::HashSet<_> = c.iter().map(|s| s.id).collect();
+        assert_eq!(ids.len(), 3);
+        assert!(spec(FLUID_MINI_ID).is_some());
+        assert!(spec(PARAKEET_V2_ID).is_some_and(|s| s.previous));
         assert!(spec("nope").is_none());
+        // The English default is the first English model listed.
+        assert_eq!(c[0].id, crate::settings::Settings::default().express_model);
+    }
+
+    #[test]
+    fn fluid_files_add_up_to_the_listed_download() {
+        let ModelSource::Files { files, .. } = spec(FLUID_MINI_ID).unwrap().source else {
+            panic!("Fluid Speech Mini downloads file by file");
+        };
+        let total: u64 = files.iter().map(|f| f.bytes).sum();
+        assert_eq!(total, spec(FLUID_MINI_ID).unwrap().archive_bytes);
+        let mut names: Vec<_> = files.iter().map(|f| f.name).collect();
+        names.sort_unstable();
+        let mut wanted = fluid::FILES.to_vec();
+        wanted.sort_unstable();
+        assert_eq!(names, wanted);
+        assert!(files.iter().all(|f| f.sha256.len() == 64));
+    }
+
+    #[test]
+    fn fluid_speech_mini_is_recorded_under_the_macs_id() {
+        assert_eq!(recorded_model_id(FLUID_MINI_ID), "fluid-speech-mini");
+        assert_eq!(recorded_model_id(PARAKEET_V2_ID), PARAKEET_V2_ID);
     }
 
     #[test]
@@ -768,6 +1008,67 @@ mod tests {
         let t = ExpressTranscriber::from_dir(Path::new(&dir), 4).unwrap();
         let text = t.transcribe(&samples, &DecodeOptions::default()).unwrap();
         assert!(text.to_lowercase().contains("quarterly report"), "{text}");
+    }
+
+    /// Accuracy run over an eval manifest (`gauntlet/asr_eval`), written in
+    /// score.py's raw format: the whole Express path (quiet tail, padding,
+    /// Word Boost with the manifest's `bias_vocabulary` when
+    /// `ORTTAAI_EVAL_BIAS=1`), then number formatting as dictation does.
+    /// `ORTTAAI_EXPRESS_MODEL_DIR=… ORTTAAI_WORD_BOOST_DIR=… ORTTAAI_EVAL_MANIFEST=… ORTTAAI_EVAL_OUT=…
+    /// cargo test --release -p orttaai-core --features express --lib -- --ignored express_eval`
+    #[test]
+    #[ignore]
+    fn express_eval_manifest() {
+        let dir = std::env::var("ORTTAAI_EXPRESS_MODEL_DIR").expect("ORTTAAI_EXPRESS_MODEL_DIR");
+        let manifest = std::env::var("ORTTAAI_EVAL_MANIFEST").expect("ORTTAAI_EVAL_MANIFEST");
+        let out = std::env::var("ORTTAAI_EVAL_OUT").expect("ORTTAAI_EVAL_OUT");
+        let bias = std::env::var("ORTTAAI_EVAL_BIAS").is_ok_and(|v| v == "1");
+        let m: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+        let base = Path::new(&manifest).parent().unwrap();
+        let t = ExpressTranscriber::from_dir(Path::new(&dir), 4).unwrap();
+        let terms: Vec<crate::text::WordBoostTerm> = if bias {
+            m["bias_vocabulary"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| crate::text::WordBoostTerm {
+                    text: v.as_str().unwrap().into(),
+                    aliases: Vec::new(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut items = Vec::new();
+        for item in m["items"].as_array().unwrap() {
+            let mut reader =
+                hound::WavReader::open(base.join(item["wav"].as_str().unwrap())).unwrap();
+            assert_eq!(reader.spec().sample_rate, TARGET_SAMPLE_RATE);
+            let samples: Vec<f32> = match reader.spec().sample_format {
+                hound::SampleFormat::Float => reader.samples::<f32>().map(|s| s.unwrap()).collect(),
+                hound::SampleFormat::Int => reader
+                    .samples::<i16>()
+                    .map(|s| s.unwrap() as f32 / 32768.0)
+                    .collect(),
+            };
+            // Terms are set per dictation, as the app does.
+            t.set_word_boost_terms(&terms);
+            let started = std::time::Instant::now();
+            let raw = t.transcribe(&samples, &DecodeOptions::default()).unwrap();
+            let ms = started.elapsed().as_millis() as u64;
+            let text = crate::text::numbers::format_numbers(&raw);
+            items.push(serde_json::json!({"id": item["id"], "whole": {"text": text, "ms": ms}}));
+        }
+        let run = serde_json::json!({
+            "model": t.loaded_model().unwrap_or("express"),
+            "preset": "desktop",
+            "speedup": 1,
+            "biasEnabled": bias,
+            "biasTermCount": terms.len(),
+            "items": items,
+        });
+        std::fs::write(&out, serde_json::to_string_pretty(&run).unwrap()).unwrap();
     }
 
     /// Real network: a download stopped part-way resumes with a Range request,

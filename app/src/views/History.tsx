@@ -34,6 +34,24 @@ const preview = (text: string, limit = 140) => {
   return single.length > limit ? `${single.slice(0, limit)}...` : single;
 };
 const appName = (r: TranscriptionRecord) => (r.app && r.app.trim()) || "Unknown App";
+
+// Orttaai Link: dictations from other devices (through a linked Mac) say where
+// they were said. No device recorded means this PC.
+const DEVICE_KIND: Record<string, string> = {
+  mac: "Mac",
+  iphone: "iPhone",
+  ipad: "iPad",
+  windows: "Windows",
+  linux: "Linux",
+  android: "Android",
+};
+type DeviceNames = Record<string, string>;
+const fromElsewhere = (r: TranscriptionRecord, me: string | null) =>
+  !!r.source_device_id && r.source_device_id !== me;
+const deviceLabel = (r: TranscriptionRecord, names: DeviceNames) =>
+  (r.source_device_id && names[r.source_device_id]) || DEVICE_KIND[r.source_device_kind ?? ""] || "Another device";
+const deviceIcon = (kind: string | null | undefined) =>
+  kind === "mac" ? "laptop" : kind === "iphone" || kind === "ipad" || kind === "android" ? "phone" : "pc";
 const modelName = (r: TranscriptionRecord) => r.model_id.trim() || "Not set";
 const rawDiffers = (r: TranscriptionRecord) => !!r.raw_text && r.raw_text.trim() !== "" && r.raw_text.trim() !== r.text.trim();
 
@@ -62,6 +80,10 @@ export default function History() {
   const [search, setSearch] = useState("");
   const [app, setApp] = useState("");
   const [kind, setKind] = useState<Kind>("");
+  const [device, setDevice] = useState("");
+  const [devices, setDevices] = useState<{ deviceId: string; name: string; kind: string; thisDevice: boolean }[]>([]);
+  const me = devices.find((d) => d.thisDevice)?.deviceId ?? null;
+  const deviceNames = useMemo(() => Object.fromEntries(devices.map((d) => [d.deviceId, d.name])), [devices]);
   const [apps, setApps] = useState<string[]>([]);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const filtersRef = useRef<HTMLDivElement>(null);
@@ -92,6 +114,7 @@ export default function History() {
       if (g === gen.current) setError("Couldn't load history.");
     }
     call<string[]>("history_apps").then(setApps).catch(() => {});
+    call<typeof devices>("link_devices").then(setDevices).catch(() => {});
   }, []);
   useEffect(() => {
     load();
@@ -114,16 +137,29 @@ export default function History() {
       (r) =>
         (!app || (r.app ?? "").trim() === app) &&
         (!kind || r.entry_kind === kind) &&
+        (!device || (device === "this" ? !fromElsewhere(r, me) : r.source_device_id === device)) &&
         (!query || flatten(r.text).toLowerCase().includes(query) || appName(r).toLowerCase().includes(query) || modelName(r).toLowerCase().includes(query)),
     );
-  }, [records, query, app, kind]);
-  useEffect(() => setDrawn(DRAW), [query, app, kind]);
-  const filtering = !!(app || kind);
+  }, [records, query, app, kind, device, me]);
+  useEffect(() => setDrawn(DRAW), [query, app, kind, device]);
+  const filtering = !!(app || kind || device);
   const clearAll = () => {
     setSearch("");
     setApp("");
     setKind("");
+    setDevice("");
   };
+  // Only devices that have dictations here, and only once there's more than one.
+  const deviceOptions = useMemo(() => {
+    if (!records) return [];
+    const present = new Set(records.filter((r) => fromElsewhere(r, me)).map((r) => r.source_device_id as string));
+    if (present.size === 0) return [];
+    return [
+      { value: "", label: "All devices" },
+      { value: "this", label: "This PC" },
+      ...devices.filter((d) => present.has(d.deviceId)).map((d) => ({ value: d.deviceId, label: d.name })),
+    ];
+  }, [records, devices, me]);
 
   const onScroll = (e: UIEvent<HTMLDivElement>) => {
     const t = e.currentTarget;
@@ -193,6 +229,9 @@ export default function History() {
               <div className="hist-filter-pop">
                 <Select value={app} onChange={setApp} options={[{ value: "", label: "All apps" }, ...apps.map((a) => ({ value: a, label: a }))]} ariaLabel="Filter by app" />
                 <Select value={kind} onChange={setKind} options={KINDS} ariaLabel="Filter by kind" />
+                {deviceOptions.length > 0 && (
+                  <Select value={device} onChange={setDevice} options={deviceOptions} ariaLabel="Filter by device" />
+                )}
               </div>
             )}
           </div>
@@ -242,16 +281,19 @@ export default function History() {
               tabIndex={0}
               onClick={() => setDetail(r)}
               onKeyDown={(e) => e.key === "Enter" && setDetail(r)}
-              aria-label={`${appName(r)}, ${preview(r.text, 80)}, duration ${clockDuration(r.duration_ms)}, ${r.word_count} words, ${Math.max(0, r.processing_ms)} milliseconds.`}
+              aria-label={`${appName(r)}${fromElsewhere(r, me) ? ` on ${deviceLabel(r, deviceNames)}` : ""}, ${preview(r.text, 80)}, duration ${clockDuration(r.duration_ms)}, ${r.word_count} words, ${Math.max(0, r.processing_ms)} milliseconds.`}
             >
               <span className="c-time" title={new Date(r.created_at * 1000).toLocaleString()}>
                 {relativeTime(r.created_at)}
               </span>
-              <span className="c-app">
+              <span className="c-app" title={fromElsewhere(r, me) ? `${appName(r)} · ${deviceLabel(r, deviceNames)}` : undefined}>
                 <span className="c-app-icon">
-                  <LaptopGlyph />
+                  {fromElsewhere(r, me) ? <Icon name={deviceIcon(r.source_device_kind)} size={14} /> : <LaptopGlyph />}
                 </span>
-                <span className="c-app-name">{appName(r)}</span>
+                <span className="c-app-name">
+                  {appName(r)}
+                  {fromElsewhere(r, me) && <span className="c-app-device">{deviceLabel(r, deviceNames)}</span>}
+                </span>
               </span>
               <span className="c-text">
                 {r.entry_kind === "edit" && (

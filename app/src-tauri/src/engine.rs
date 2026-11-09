@@ -335,6 +335,39 @@ fn load_voice_detector() -> Option<SileroVad> {
     }
 }
 
+/// The OS's windows, plus Orttaai's own: a dictation into Setup's Quick Test
+/// or Chat AI is handed to that window's page, which inserts it at the caret,
+/// rather than typed with synthesized keys (Windows doesn't reliably deliver
+/// those to the app that sends them).
+struct OwnWindowFocus {
+    app: AppHandle,
+}
+
+impl orttaai_core::focus::WindowFocus for OwnWindowFocus {
+    fn current(&self) -> Option<u64> {
+        orttaai_core::focus::SystemWindowFocus.current()
+    }
+
+    fn activate(&self, window: u64) -> bool {
+        orttaai_core::focus::SystemWindowFocus.activate(window)
+    }
+
+    fn insert_into_own(&self, window: u64, text: &str) -> bool {
+        if !orttaai_core::focus::is_own_window(window) {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        for (label, w) in self.app.webview_windows() {
+            let Ok(hwnd) = w.hwnd() else { continue };
+            if hwnd.0 as usize as u64 == window {
+                return self.app.emit_to(label.as_str(), "insert-text", text).is_ok();
+            }
+        }
+        let _ = (&self.app, text);
+        false
+    }
+}
+
 /// Build and start the engine on the calling (background) thread: load the
 /// model, warm it, spin up the dictation worker, and register the hotkeys.
 fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), String> {
@@ -365,6 +398,7 @@ fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), Strin
         pipeline::build_pipeline(&settings),
         decode_options_from_settings(&settings),
     );
+    coord.set_window_focus(Box::new(OwnWindowFocus { app: app.clone() }));
     coord.set_config(CoordinatorConfig::from_settings(&settings));
     coord.set_rewriter(pipeline::build_rewriter(&settings));
     coord.set_vocabulary(vocabulary_terms(&settings));
@@ -420,7 +454,7 @@ fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), Strin
 type LoadedTranscriber = (Box<dyn orttaai_core::transcription::Transcriber>, String);
 
 /// Load the speech engine the settings ask for: whisper.cpp (GGUF) or Express
-/// (Parakeet via sherpa-onnx). Returns the transcriber, the model id shown in
+/// (Fluid Speech Mini, or Parakeet v3 via sherpa-onnx). Returns the transcriber, the model id shown in
 /// the UI and recorded with each dictation, and, when Express was asked for but
 /// couldn't run, why dictation fell back to Whisper.
 fn load_transcriber(
@@ -460,7 +494,7 @@ fn load_express(settings: &Settings) -> Result<LoadedTranscriber, String> {
     let t =
         orttaai_core::transcription::ExpressTranscriber::from_dir(&dir, settings.decode.n_threads)
             .map_err(|e| e.to_string())?;
-    Ok((Box::new(t), id.to_string()))
+    Ok((Box::new(t), express::recorded_model_id(id).to_string()))
 }
 
 fn load_whisper(
@@ -493,7 +527,9 @@ fn start_right_ctrl(app: &AppHandle, settings: &Settings, tx: &Sender<Cmd>) {
     }
     let tx = tx.clone();
     match RightCtrlListener::start(Box::new(move || {
-        let _ = tx.send(Cmd::RightCtrlTap);
+        if accept_right_ctrl_tap(TapSource::Hook) {
+            let _ = tx.send(Cmd::RightCtrlTap);
+        }
     })) {
         Ok(listener) => {
             *state.right_ctrl.lock().unwrap() = Some(listener);
@@ -509,6 +545,100 @@ fn start_right_ctrl(app: &AppHandle, settings: &Settings, tx: &Sender<Cmd>) {
                 s.right_ctrl_error = Some(e.to_string());
             });
         }
+    }
+}
+
+/// Where a Right Ctrl tap was seen. The system-wide listener sees taps in
+/// every app; Orttaai's own window also reports the taps made while it has
+/// focus, because on Windows the listener can miss those. One tap must never
+/// count twice (that would start and stop at once), so a report from one
+/// source shortly after the other's is dropped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TapSource {
+    Hook,
+    Window,
+}
+
+/// Longer than the gap between the two reports of one tap, shorter than two
+/// taps a person can make.
+const SAME_TAP: std::time::Duration = std::time::Duration::from_millis(350);
+
+static LAST_TAP: Mutex<Option<(TapSource, std::time::Instant)>> = Mutex::new(None);
+
+fn accept_right_ctrl_tap(source: TapSource) -> bool {
+    accept_tap_at(&LAST_TAP, source, std::time::Instant::now())
+}
+
+fn accept_tap_at(
+    last: &Mutex<Option<(TapSource, std::time::Instant)>>,
+    source: TapSource,
+    now: std::time::Instant,
+) -> bool {
+    let Ok(mut last) = last.lock() else {
+        return true;
+    };
+    if let Some((previous, at)) = *last {
+        if previous != source && now.saturating_duration_since(at) < SAME_TAP {
+            // The other source already reported this tap.
+            *last = None;
+            return false;
+        }
+    }
+    *last = Some((source, now));
+    true
+}
+
+/// Orttaai's main window saw a clean Right Ctrl tap while it had focus.
+#[tauri::command]
+pub fn right_ctrl_window_tap(app: AppHandle) {
+    let state = app.state::<EngineState>();
+    // Only while Tap Right Ctrl is on and listening (not paused for the
+    // shortcut recorder, not off in Settings).
+    if state.right_ctrl.lock().unwrap().is_none() {
+        return;
+    }
+    if accept_right_ctrl_tap(TapSource::Window) {
+        state.send(Cmd::RightCtrlTap);
+    }
+}
+
+#[cfg(test)]
+mod tap_source_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn one_tap_seen_twice_counts_once_and_two_taps_count_twice() {
+        let gate = Mutex::new(None);
+        let t = Instant::now();
+        assert!(accept_tap_at(&gate, TapSource::Window, t));
+        assert!(!accept_tap_at(
+            &gate,
+            TapSource::Hook,
+            t + Duration::from_millis(20)
+        ));
+        // A second tap a moment later, seen by either source, counts.
+        assert!(accept_tap_at(
+            &gate,
+            TapSource::Hook,
+            t + Duration::from_millis(900)
+        ));
+        assert!(!accept_tap_at(
+            &gate,
+            TapSource::Window,
+            t + Duration::from_millis(910)
+        ));
+        // Two quick taps from the same source are two taps.
+        assert!(accept_tap_at(
+            &gate,
+            TapSource::Hook,
+            t + Duration::from_millis(2000)
+        ));
+        assert!(accept_tap_at(
+            &gate,
+            TapSource::Hook,
+            t + Duration::from_millis(2200)
+        ));
     }
 }
 

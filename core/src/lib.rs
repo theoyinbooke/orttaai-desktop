@@ -8,6 +8,7 @@
 //! See `docs/architecture.md` for the full picture.
 
 pub mod analytics;
+pub mod apps;
 pub mod audio;
 pub mod chat;
 pub mod clipboard;
@@ -30,6 +31,8 @@ pub mod polish;
 pub mod semantic;
 pub mod settings;
 pub mod store;
+#[cfg(feature = "link")]
+pub mod sync;
 pub mod text;
 pub mod transcription;
 pub mod types;

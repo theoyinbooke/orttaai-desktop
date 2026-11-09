@@ -46,7 +46,31 @@ pub const MAX_DETAIL_LENGTH: usize = 140;
 
 /// What's New for each release, newest first. Every release adds an entry:
 /// at most three highlights, the ones people will notice, in plain words.
-pub const RELEASES: &[Release] = &[Release {
+pub const RELEASES: &[Release] = &[
+    Release {
+        version: "0.4.0",
+        items: &[
+            Item {
+                id: "0.4-link",
+                title: "Linked with your Mac",
+                detail: "Link this PC in Devices to share dictations, Words and snippets with Orttaai on your Mac, and through it your iPhone.",
+                art: Art::Symbol("devices"),
+            },
+            Item {
+                id: "0.4-fluid",
+                title: "The Mac's Express model",
+                detail: "Express now runs Fluid Speech Mini, as on the Mac: fewer mistakes with names and with other voices in the room.",
+                art: Art::Symbol("mic"),
+            },
+            Item {
+                id: "0.4-where",
+                title: "Where you said it",
+                detail: "History shows which device each dictation came from, and Top Apps gives every app one name on every device.",
+                art: Art::Symbol("laptop"),
+            },
+        ],
+    },
+    Release {
     version: "0.3.0",
     items: &[
         Item {
@@ -68,7 +92,8 @@ pub const RELEASES: &[Release] = &[Release {
             art: Art::Milestones,
         },
     ],
-}];
+    },
+];
 
 /// Compare dotted versions numerically ("0.10.0" > "0.9.2"); a missing part
 /// counts as 0, and any non-numeric suffix ("-beta") is ignored.

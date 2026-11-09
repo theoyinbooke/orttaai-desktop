@@ -15,6 +15,7 @@ mod coach;
 mod engine;
 mod express_cmds;
 mod insights;
+mod link;
 mod memory;
 mod persist;
 mod pipeline;
@@ -267,7 +268,13 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", "Orttaai — Off", false, None::<&str>)?;
     // The engine updates this line with its state ("Recording…", "Ready"…).
     app.manage(engine::TrayStatus(status.clone()));
-    let rec = MenuItem::with_id(app, "rec", engine::tray_dictate_label("off"), true, None::<&str>)?;
+    let rec = MenuItem::with_id(
+        app,
+        "rec",
+        engine::tray_dictate_label("off"),
+        true,
+        None::<&str>,
+    )?;
     app.manage(engine::TrayDictate(rec.clone()));
     let polish = CheckMenuItem::with_id(
         app,
@@ -475,6 +482,8 @@ pub fn run() {
             wire_learn_from_edits(app.handle());
             sync_launch_at_login(app.handle(), &Settings::load_or_default());
             engine::on_app_ready(app.handle());
+            // Orttaai Link: sync with Orttaai on a Mac once linked.
+            link::start(app.handle());
             // The main window starts hidden: a new install sees only the setup
             // window, and a launch at login stays in the tray.
             if !Settings::load_or_default().has_completed_setup {
@@ -515,8 +524,17 @@ pub fn run() {
             settings_cmds::reset_settings,
             settings_cmds::clear_history,
             settings_cmds::reset_app_data,
+            // == Orttaai Link ==
+            link::link_status,
+            link::link_discover,
+            link::link_with_code,
+            link::link_with_invite,
+            link::link_unlink,
+            link::link_sync_now,
+            link::link_devices,
             // == engine ==
             engine::engine_status,
+            engine::right_ctrl_window_tap,
             engine::start_dictation,
             engine::stop_dictation,
             engine::toggle_recording,
@@ -685,13 +703,20 @@ mod log_tests {
             file,
             home: vec![home.replace('\\', r"\\"), home],
         };
-        writeln!(log, r"loading model from 'C:\Users\Ada Lovelace\AppData\m.bin'").unwrap();
+        writeln!(
+            log,
+            r"loading model from 'C:\Users\Ada Lovelace\AppData\m.bin'"
+        )
+        .unwrap();
         writeln!(log, r#"open failed: "C:\\Users\\Ada Lovelace\\x""#).unwrap();
         writeln!(log, "engine started").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert!(!text.contains("Lovelace"), "{text}");
-        assert!(text.contains(r"'~\AppData\m.bin'") && text.contains(r#""~\\x""#), "{text}");
+        assert!(
+            text.contains(r"'~\AppData\m.bin'") && text.contains(r#""~\\x""#),
+            "{text}"
+        );
         assert!(text.contains("engine started"));
     }
 }

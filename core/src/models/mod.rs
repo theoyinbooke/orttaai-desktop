@@ -538,7 +538,7 @@ pub fn download_verified(
 
 /// Check a downloaded file's size and SHA-256 (either check is skipped when
 /// its expected value is unknown).
-fn verify_file(path: &Path, expected_size: u64, expected_sha256: &str) -> Result<()> {
+pub(crate) fn verify_file(path: &Path, expected_size: u64, expected_sha256: &str) -> Result<()> {
     let size = std::fs::metadata(path)?.len();
     if expected_size > 0 && size != expected_size {
         return Err(CoreError::Download(format!(

@@ -83,6 +83,13 @@ pub struct TranscriptionRecord {
     pub polished: bool,
     /// Unix seconds.
     pub created_at: i64,
+    /// The device it was said on, when it came from another one through a
+    /// linked Mac (Orttaai Link). `None` means this PC.
+    #[serde(default)]
+    pub source_device_id: Option<String>,
+    /// `mac | iphone | ipad | windows | linux | android`.
+    #[serde(default)]
+    pub source_device_kind: Option<String>,
 }
 
 impl TranscriptionRecord {
@@ -108,7 +115,8 @@ impl TranscriptionRecord {
 
     const COLUMNS: &'static str = "id, text, raw_text, app_name, app_id, recording_ms, processing_ms, \
         transcription_ms, text_processing_ms, polish_ms, injection_ms, model_id, audio_device, \
-        injection_method, entry_kind, edit_instruction, word_count, time_zone, polished, created_at";
+        injection_method, entry_kind, edit_instruction, word_count, time_zone, polished, created_at, \
+        source_device_id, source_device_kind";
 
     fn from_row(r: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
@@ -132,6 +140,8 @@ impl TranscriptionRecord {
             time_zone: r.get(17)?,
             polished: r.get(18)?,
             created_at: r.get(19)?,
+            source_device_id: r.get(20)?,
+            source_device_kind: r.get(21)?,
         })
     }
 }

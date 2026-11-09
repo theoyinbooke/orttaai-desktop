@@ -15,6 +15,7 @@ export type Tab =
   | "chat"
   | "graph"
   | "memory"
+  | "devices"
   | "analytics"
   | "milestones"
   | "coach"
@@ -33,4 +34,6 @@ export const TABS: readonly Tab[] = [
   "models",
   "settings",
   "about",
+  // Last, so the number shortcuts for the other pages stay as they were.
+  "devices",
 ];

@@ -8,10 +8,12 @@ import { SettingsProvider, useSettings } from "./lib/settings";
 import { EngineProvider } from "./lib/engine";
 import { phaseLabel, UpdaterProvider, useAppUpdater } from "./lib/updater";
 import { AI_SETTINGS_ROUTE, requestAISection } from "./lib/navigation";
+import { useRightCtrlTap } from "./lib/rightCtrl";
 import Home from "./views/Home";
 import ChatAI from "./views/ChatAI";
 import MemoryGraph from "./views/MemoryGraph";
 import Memory from "./views/Memory";
+import Devices from "./views/Devices";
 import Analytics from "./views/Analytics";
 import Milestones from "./views/Milestones";
 import Coach from "./views/Coach";
@@ -34,6 +36,7 @@ const WORKSPACE: Section[] = [
 ];
 const MANAGE: Section[] = [
   { tab: "memory", label: "Memory", icon: "book" },
+  { tab: "devices", label: "Devices", icon: "devices" },
   { tab: "models", label: "Model", icon: "cpu" },
   { tab: "settings", label: "Settings", icon: "gear" },
   { tab: "about", label: "About", icon: "infoCircle" },
@@ -147,6 +150,7 @@ function SectionRail({ tab, coach, onSelect, onExpand }: { tab: Tab; coach: bool
 }
 
 function AppShell() {
+  useRightCtrlTap();
   const [tab, setTab] = useState<Tab>("home");
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -264,6 +268,7 @@ function AppShell() {
           {tab === "chat" && <ChatAI />}
           {tab === "graph" && <MemoryGraph />}
           {tab === "memory" && <Memory />}
+          {tab === "devices" && <Devices />}
           {tab === "analytics" && <Analytics />}
           {tab === "milestones" && <Milestones />}
           {tab === "coach" && <Coach />}

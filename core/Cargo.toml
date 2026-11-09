@@ -42,6 +42,11 @@ sha2 = { version = "0.10", optional = true }
 # Real OS clipboard for paste injection / selection capture. Images are only
 # read through arboard on Linux (X11); see the linux target entry below.
 arboard = { version = "3.6", default-features = false, optional = true }
+# Orttaai Link: sync with Orttaai on a Mac (docs/orttaai-link.md).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
+unicode-normalization = { version = "0.1", optional = true }
+base64 = { version = "0.22", optional = true }
+mdns-sd = { version = "0.13", optional = true }
 
 [features]
 default = []
@@ -70,10 +75,14 @@ portal = ["dep:ashpd", "dep:zbus", "dep:tokio", "dep:futures-util", "injection"]
 cuda = ["whisper", "whisper-rs/cuda"]
 vulkan = ["whisper", "whisper-rs/vulkan"]
 # Everything the desktop app needs (portal is added per-target on Linux).
-full = ["whisper", "cpal-audio", "injection", "hotkey", "models", "ollama"]
+link = ["dep:rustls", "dep:sha2", "dep:unicode-normalization", "dep:base64", "dep:mdns-sd"]
+full = ["whisper", "cpal-audio", "injection", "hotkey", "models", "ollama", "link"]
 
 [dev-dependencies]
 hound = "3.5"
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json = "1"
 
 [target."cfg(windows)".dependencies]
 # Also the low-level keyboard/mouse hooks behind "Tap Right Ctrl".

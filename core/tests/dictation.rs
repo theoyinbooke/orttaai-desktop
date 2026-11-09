@@ -1069,6 +1069,41 @@ fn never_types_into_another_window() {
     );
 }
 
+/// Orttaai's own window 7 (Setup's Quick Test, Chat AI): it takes text itself.
+struct OwnWindow(Mutex<Vec<String>>);
+
+impl orttaai_core::focus::WindowFocus for OwnWindow {
+    fn current(&self) -> Option<u64> {
+        Some(7)
+    }
+    fn activate(&self, _window: u64) -> bool {
+        true
+    }
+    fn insert_into_own(&self, window: u64, text: &str) -> bool {
+        self.0.lock().unwrap().push(format!("{window}:{text}"));
+        window == 7
+    }
+}
+
+#[test]
+fn a_dictation_into_orttaais_own_window_is_handed_to_it_not_typed() {
+    let mut r = rig(
+        "hello from orttaai",
+        MockTextInjector::new(),
+        MemoryService::new(),
+    );
+    let own = Arc::new(OwnWindow(Mutex::new(vec![])));
+    r.coord.set_window_focus(Box::new(own.clone()));
+    r.coord.on_press().unwrap();
+    let outcome = r.coord.on_release().unwrap();
+    assert_eq!(outcome.result, InjectionResult::Success);
+    assert_eq!(
+        *own.0.lock().unwrap(),
+        vec!["7:hello from orttaai".to_string()]
+    );
+    assert!(r.log.all().is_empty(), "no keystrokes into ourselves");
+}
+
 // ---- Decoding while speaking (Mac live session) ---------------------------------
 
 /// Records the length of every decode and names each result after its turn.
