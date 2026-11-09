@@ -22,7 +22,7 @@ export type Settings = {
   vocabulary_bias: boolean;
   express_word_boost: boolean;
   express_live_segments: boolean;
-  /** Express (Parakeet) model id, used when `engine` is "express". */
+  /** Express model id (Fluid Speech Mini, or Parakeet v3), used when `engine` is "express". */
   express_model: string;
   warm_models: boolean;
   /** Custom speech-model folder; null = the default data folder. */

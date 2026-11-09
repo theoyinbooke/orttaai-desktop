@@ -257,4 +257,8 @@ mod tests {
 #[cfg(feature = "express")]
 pub mod express;
 #[cfg(feature = "express")]
+pub mod fluid;
+#[cfg(feature = "express")]
+pub(crate) mod onnx;
+#[cfg(feature = "express")]
 pub use express::ExpressTranscriber;

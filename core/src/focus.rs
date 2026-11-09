@@ -946,7 +946,7 @@ mod win_app {
             if len < 4 {
                 return None;
             }
-            let pair = translation as *const u16;
+            let pair = translation;
             let (lang, page) = (*pair, *pair.add(1));
             let (text, chars) = query(&format!(
                 "\\StringFileInfo\\{lang:04x}{page:04x}\\FileDescription"

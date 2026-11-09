@@ -258,7 +258,7 @@ impl Default for Settings {
             vocabulary_bias: true,
             express_word_boost: true,
             express_live_segments: false,
-            express_model: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8".to_string(),
+            express_model: "fluid-speech-mini-onnx".to_string(),
             warm_models: true,
             models_dir: None,
 

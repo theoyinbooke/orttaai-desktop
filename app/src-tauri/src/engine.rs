@@ -454,7 +454,7 @@ fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), Strin
 type LoadedTranscriber = (Box<dyn orttaai_core::transcription::Transcriber>, String);
 
 /// Load the speech engine the settings ask for: whisper.cpp (GGUF) or Express
-/// (Parakeet via sherpa-onnx). Returns the transcriber, the model id shown in
+/// (Fluid Speech Mini, or Parakeet v3 via sherpa-onnx). Returns the transcriber, the model id shown in
 /// the UI and recorded with each dictation, and, when Express was asked for but
 /// couldn't run, why dictation fell back to Whisper.
 fn load_transcriber(
@@ -494,7 +494,7 @@ fn load_express(settings: &Settings) -> Result<LoadedTranscriber, String> {
     let t =
         orttaai_core::transcription::ExpressTranscriber::from_dir(&dir, settings.decode.n_threads)
             .map_err(|e| e.to_string())?;
-    Ok((Box::new(t), id.to_string()))
+    Ok((Box::new(t), express::recorded_model_id(id).to_string()))
 }
 
 fn load_whisper(

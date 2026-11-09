@@ -15,7 +15,7 @@ pub mod formatting;
 pub mod fuzzy;
 pub mod learning;
 pub mod lexicon;
-mod numbers;
+pub(crate) mod numbers;
 
 pub use numbers::format_numbers;
 

@@ -40,7 +40,7 @@ See [`docs/architecture.md`](docs/architecture.md) and the full build plan for d
   shows only while you dictate, just above the taskbar on Windows. On Windows a **click
   on the tray icon** starts and stops dictation.
 - **Two speech engines** — **Whisper** (whisper.cpp, every language, optional CUDA) and
-  **Express** (NVIDIA **Parakeet** via ONNX Runtime — the fastest option on CPU).
+  **Express** (**Fluid Speech Mini**, the Mac's Express model, via ONNX Runtime — the fastest option on CPU; NVIDIA **Parakeet** v3 for other languages).
 - **Learn from your edits** — fix a misheard name right after dictating it and Orttaai
   suggests it for your dictionary (UI Automation on Windows, AT-SPI on Linux).
 - **Text pipeline** — dictionary (multi-word, case-sensitive), fuzzy dictionary,

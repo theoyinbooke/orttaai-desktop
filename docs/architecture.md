@@ -13,7 +13,7 @@ app/ (Tauri)  ──┐
 cli/          ──┼──►  orttaai-core
                 │       ├─ coordinator      hold/tap → record → transcribe → pipeline → deliver
                 │       ├─ traits (OS-isolated):
-                │       │    Transcriber   → whisper.cpp (`whisper`) · Parakeet/sherpa-onnx (`express`)
+                │       │    Transcriber   → whisper.cpp (`whisper`) · Fluid Speech Mini on ONNX Runtime · Parakeet/sherpa-onnx (`express`)
                 │       │    AudioCapture  → cpal + resample (`cpal-audio`)
                 │       │    TextInjector  → SendInput / XTest / RemoteDesktop portal / wtype
                 │       │    HotkeyManager → RegisterHotKey / XGrabKey / GlobalShortcuts portal

@@ -405,10 +405,17 @@ type ExpressModel = {
   name: string;
   description: string;
   approx_size_mb: number;
+  /** The model's own download in bytes (Word Boost's model not included). */
+  archive_bytes: number;
   multilingual: boolean;
+  /** Replaced by a newer model: listed only while installed. */
+  previous: boolean;
   downloaded: boolean;
   path: string;
 };
+
+/** "Fluid Speech Mini" from "Express · English (Fluid Speech Mini)". */
+const shortName = (m: ExpressModel) => m.name.match(/\(([^)]+)\)/)?.[1] ?? m.name.replace(/^Express · /, "");
 
 /** The whole Express chain in the order it runs: engine, Word Boost, then Polish. */
 export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSettings?: () => void }) {
@@ -440,6 +447,9 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
   useEvent("express-done", refreshBoostModel);
   // Turning Express on before its model is here: download first, then switch.
   const enableAfterDownload = useRef<string | null>(null);
+  // Moving from a replaced model to its successor: once the new one is here,
+  // switch to it and remove the old one to free its space.
+  const upgrade = useRef<{ from: string; to: string } | null>(null);
 
   const refresh = useCallback(() => {
     call<ExpressModel[]>("express_models").then(setModels).catch((e) => toast(String(e), "error"));
@@ -464,6 +474,13 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
   useEvent<{ id: string; fraction: number }>("express-progress", (e) =>
     setProgress((p) => ({ ...p, [e.id]: e.fraction })),
   );
+  const finishUpgrade = (to: string) => {
+    const from = upgrade.current?.from;
+    upgrade.current = null;
+    save({ express_model: to });
+    // Give the engine a moment to load the new model before the old files go.
+    if (from) window.setTimeout(() => call("express_delete", { id: from }).finally(refresh), 3000);
+  };
   useEvent<{ id: string }>("express-done", (e) => {
     clear(e.id);
     refresh();
@@ -471,14 +488,17 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
       enableAfterDownload.current = null;
       save({ engine: "express", express_model: e.id });
     }
+    if (upgrade.current?.to === e.id) finishUpgrade(e.id);
   });
   useEvent<{ id: string }>("express-cancelled", (e) => {
     clear(e.id);
     enableAfterDownload.current = null;
+    upgrade.current = null;
   });
   useEvent<{ id: string; error: string }>("express-error", (e) => {
     clear(e.id);
     enableAfterDownload.current = null;
+    upgrade.current = null;
     setFailure(e.error);
   });
 
@@ -533,6 +553,16 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
     save({ express_model: id });
   };
 
+  // The model that replaces the selected one, when it has been replaced.
+  const successor = selected?.previous ? models.find((m) => !m.previous && m.multilingual === selected.multilingual) : undefined;
+  const startUpgrade = () => {
+    if (!selected || !successor) return;
+    upgrade.current = { from: selected.id, to: successor.id };
+    if (successor.downloaded) finishUpgrade(successor.id);
+    else download(successor.id);
+  };
+  const fluid = selected?.id.startsWith("fluid-speech");
+
   const needsBoostModel = !!boostModel && !boostModel.installed;
   const wordBoostStatus =
     boostProgress !== null
@@ -571,7 +601,7 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
   return (
     <MCard
       title="Express Engine"
-      info="NVIDIA Parakeet, a compact speech model that runs on your CPU through ONNX Runtime. It's typically several times faster than Whisper without a GPU. Your Whisper model stays selected for when Express is off."
+      info="Fluid Speech Mini, the compact speech model the Mac's Express engine runs, here on your CPU through ONNX Runtime. It's typically several times faster than Whisper without a GPU. Other languages use NVIDIA Parakeet v3. Your Whisper model stays selected for when Express is off."
       accessory={chip}
     >
       <DetailRow
@@ -653,6 +683,15 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
             }
           />
         )}
+        {successor && !downloading && (
+          <MNotice kind="info">
+            {shortName(successor)} is the Mac's Express model and makes fewer mistakes with names. Switching downloads{" "}
+            {formatBytes(successor.archive_bytes)} and then removes {selected && shortName(selected)} to free its space.{" "}
+            <button type="button" className="mset-link" onClick={startUpgrade}>
+              Switch Now
+            </button>
+          </MNotice>
+        )}
         {usingExpress && selected && !selected.multilingual && settings.dictation_language !== "en" && (
           <MNotice kind="info">This Express model is English only, so dictation uses Whisper until the dictation language is English.</MNotice>
         )}
@@ -669,7 +708,11 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
           </div>
         )}
       </div>
-      <p className="mset-foot mset-foot-top">NVIDIA Parakeet TDT 0.6B (CC BY 4.0), run through ONNX Runtime with sherpa-onnx.</p>
+      <p className="mset-foot mset-foot-top">
+        {fluid
+          ? "Fluid Speech Mini by FluidVoice, built on NVIDIA Parakeet TDT 0.6B v3 and Moondream Parakeet Ultra (CC BY 4.0), run through ONNX Runtime."
+          : "NVIDIA Parakeet TDT 0.6B (CC BY 4.0), run through ONNX Runtime with sherpa-onnx."}
+      </p>
       <ConfirmDialog
         open={!!confirm}
         title={`Delete ${confirm?.name ?? "model"}?`}

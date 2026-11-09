@@ -734,6 +734,14 @@ html[data-theme="dark"] {
   border: 1px solid color-mix(in srgb, var(--tint) 28%, transparent);
   border-radius: 6px;
 }
+/* A link inside a notice's text, not its 16px dismiss button. */
+.mset-notice .mset-link {
+  display: inline;
+  width: auto;
+  height: auto;
+  font-size: inherit;
+  white-space: nowrap;
+}
 .mset-notice .mset-glyph {
   margin-top: 2px;
 }
