@@ -37,13 +37,34 @@ pub fn unavailable_reason() -> Option<&'static str> {
     None
 }
 
+/// One of the watched keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RightKey {
+    Ctrl,
+    Shift,
+}
+
+impl RightKey {
+    pub fn name(self) -> &'static str {
+        match self {
+            RightKey::Ctrl => "Right Ctrl",
+            RightKey::Shift => "Right Shift",
+        }
+    }
+}
+
 /// Watches Right Ctrl and/or Right Shift until dropped.
 pub struct RightKeyListener {
     #[allow(dead_code)]
     inner: imp::Listener,
+    missing: Vec<RightKey>,
 }
 
 impl RightKeyListener {
+    /// Starts when at least one asked-for key can be watched; a key the
+    /// keyboard layout doesn't have (Right Ctrl remapped to Compose, say) is
+    /// left out and reported by [`missing`](Self::missing), so the other one
+    /// still works.
     pub fn start(taps: Taps) -> Result<Self> {
         if let Some(reason) = unavailable_reason() {
             return Err(CoreError::Hotkey(reason.into()));
@@ -51,15 +72,19 @@ impl RightKeyListener {
         if taps.right_ctrl.is_none() && taps.right_shift.is_none() {
             return Err(CoreError::Hotkey("no key to watch".into()));
         }
-        Ok(Self {
-            inner: imp::start(taps)?,
-        })
+        let (inner, missing) = imp::start(taps)?;
+        Ok(Self { inner, missing })
+    }
+
+    /// Keys that were asked for but this keyboard layout doesn't have.
+    pub fn missing(&self) -> &[RightKey] {
+        &self.missing
     }
 }
 
 #[cfg(all(feature = "hotkey", windows))]
 mod imp {
-    use super::Taps;
+    use super::{RightKey, Taps};
     use crate::error::{CoreError, Result};
     use crate::hotkey::tap::TapDetector;
     use std::sync::{mpsc, Arc, Mutex};
@@ -109,7 +134,7 @@ mod imp {
         handle: Option<JoinHandle<()>>,
     }
 
-    pub fn start(taps: Taps) -> Result<Listener> {
+    pub fn start(taps: Taps) -> Result<(Listener, Vec<RightKey>)> {
         {
             let mut slot = HOOK.lock().unwrap();
             if slot.is_some() {
@@ -175,10 +200,14 @@ mod imp {
             }
         };
         match rx.recv() {
-            Ok(Ok(thread_id)) => Ok(Listener {
-                thread_id,
-                handle: Some(handle),
-            }),
+            // Every PC keyboard has both keys.
+            Ok(Ok(thread_id)) => Ok((
+                Listener {
+                    thread_id,
+                    handle: Some(handle),
+                },
+                Vec::new(),
+            )),
             other => {
                 let _ = handle.join();
                 *HOOK.lock().unwrap() = None;
@@ -279,7 +308,7 @@ mod imp {
 
 #[cfg(all(feature = "hotkey", target_os = "linux"))]
 mod imp {
-    use super::{TapCallback, Taps};
+    use super::{RightKey, TapCallback, Taps};
     use crate::error::{CoreError, Result};
     use crate::hotkey::tap::TapDetector;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -303,15 +332,15 @@ mod imp {
         handle: Option<JoinHandle<()>>,
     }
 
-    pub fn start(taps: Taps) -> Result<Listener> {
+    pub fn start(taps: Taps) -> Result<(Listener, Vec<RightKey>)> {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         let stop2 = Arc::clone(&stop);
         let handle = std::thread::Builder::new()
             .name("orttaai-right-keys".into())
             .spawn(move || match connect(taps) {
-                Ok(watch) => {
-                    let _ = tx.send(Ok(()));
+                Ok((watch, missing)) => {
+                    let _ = tx.send(Ok(missing));
                     watch.run(&stop2);
                 }
                 Err(e) => {
@@ -319,10 +348,13 @@ mod imp {
                 }
             })?;
         match rx.recv() {
-            Ok(Ok(())) => Ok(Listener {
-                stop,
-                handle: Some(handle),
-            }),
+            Ok(Ok(missing)) => Ok((
+                Listener {
+                    stop,
+                    handle: Some(handle),
+                },
+                missing,
+            )),
             other => {
                 let _ = handle.join();
                 let why = match other {
@@ -359,7 +391,7 @@ mod imp {
         modifiers: Vec<u8>,
     }
 
-    fn connect(taps: Taps) -> std::result::Result<Watch, String> {
+    fn connect(taps: Taps) -> std::result::Result<(Watch, Vec<RightKey>), String> {
         let s = |e: &dyn std::fmt::Display| e.to_string();
         let (conn, screen) = x11rb::connect(None).map_err(|e| s(&e))?;
         let root = conn.setup().roots[screen].root;
@@ -402,14 +434,16 @@ mod imp {
                 .collect()
         };
         let mut keys = Vec::new();
-        for (keysym, name, cb) in [
-            (CONTROL_R, "Right Ctrl", taps.right_ctrl),
-            (SHIFT_R, "Right Shift", taps.right_shift),
+        let mut missing = Vec::new();
+        for (keysym, key, cb) in [
+            (CONTROL_R, RightKey::Ctrl, taps.right_ctrl),
+            (SHIFT_R, RightKey::Shift, taps.right_shift),
         ] {
             let Some(on_tap) = cb else { continue };
             let keycodes = keycodes_of(keysym);
             if keycodes.is_empty() {
-                return Err(format!("this keyboard layout has no {name}"));
+                missing.push(key);
+                continue;
             }
             keys.push(Watched {
                 keycodes,
@@ -426,11 +460,21 @@ mod imp {
             .into_iter()
             .filter(|k| *k != 0)
             .collect();
-        Ok(Watch {
-            conn,
-            keys,
-            modifiers,
-        })
+        if keys.is_empty() {
+            let names: Vec<&str> = missing.iter().map(|k| k.name()).collect();
+            return Err(format!(
+                "this keyboard layout has no {}",
+                names.join(" or ")
+            ));
+        }
+        Ok((
+            Watch {
+                conn,
+                keys,
+                modifiers,
+            },
+            missing,
+        ))
     }
 
     impl Watch {
@@ -522,12 +566,12 @@ mod imp {
 
 #[cfg(not(all(feature = "hotkey", any(windows, target_os = "linux"))))]
 mod imp {
-    use super::Taps;
+    use super::{RightKey, Taps};
     use crate::error::{CoreError, Result};
 
     pub struct Listener;
 
-    pub fn start(_taps: Taps) -> Result<Listener> {
+    pub fn start(_taps: Taps) -> Result<(Listener, Vec<RightKey>)> {
         Err(CoreError::NotImplemented("Tap Right Ctrl or Right Shift"))
     }
 }

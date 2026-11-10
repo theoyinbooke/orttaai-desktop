@@ -535,6 +535,7 @@ pub fn run() {
             // == engine ==
             engine::engine_status,
             engine::right_ctrl_window_tap,
+            engine::right_shift_window_tap,
             engine::start_dictation,
             engine::stop_dictation,
             engine::toggle_recording,

@@ -50,8 +50,10 @@ export type EngineSnapshot = {
   right_ctrl_active: boolean;
   /** "Tap Right Shift to Edit" is on and listening. */
   right_shift_active: boolean;
-  /** Why tapping Right Ctrl or Right Shift can't work here, or why it failed to start. */
+  /** Why tapping Right Ctrl can't work here, or why it failed to start. */
   right_ctrl_error: string | null;
+  /** Why tapping Right Shift can't work here, or why it failed to start. */
+  right_shift_error: string | null;
 };
 
 type Ctx = {

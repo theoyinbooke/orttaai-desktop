@@ -1051,6 +1051,19 @@ fn failed_edit_of_the_last_dictation_puts_the_caret_back() {
 }
 
 #[test]
+fn failed_transcription_of_an_edit_puts_the_caret_back() {
+    let (mut r, sel) = selection_rig("see you on monday", Some(Box::new(Shout)), &settings());
+    dictate(&mut r);
+    sel.set_selectable(true);
+    r.coord.replace_transcriber(Box::new(FailingTranscriber));
+    r.coord.handle_edit_hotkey_down();
+    r.run(1000, &[]);
+    r.coord.handle_edit_hotkey_up();
+    assert!(r.coord.finish_pending().is_err());
+    assert_eq!(sel.deselected(), vec!["see you on monday"]);
+}
+
+#[test]
 fn the_last_dictation_is_forgotten_after_ten_minutes_or_a_new_dictation() {
     let (mut r, sel) = selection_rig("see you on monday", Some(Box::new(Shout)), &settings());
     dictate(&mut r);
@@ -1091,6 +1104,36 @@ fn right_shift_tap_never_disturbs_a_dictation_and_needs_editing_on() {
     let (mut r, _sel) = selection_rig("hello", Some(Box::new(Shout)), &off);
     r.coord.handle_right_shift_tap();
     assert_eq!(r.coord.state(), RecordingState::Idle);
+}
+
+#[test]
+fn edits_never_press_ctrl_c_in_a_terminal() {
+    // Ctrl+C there interrupts the running program when nothing is selected.
+    let mut r = edit_rig(Some("output"), Some(Box::new(Shout)));
+    r.coord
+        .set_focused_app_provider(Box::new(|| Some("WindowsTerminal".to_string())));
+    r.coord.handle_edit_hotkey_down();
+    r.run(1000, &[]);
+    r.coord.handle_edit_hotkey_up();
+    assert_eq!(
+        r.coord.status().error.as_deref(),
+        Some("Voice edit doesn't work in terminals")
+    );
+    assert!(!r.coord.has_pending());
+    assert_eq!(
+        r.clip.get_text_now().as_deref(),
+        Some("user's clipboard"),
+        "no copy was attempted"
+    );
+
+    let (mut r, _sel) = selection_rig("hello", Some(Box::new(Shout)), &settings());
+    r.coord
+        .set_focused_app_provider(Box::new(|| Some("gnome-terminal-server".to_string())));
+    r.coord.handle_right_shift_tap();
+    assert_eq!(
+        r.coord.status().error.as_deref(),
+        Some("Voice edit doesn't work in terminals")
+    );
 }
 
 #[test]

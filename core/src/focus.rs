@@ -136,7 +136,9 @@ mod atspi_field {
     enum Request {
         Read(mpsc::Sender<FieldRead>),
         Peek(mpsc::Sender<SelectionPeek>),
-        Select(String, mpsc::Sender<SelectOutcome>),
+        /// When it was asked: a select whose caller has stopped waiting is
+        /// never started.
+        Select(String, mpsc::Sender<SelectOutcome>, std::time::Instant),
         Selected(mpsc::Sender<Option<String>>),
         Deselect(String, mpsc::Sender<()>),
     }
@@ -194,7 +196,7 @@ mod atspi_field {
 
     pub fn select_inserted(text: &str) -> SelectOutcome {
         ask(
-            |tx| Request::Select(text.to_string(), tx),
+            |tx| Request::Select(text.to_string(), tx, std::time::Instant::now()),
             SelectOutcome::NotFound,
         )
     }
@@ -244,9 +246,18 @@ mod atspi_field {
                 Request::Peek(reply) => {
                     let _ = reply.send(field.peek().await.unwrap_or(SelectionPeek::Nothing));
                 }
-                Request::Select(text, reply) => {
-                    let _ =
-                        reply.send(field.select(&text).await.unwrap_or(SelectOutcome::NotFound));
+                Request::Select(text, reply, asked) => {
+                    // Selected after Orttaai stopped waiting, nothing would
+                    // edit it and the next key typed would replace it.
+                    if asked.elapsed() >= READ_TIMEOUT {
+                        let _ = reply.send(SelectOutcome::NotFound);
+                        continue;
+                    }
+                    let outcome = field.select(&text).await.unwrap_or(SelectOutcome::NotFound);
+                    let selected = matches!(outcome, SelectOutcome::Selected(_));
+                    if reply.send(outcome).is_err() && selected {
+                        field.deselect(&text).await;
+                    }
                 }
                 Request::Selected(reply) => {
                     let _ = reply.send(field.selected_text().await);
@@ -263,7 +274,7 @@ mod atspi_field {
         match request {
             Request::Read(r) => drop(r.send(FieldRead::Unreadable)),
             Request::Peek(r) => drop(r.send(SelectionPeek::Nothing)),
-            Request::Select(_, r) => drop(r.send(SelectOutcome::NotFound)),
+            Request::Select(_, r, _) => drop(r.send(SelectOutcome::NotFound)),
             Request::Selected(r) => drop(r.send(None)),
             Request::Deselect(_, r) => drop(r.send(())),
         }
@@ -675,11 +686,18 @@ mod uia_field {
     // ---- Selection (see `crate::selection`) ----
 
     use crate::selection::{same_text, SelectOutcome, SelectionPeek};
-    use windows::core::BSTR;
+    use windows::core::{Interface, BSTR};
     use windows::Win32::UI::Accessibility::{
-        IUIAutomationElement, IUIAutomationTextRange, TextPatternRangeEndpoint_End,
+        IUIAutomation2, IUIAutomationElement, IUIAutomationTextRange, TextPatternRangeEndpoint_End,
         TextPatternRangeEndpoint_Start, UIA_EditControlTypeId,
     };
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, ES_MULTILINE, GWL_STYLE};
+
+    /// How long one UI Automation call may wait on the app. These calls run
+    /// on the dictation engine's thread, and a hung app would otherwise hold
+    /// it for UI Automation's own 20 s.
+    const CONNECTION_TIMEOUT_MS: u32 = 1_000;
+    const TRANSACTION_TIMEOUT_MS: u32 = 2_000;
 
     /// Reads while waiting for the app to show a new selection.
     const CONFIRM_ATTEMPTS: u32 = 5;
@@ -695,9 +713,22 @@ mod uia_field {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         let automation: IUIAutomation =
             CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+        if let Ok(bounded) = automation.cast::<IUIAutomation2>() {
+            let _ = bounded.SetConnectionTimeout(CONNECTION_TIMEOUT_MS);
+            let _ = bounded.SetTransactionTimeout(TRANSACTION_TIMEOUT_MS);
+        }
         let element = automation.GetFocusedElement()?;
         if element.CurrentIsPassword()?.as_bool() {
             return Ok(Focused::Secure);
+        }
+        // Text that can't be typed into (a web page, a PDF) is never edited:
+        // the result would be pasted into nothing.
+        if let Ok(value) =
+            element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+        {
+            if value.CurrentIsReadOnly().is_ok_and(|r| r.as_bool()) {
+                return Ok(Focused::Other);
+            }
         }
         Ok(
             match element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) {
@@ -705,6 +736,26 @@ mod uia_field {
                 Err(_) => Focused::Other,
             },
         )
+    }
+
+    /// Whether the edit box takes more than one line: a Win32 edit with the
+    /// multi-line style, a web text box marked multiline (Chromium and
+    /// Electron say so in their ARIA properties), or text with a line break.
+    unsafe fn is_multiline(element: &IUIAutomationElement, text: &str) -> bool {
+        if text.contains(['\n', '\r']) {
+            return true;
+        }
+        if element.CurrentAriaProperties().is_ok_and(|aria| {
+            aria.to_string()
+                .to_ascii_lowercase()
+                .contains("multiline=true")
+        }) {
+            return true;
+        }
+        match element.CurrentNativeWindowHandle() {
+            Ok(hwnd) if !hwnd.is_invalid() => GetWindowLongW(hwnd, GWL_STYLE) & ES_MULTILINE != 0,
+            _ => false,
+        }
     }
 
     /// The first selected range; a caret is an empty one.
@@ -738,19 +789,15 @@ mod uia_field {
         if text.trim().is_empty() {
             return Ok(SelectionPeek::Nothing);
         }
-        // UI Automation doesn't say whether an edit box is one line. Address
-        // bars and search boxes select all their text when clicked, so an
-        // edit box with everything selected counts as one.
+        // Address bars and search boxes select all their text when clicked.
+        // UI Automation has no "one line" flag, so: an edit box, everything
+        // selected, and nothing saying it's multi-line.
         let edit_box = element.CurrentControlType()? == UIA_EditControlTypeId;
-        let whole = pattern
-            .DocumentRange()
-            .ok()
-            .and_then(|d| text_of(&d))
-            .is_some_and(|all| same_text(&all, &text));
-        Ok(SelectionPeek::Selected {
-            text,
-            single_line: edit_box && whole,
-        })
+        let all = pattern.DocumentRange().ok().and_then(|d| text_of(&d));
+        let whole = all.as_deref().is_some_and(|all| same_text(all, &text));
+        let single_line =
+            edit_box && whole && !is_multiline(&element, all.as_deref().unwrap_or(&text));
+        Ok(SelectionPeek::Selected { text, single_line })
     }
 
     pub fn selected_text() -> Option<String> {

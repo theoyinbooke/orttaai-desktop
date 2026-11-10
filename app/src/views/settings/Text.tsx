@@ -30,7 +30,7 @@ export default function TextSettings() {
   const { settings } = useSettings();
   const { snapshot } = useEngine();
   const save = usePatch();
-  const rightKeysError = snapshot?.right_ctrl_error ?? null;
+  const rightKeysError = snapshot?.right_shift_error ?? null;
   if (!settings) return null;
   const rightShift = settings.right_shift_edit_enabled;
   const raw = settings.style_mode === "raw";

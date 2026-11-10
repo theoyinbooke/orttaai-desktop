@@ -1233,6 +1233,13 @@ impl DictationCoordinator {
         if self.session.as_ref().is_some_and(|s| s.selection.is_some()) {
             return true;
         }
+        // In a terminal, the Ctrl+C that reads the selection interrupts the
+        // running program when nothing is selected, and a paste never
+        // replaces selected output anyway: don't try.
+        if is_terminal_app(self.session.as_ref().and_then(|s| s.app.as_deref())) {
+            self.abort_session("Voice edit doesn't work in terminals");
+            return false;
+        }
         let message = match self.injection.capture_selection() {
             SelectionCapture::Captured(text) => {
                 if text.chars().count() > self.config.edit_max_chars {
@@ -1449,6 +1456,13 @@ impl DictationCoordinator {
                     CoreError::ModelNotLoaded => "No speech model loaded. Pick one in Models.",
                     _ => "Couldn't transcribe. Try again.",
                 };
+                // An edit of the last dictation selected it: put the caret
+                // back, or the next key typed replaces it.
+                if p.selection_source == SelectionSource::LastInsertion {
+                    if let Some(text) = p.selection.as_deref() {
+                        self.selector.deselect(text);
+                    }
+                }
                 self.end_session();
                 self.set_error(message);
                 return Err(e);
@@ -1575,10 +1589,14 @@ impl DictationCoordinator {
         peek: Option<mpsc::Receiver<SelectionPeek>>,
     ) -> KeyEdit {
         // The words are checked first, so an ordinary dictation never waits
-        // on the selection read.
+        // on the selection read. A Coach practice rep takes the words as
+        // they are, whatever is selected.
         let Some(peek) = peek else {
             return KeyEdit::Dictate(out);
         };
+        if crate::coach::practice_armed() {
+            return KeyEdit::Dictate(out);
+        }
         if !crate::edit::is_edit_instruction(words) {
             return KeyEdit::Dictate(out);
         }

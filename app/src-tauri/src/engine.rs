@@ -20,7 +20,7 @@ use orttaai_core::coordinator::{
     CoordinatorConfig, CoordinatorStatus, DictationCoordinator, DictationOutcome,
 };
 use orttaai_core::hardware::{self, HardwareInfo};
-use orttaai_core::hotkey::right_ctrl::{RightKeyListener, Taps};
+use orttaai_core::hotkey::right_ctrl::{RightKey, RightKeyListener, Taps};
 use orttaai_core::hotkey::{default_manager, HotkeyBinding, HotkeyCallback, HotkeyManager};
 use orttaai_core::injection::edit_watch::{EditObserver, EditWatcher, SystemFieldReader};
 use orttaai_core::injection::{InjectionService, SystemTextInjector, TextInjector};
@@ -132,9 +132,11 @@ pub struct EngineSnapshot {
     pub right_ctrl_active: bool,
     /// "Tap Right Shift to Edit" is on and listening.
     pub right_shift_active: bool,
-    /// Why tapping Right Ctrl or Right Shift can't work here (Wayland, an
-    /// unsupported system), or why the listener failed to start.
+    /// Why tapping Right Ctrl can't work here (Wayland, an unsupported
+    /// system, a layout without the key), or why the listener failed.
     pub right_ctrl_error: Option<String>,
+    /// The same for Right Shift.
+    pub right_shift_error: Option<String>,
 }
 
 struct Monitor {
@@ -158,6 +160,8 @@ pub struct EngineState {
     right_ctrl: Mutex<Option<RightKeyListener>>,
     /// The listener is watching Right Ctrl (not only Right Shift).
     right_ctrl_watched: AtomicBool,
+    /// The listener is watching Right Shift.
+    right_shift_watched: AtomicBool,
     commands: Mutex<Option<Sender<Cmd>>>,
     running: AtomicBool,
     starting: AtomicBool,
@@ -225,9 +229,12 @@ pub fn engine_status(app: AppHandle) -> EngineSnapshot {
         snap.edit_hotkey = s.edit_commands_enabled.then(|| s.edit_shortcut.display());
         snap.wayland = is_wayland();
         snap.portal_hotkeys = orttaai_core::hotkey::uses_portal();
-        if !snap.right_ctrl_active && !snap.right_shift_active && snap.right_ctrl_error.is_none() {
-            snap.right_ctrl_error =
-                orttaai_core::hotkey::right_ctrl::unavailable_reason().map(str::to_string);
+        let reason = orttaai_core::hotkey::right_ctrl::unavailable_reason().map(str::to_string);
+        if !snap.right_ctrl_active && snap.right_ctrl_error.is_none() {
+            snap.right_ctrl_error = reason.clone();
+        }
+        if !snap.right_shift_active && snap.right_shift_error.is_none() {
+            snap.right_shift_error = reason;
         }
     })
 }
@@ -532,11 +539,13 @@ fn start_right_keys(app: &AppHandle, settings: &Settings, tx: &Sender<Cmd>) {
     let want_ctrl = settings.right_ctrl_dictation_enabled;
     let want_shift = settings.right_shift_edit_enabled && settings.edit_commands_enabled;
     state.right_ctrl_watched.store(false, Ordering::SeqCst);
+    state.right_shift_watched.store(false, Ordering::SeqCst);
     if !(want_ctrl || want_shift) || reason.is_some() {
         publish_snapshot(app, |s| {
             s.right_ctrl_active = false;
             s.right_shift_active = false;
             s.right_ctrl_error = reason.map(str::to_string);
+            s.right_shift_error = reason.map(str::to_string);
         });
         return;
     }
@@ -552,18 +561,29 @@ fn start_right_keys(app: &AppHandle, settings: &Settings, tx: &Sender<Cmd>) {
         }),
         right_shift: want_shift.then(|| -> orttaai_core::hotkey::right_ctrl::TapCallback {
             Box::new(move || {
-                let _ = shift_tx.send(Cmd::RightShiftTap);
+                if accept_tap_at(&LAST_SHIFT_TAP, TapSource::Hook, std::time::Instant::now()) {
+                    let _ = shift_tx.send(Cmd::RightShiftTap);
+                }
             })
         }),
     };
     match RightKeyListener::start(taps) {
         Ok(listener) => {
+            let missing = |key: RightKey| listener.missing().contains(&key);
+            let no_key = |key: RightKey| {
+                missing(key).then(|| format!("This keyboard layout has no {} key.", key.name()))
+            };
+            let ctrl = want_ctrl && !missing(RightKey::Ctrl);
+            let shift = want_shift && !missing(RightKey::Shift);
+            let (ctrl_error, shift_error) = (no_key(RightKey::Ctrl), no_key(RightKey::Shift));
             *state.right_ctrl.lock().unwrap() = Some(listener);
-            state.right_ctrl_watched.store(want_ctrl, Ordering::SeqCst);
+            state.right_ctrl_watched.store(ctrl, Ordering::SeqCst);
+            state.right_shift_watched.store(shift, Ordering::SeqCst);
             publish_snapshot(app, |s| {
-                s.right_ctrl_active = want_ctrl;
-                s.right_shift_active = want_shift;
-                s.right_ctrl_error = None;
+                s.right_ctrl_active = ctrl;
+                s.right_shift_active = shift;
+                s.right_ctrl_error = ctrl_error;
+                s.right_shift_error = shift_error;
             });
         }
         Err(e) => {
@@ -572,6 +592,7 @@ fn start_right_keys(app: &AppHandle, settings: &Settings, tx: &Sender<Cmd>) {
                 s.right_ctrl_active = false;
                 s.right_shift_active = false;
                 s.right_ctrl_error = Some(e.to_string());
+                s.right_shift_error = Some(e.to_string());
             });
         }
     }
@@ -593,6 +614,8 @@ enum TapSource {
 const SAME_TAP: std::time::Duration = std::time::Duration::from_millis(350);
 
 static LAST_TAP: Mutex<Option<(TapSource, std::time::Instant)>> = Mutex::new(None);
+/// The same for Right Shift, which Orttaai's window reports too.
+static LAST_SHIFT_TAP: Mutex<Option<(TapSource, std::time::Instant)>> = Mutex::new(None);
 
 fn accept_right_ctrl_tap(source: TapSource) -> bool {
     accept_tap_at(&LAST_TAP, source, std::time::Instant::now())
@@ -615,6 +638,24 @@ fn accept_tap_at(
     }
     *last = Some((source, now));
     true
+}
+
+/// Orttaai's main window saw a clean Right Shift tap while it had focus.
+#[tauri::command]
+pub fn right_shift_window_tap(app: AppHandle) {
+    let state = app.state::<EngineState>();
+    if state.right_ctrl.lock().unwrap().is_none()
+        || !state.right_shift_watched.load(Ordering::SeqCst)
+    {
+        return;
+    }
+    if accept_tap_at(
+        &LAST_SHIFT_TAP,
+        TapSource::Window,
+        std::time::Instant::now(),
+    ) {
+        state.send(Cmd::RightShiftTap);
+    }
 }
 
 /// Orttaai's main window saw a clean Right Ctrl tap while it had focus.
