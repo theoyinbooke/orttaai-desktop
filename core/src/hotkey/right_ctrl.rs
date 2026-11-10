@@ -1,7 +1,8 @@
-//! "Tap Right Ctrl to dictate" (the Mac's "Tap Right Option to Dictate"): a
-//! listen-only watch on the keyboard that reports each clean tap of Right Ctrl
-//! (see [`TapDetector`](super::tap::TapDetector)). Keys are never swallowed, so Ctrl shortcuts keep
-//! working everywhere.
+//! "Tap Right Ctrl to dictate" (the Mac's "Tap Right Option to Dictate") and
+//! "Tap Right Shift to edit" (the Mac's "Tap Right Command to Edit"): a
+//! listen-only watch on the keyboard that reports each clean tap of either key
+//! (see [`TapDetector`](super::tap::TapDetector)). Keys are never swallowed, so
+//! Ctrl and Shift keep working everywhere.
 //!
 //! - Windows: low-level keyboard and mouse hooks (no permission needed).
 //! - Linux on X11: XInput2 raw key and button events on the root window.
@@ -13,13 +14,20 @@ use crate::error::{CoreError, Result};
 /// Called on each clean tap, on the listener's own thread.
 pub type TapCallback = Box<dyn Fn() + Send + Sync + 'static>;
 
+/// What to call for each key's taps; a key with no callback isn't watched.
+#[derive(Default)]
+pub struct Taps {
+    pub right_ctrl: Option<TapCallback>,
+    pub right_shift: Option<TapCallback>,
+}
+
 /// Why the key can't be watched on this system, if it can't.
 pub fn unavailable_reason() -> Option<&'static str> {
     if cfg!(not(all(
         feature = "hotkey",
         any(windows, target_os = "linux")
     ))) {
-        return Some("Tap Right Ctrl isn't available on this system.");
+        return Some("Tapping Right Ctrl or Right Shift isn't available on this system.");
     }
     if crate::injection::is_wayland_session() {
         return Some(
@@ -29,26 +37,29 @@ pub fn unavailable_reason() -> Option<&'static str> {
     None
 }
 
-/// Watches Right Ctrl until dropped.
-pub struct RightCtrlListener {
+/// Watches Right Ctrl and/or Right Shift until dropped.
+pub struct RightKeyListener {
     #[allow(dead_code)]
     inner: imp::Listener,
 }
 
-impl RightCtrlListener {
-    pub fn start(on_tap: TapCallback) -> Result<Self> {
+impl RightKeyListener {
+    pub fn start(taps: Taps) -> Result<Self> {
         if let Some(reason) = unavailable_reason() {
             return Err(CoreError::Hotkey(reason.into()));
         }
+        if taps.right_ctrl.is_none() && taps.right_shift.is_none() {
+            return Err(CoreError::Hotkey("no key to watch".into()));
+        }
         Ok(Self {
-            inner: imp::start(on_tap)?,
+            inner: imp::start(taps)?,
         })
     }
 }
 
 #[cfg(all(feature = "hotkey", windows))]
 mod imp {
-    use super::TapCallback;
+    use super::Taps;
     use crate::error::{CoreError, Result};
     use crate::hotkey::tap::TapDetector;
     use std::sync::{mpsc, Arc, Mutex};
@@ -67,20 +78,26 @@ mod imp {
         WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYUP, WM_USER, WM_XBUTTONDOWN,
     };
 
-    /// Modifiers that, already held, make a Right Ctrl press part of a combo.
-    const OTHER_MODIFIERS: [u16; 7] = [
+    /// Every modifier; any other one already held makes a press a combo.
+    const MODIFIERS: [u16; 8] = [
         VK_LSHIFT,
         VK_RSHIFT,
         VK_LCONTROL,
+        VK_RCONTROL,
         VK_LMENU,
         VK_RMENU,
         VK_LWIN,
         VK_RWIN,
     ];
 
-    struct Hook {
+    struct Watched {
+        vk: u16,
         detector: TapDetector,
         on_tap: Arc<dyn Fn() + Send + Sync>,
+    }
+
+    struct Hook {
+        keys: Vec<Watched>,
     }
 
     /// Hook procedures are plain functions, so their state lives here. One
@@ -92,22 +109,32 @@ mod imp {
         handle: Option<JoinHandle<()>>,
     }
 
-    pub fn start(on_tap: TapCallback) -> Result<Listener> {
+    pub fn start(taps: Taps) -> Result<Listener> {
         {
             let mut slot = HOOK.lock().unwrap();
             if slot.is_some() {
                 return Err(CoreError::Hotkey(
-                    "Right Ctrl is already being watched".into(),
+                    "the right-side keys are already being watched".into(),
                 ));
             }
-            *slot = Some(Hook {
-                detector: TapDetector::default(),
-                on_tap: Arc::from(on_tap),
-            });
+            let keys = [
+                (VK_RCONTROL, taps.right_ctrl),
+                (VK_RSHIFT, taps.right_shift),
+            ]
+            .into_iter()
+            .filter_map(|(vk, cb)| {
+                cb.map(|cb| Watched {
+                    vk,
+                    detector: TapDetector::default(),
+                    on_tap: Arc::from(cb),
+                })
+            })
+            .collect();
+            *slot = Some(Hook { keys });
         }
         let (tx, rx) = mpsc::channel();
         let spawned = std::thread::Builder::new()
-            .name("orttaai-right-ctrl".into())
+            .name("orttaai-right-keys".into())
             .spawn(move || {
                 // SAFETY: the hooks are installed and removed on this thread,
                 // which pumps messages until WM_QUIT so they get called.
@@ -160,7 +187,7 @@ mod imp {
                     _ => "the listener stopped".into(),
                 };
                 Err(CoreError::Hotkey(format!(
-                    "couldn't watch Right Ctrl: {why}"
+                    "couldn't watch the right-side keys: {why}"
                 )))
             }
         }
@@ -179,15 +206,17 @@ mod imp {
         }
     }
 
-    fn with_hook(f: impl FnOnce(&mut Hook) -> bool) {
+    /// Run `f` on the hook state; it returns the callbacks to fire, which run
+    /// after the lock is released.
+    fn with_hook(f: impl FnOnce(&mut Hook) -> Vec<Arc<dyn Fn() + Send + Sync>>) {
         let fire = {
             let Ok(mut slot) = HOOK.lock() else { return };
             match slot.as_mut() {
-                Some(hook) => f(hook).then(|| Arc::clone(&hook.on_tap)),
-                None => None,
+                Some(hook) => f(hook),
+                None => Vec::new(),
             }
         };
-        if let Some(on_tap) = fire {
+        for on_tap in fire {
             on_tap();
         }
     }
@@ -200,18 +229,25 @@ mod imp {
                 let up = matches!(wparam as u32, WM_KEYUP | WM_SYSKEYUP);
                 let (vk, time) = (key.vkCode, key.time);
                 with_hook(|hook| {
-                    if vk == u32::from(VK_RCONTROL) {
-                        if up {
-                            return hook.detector.key_up(time);
+                    let mut fire = Vec::new();
+                    for key in &mut hook.keys {
+                        if vk == u32::from(key.vk) {
+                            if up {
+                                if key.detector.key_up(time) {
+                                    fire.push(Arc::clone(&key.on_tap));
+                                }
+                            } else {
+                                let others = MODIFIERS
+                                    .iter()
+                                    .filter(|&&k| k != key.vk)
+                                    .any(|&k| GetAsyncKeyState(i32::from(k)) < 0);
+                                key.detector.key_down(others, time);
+                            }
+                        } else if !up {
+                            key.detector.other_input();
                         }
-                        let others = OTHER_MODIFIERS
-                            .iter()
-                            .any(|&k| GetAsyncKeyState(i32::from(k)) < 0);
-                        hook.detector.key_down(others, time);
-                    } else if !up {
-                        hook.detector.other_input();
                     }
-                    false
+                    fire
                 });
             }
         }
@@ -231,8 +267,10 @@ mod imp {
             )
         {
             with_hook(|hook| {
-                hook.detector.other_input();
-                false
+                for key in &mut hook.keys {
+                    key.detector.other_input();
+                }
+                Vec::new()
             });
         }
         CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
@@ -241,7 +279,7 @@ mod imp {
 
 #[cfg(all(feature = "hotkey", target_os = "linux"))]
 mod imp {
-    use super::TapCallback;
+    use super::{TapCallback, Taps};
     use crate::error::{CoreError, Result};
     use crate::hotkey::tap::TapDetector;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -254,8 +292,9 @@ mod imp {
     use x11rb::protocol::Event;
     use x11rb::rust_connection::RustConnection;
 
-    /// The `Control_R` keysym.
+    /// The `Control_R` and `Shift_R` keysyms.
     const CONTROL_R: u32 = 0xffe4;
+    const SHIFT_R: u32 = 0xffe2;
     /// `XIAllMasterDevices`.
     const ALL_MASTER_DEVICES: u16 = 1;
 
@@ -264,16 +303,16 @@ mod imp {
         handle: Option<JoinHandle<()>>,
     }
 
-    pub fn start(on_tap: TapCallback) -> Result<Listener> {
+    pub fn start(taps: Taps) -> Result<Listener> {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         let stop2 = Arc::clone(&stop);
         let handle = std::thread::Builder::new()
-            .name("orttaai-right-ctrl".into())
-            .spawn(move || match connect() {
+            .name("orttaai-right-keys".into())
+            .spawn(move || match connect(taps) {
                 Ok(watch) => {
                     let _ = tx.send(Ok(()));
-                    watch.run(&stop2, &*on_tap);
+                    watch.run(&stop2);
                 }
                 Err(e) => {
                     let _ = tx.send(Err(e));
@@ -291,7 +330,7 @@ mod imp {
                     _ => "the listener stopped".into(),
                 };
                 Err(CoreError::Hotkey(format!(
-                    "couldn't watch Right Ctrl: {why}"
+                    "couldn't watch the right-side keys: {why}"
                 )))
             }
         }
@@ -306,15 +345,21 @@ mod imp {
         }
     }
 
+    struct Watched {
+        /// Keycodes that produce the key.
+        keycodes: Vec<u8>,
+        detector: TapDetector,
+        on_tap: TapCallback,
+    }
+
     struct Watch {
         conn: RustConnection,
-        /// Keycodes that produce Right Ctrl.
-        targets: Vec<u8>,
-        /// Every other modifier key's keycode.
+        keys: Vec<Watched>,
+        /// Every modifier key's keycode, the watched keys included.
         modifiers: Vec<u8>,
     }
 
-    fn connect() -> std::result::Result<Watch, String> {
+    fn connect(taps: Taps) -> std::result::Result<Watch, String> {
         let s = |e: &dyn std::fmt::Display| e.to_string();
         let (conn, screen) = x11rb::connect(None).map_err(|e| s(&e))?;
         let root = conn.setup().roots[screen].root;
@@ -348,15 +393,29 @@ mod imp {
             .reply()
             .map_err(|e| s(&e))?;
         let per = usize::from(map.keysyms_per_keycode).max(1);
-        let targets: Vec<u8> = map
-            .keysyms
-            .chunks(per)
-            .enumerate()
-            .filter(|(_, syms)| syms.contains(&CONTROL_R))
-            .map(|(i, _)| min + i as u8)
-            .collect();
-        if targets.is_empty() {
-            return Err("this keyboard layout has no Right Ctrl".into());
+        let keycodes_of = |keysym: u32| -> Vec<u8> {
+            map.keysyms
+                .chunks(per)
+                .enumerate()
+                .filter(|(_, syms)| syms.contains(&keysym))
+                .map(|(i, _)| min + i as u8)
+                .collect()
+        };
+        let mut keys = Vec::new();
+        for (keysym, name, cb) in [
+            (CONTROL_R, "Right Ctrl", taps.right_ctrl),
+            (SHIFT_R, "Right Shift", taps.right_shift),
+        ] {
+            let Some(on_tap) = cb else { continue };
+            let keycodes = keycodes_of(keysym);
+            if keycodes.is_empty() {
+                return Err(format!("this keyboard layout has no {name}"));
+            }
+            keys.push(Watched {
+                keycodes,
+                detector: TapDetector::default(),
+                on_tap,
+            });
         }
         let modifiers = conn
             .get_modifier_mapping()
@@ -365,21 +424,20 @@ mod imp {
             .map_err(|e| s(&e))?
             .keycodes
             .into_iter()
-            .filter(|k| *k != 0 && !targets.contains(k))
+            .filter(|k| *k != 0)
             .collect();
         Ok(Watch {
             conn,
-            targets,
+            keys,
             modifiers,
         })
     }
 
     impl Watch {
-        fn run(self, stop: &AtomicBool, on_tap: &(dyn Fn() + Send + Sync)) {
-            let mut detector = TapDetector::default();
-            // Other modifiers held right now, followed from the events
-            // themselves: asking the server when an event is handled can be
-            // too late (Shift may already be up again).
+        fn run(mut self, stop: &AtomicBool) {
+            // Modifiers held right now, followed from the events themselves:
+            // asking the server when an event is handled can be too late
+            // (Shift may already be up again).
             let mut held = self.modifiers_down_now();
             while !stop.load(Ordering::Relaxed) {
                 let event = match self.conn.poll_for_event() {
@@ -391,30 +449,43 @@ mod imp {
                         continue;
                     }
                     Err(e) => {
-                        tracing::warn!("Right Ctrl listener lost the X server: {e}");
+                        tracing::warn!("right-side key listener lost the X server: {e}");
                         return;
                     }
                 };
                 match event {
-                    Event::XinputRawKeyPress(e) if self.is_target(e.detail) => {
-                        detector.key_down(!held.is_empty(), e.time);
-                    }
                     Event::XinputRawKeyPress(e) => {
+                        let code = u8::try_from(e.detail).ok();
+                        for key in &mut self.keys {
+                            if code.is_some_and(|c| key.keycodes.contains(&c)) {
+                                let others = held.iter().any(|h| !key.keycodes.contains(h));
+                                key.detector.key_down(others, e.time);
+                            } else {
+                                key.detector.other_input();
+                            }
+                        }
                         if let Some(k) = self.modifier(e.detail) {
                             if !held.contains(&k) {
                                 held.push(k);
                             }
                         }
-                        detector.other_input();
                     }
-                    Event::XinputRawButtonPress(_) => detector.other_input(),
-                    // `key_up` settles the press either way; only a tap fires.
-                    Event::XinputRawKeyRelease(e)
-                        if self.is_target(e.detail) && detector.key_up(e.time) =>
-                    {
-                        on_tap();
+                    Event::XinputRawButtonPress(_) => {
+                        for key in &mut self.keys {
+                            key.detector.other_input();
+                        }
                     }
                     Event::XinputRawKeyRelease(e) => {
+                        let code = u8::try_from(e.detail).ok();
+                        for key in &mut self.keys {
+                            // `key_up` settles the press either way; only a
+                            // tap fires.
+                            if code.is_some_and(|c| key.keycodes.contains(&c))
+                                && key.detector.key_up(e.time)
+                            {
+                                (key.on_tap)();
+                            }
+                        }
                         if let Some(k) = self.modifier(e.detail) {
                             held.retain(|h| *h != k);
                         }
@@ -422,10 +493,6 @@ mod imp {
                     _ => {}
                 }
             }
-        }
-
-        fn is_target(&self, keycode: u32) -> bool {
-            u8::try_from(keycode).is_ok_and(|k| self.targets.contains(&k))
         }
 
         fn modifier(&self, keycode: u32) -> Option<u8> {
@@ -455,19 +522,19 @@ mod imp {
 
 #[cfg(not(all(feature = "hotkey", any(windows, target_os = "linux"))))]
 mod imp {
-    use super::TapCallback;
+    use super::Taps;
     use crate::error::{CoreError, Result};
 
     pub struct Listener;
 
-    pub fn start(_on_tap: TapCallback) -> Result<Listener> {
-        Err(CoreError::NotImplemented("Tap Right Ctrl"))
+    pub fn start(_taps: Taps) -> Result<Listener> {
+        Err(CoreError::NotImplemented("Tap Right Ctrl or Right Shift"))
     }
 }
 
 #[cfg(all(test, feature = "hotkey", target_os = "linux"))]
 mod x11_tests {
-    use super::RightCtrlListener;
+    use super::{RightKeyListener, Taps};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -495,9 +562,12 @@ for step in sys.argv[1:]:
     #[ignore]
     fn x11_reports_clean_taps_only() {
         let (tx, rx) = mpsc::channel();
-        let _listener = RightCtrlListener::start(Box::new(move || {
-            let _ = tx.send(());
-        }))
+        let _listener = RightKeyListener::start(Taps {
+            right_ctrl: Some(Box::new(move || {
+                let _ = tx.send(());
+            })),
+            right_shift: None,
+        })
         .unwrap();
         std::thread::sleep(Duration::from_millis(300));
         let keys = |steps: &[&str]| {
@@ -522,6 +592,41 @@ for step in sys.argv[1:]:
         keys(&["37"]);
         assert!(!tapped(800), "Left Ctrl");
         keys(&["105"]);
+        assert!(tapped(2000), "a clean tap again");
+    }
+
+    /// Right Shift = 62 in the evdev keymap. Typing a capital with it is
+    /// never a tap, and a Right Ctrl tap isn't one either.
+    #[test]
+    #[ignore]
+    fn x11_reports_right_shift_taps_separately() {
+        let (tx, rx) = mpsc::channel();
+        let _listener = RightKeyListener::start(Taps {
+            right_ctrl: None,
+            right_shift: Some(Box::new(move || {
+                let _ = tx.send(());
+            })),
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let keys = |steps: &[&str]| {
+            let ok = std::process::Command::new("python3")
+                .args(["-c", KEYS])
+                .args(steps)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "{steps:?}");
+        };
+        let tapped = |within_ms: u64| rx.recv_timeout(Duration::from_millis(within_ms)).is_ok();
+
+        keys(&["62"]);
+        assert!(tapped(2000), "a clean tap");
+        keys(&["+62", "38", "-62"]);
+        assert!(!tapped(800), "Shift+A while typing");
+        keys(&["105"]);
+        assert!(!tapped(800), "Right Ctrl is not Right Shift");
+        keys(&["62"]);
         assert!(tapped(2000), "a clean tap again");
     }
 }

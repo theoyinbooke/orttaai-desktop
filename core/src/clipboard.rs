@@ -34,7 +34,31 @@ pub trait Clipboard: Send + Sync {
     fn set_primary(&self, _text: Option<&str>) -> Result<()> {
         Ok(())
     }
+    /// The copy now on the clipboard came from a code editor with nothing
+    /// selected: VS Code and its forks (Cursor, Windsurf, VSCodium) copy the
+    /// whole line then, which is not a selection.
+    fn copied_from_empty_selection(&self) -> bool {
+        false
+    }
 }
+
+/// VS Code tags its copies with JSON metadata, `"isFromEmptySelection":true`
+/// when the line was copied because nothing was selected. It can't be its own
+/// clipboard type, so Chromium packs it into its custom-data format, as
+/// UTF-16; the bytes are searched directly, in UTF-8 and UTF-16.
+pub fn marks_empty_selection(bytes: &[u8]) -> bool {
+    const MARKER: &str = "\"isFromEmptySelection\":true";
+    if bytes.len() > 256_000 {
+        return false;
+    }
+    let utf8 = MARKER.as_bytes();
+    let utf16: Vec<u8> = MARKER.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    bytes.windows(utf8.len()).any(|w| w == utf8) || bytes.windows(utf16.len()).any(|w| w == utf16)
+}
+
+/// The clipboard type Chromium (and so VS Code) keeps that metadata in.
+#[cfg(target_os = "linux")]
+const CHROMIUM_CUSTOM_DATA_MIME: &str = "chromium/x-web-custom-data";
 
 /// In-memory clipboard for tests and `demo`.
 #[derive(Default)]
@@ -46,6 +70,8 @@ pub struct MockClipboard {
     primary: Mutex<Option<String>>,
     /// Every value written by `set_primary`, for assertions.
     primary_history: Mutex<Vec<Option<String>>>,
+    /// The next copy looks like a code editor's whole-line copy.
+    empty_selection_copy: std::sync::atomic::AtomicBool,
 }
 
 impl MockClipboard {
@@ -66,6 +92,12 @@ impl MockClipboard {
 
     pub fn primary_history(&self) -> Vec<Option<String>> {
         self.primary_history.lock().unwrap().clone()
+    }
+
+    /// Make copies look like a code editor's copy with nothing selected.
+    pub fn set_empty_selection_copy(&self, on: bool) {
+        self.empty_selection_copy
+            .store(on, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -104,6 +136,11 @@ impl Clipboard for MockClipboard {
             .push(text.map(str::to_string));
         Ok(())
     }
+
+    fn copied_from_empty_selection(&self) -> bool {
+        self.empty_selection_copy
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 /// `Arc<C>` is a clipboard too, so a test can keep a handle to a mock it gave away.
@@ -125,6 +162,9 @@ impl<C: Clipboard + ?Sized> Clipboard for std::sync::Arc<C> {
     }
     fn set_primary(&self, text: Option<&str>) -> Result<()> {
         (**self).set_primary(text)
+    }
+    fn copied_from_empty_selection(&self) -> bool {
+        (**self).copied_from_empty_selection()
     }
 }
 
@@ -364,6 +404,22 @@ impl Clipboard for SystemClipboard {
         self.read()
     }
 
+    fn copied_from_empty_selection(&self) -> bool {
+        #[cfg(all(windows, feature = "injection"))]
+        return win::any_registered_format(marks_empty_selection);
+        #[cfg(target_os = "linux")]
+        {
+            let bytes = if self.wayland_tools {
+                wl::paste_type(CHROMIUM_CUSTOM_DATA_MIME)
+            } else {
+                xclip_type(CHROMIUM_CUSTOM_DATA_MIME)
+            };
+            return bytes.is_some_and(|b| marks_empty_selection(&b));
+        }
+        #[allow(unreachable_code)]
+        false
+    }
+
     fn restore(&self) -> Result<()> {
         let saved = self.saved.lock().unwrap().take();
         match saved {
@@ -388,6 +444,46 @@ fn wayland_session() -> bool {
         || std::env::var("XDG_SESSION_TYPE")
             .map(|s| s.eq_ignore_ascii_case("wayland"))
             .unwrap_or(false)
+}
+
+/// One type's bytes off the X11 clipboard through `xclip`, when installed
+/// (arboard reads text and images only). Capped at half a second: the copying
+/// app answers the request itself and may be slow.
+#[cfg(target_os = "linux")]
+fn xclip_type(mime: &str) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    if !on_path("xclip") {
+        return None;
+    }
+    let mut child = Command::new("xclip")
+        .args(["-selection", "clipboard", "-t", mime, "-o"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let ok = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break false;
+            }
+        }
+    };
+    let buf = reader.join().ok()?;
+    ok.then_some(buf)
 }
 
 /// Whether `bin` is an executable on `PATH`.
@@ -424,6 +520,11 @@ mod wl {
 
     /// The clipboard's image as (MIME type, bytes), when it offers one that
     /// fits a snapshot. Text-only or empty clipboards give `None`.
+    /// One MIME type's bytes, when the clipboard offers it.
+    pub fn paste_type(mime: &str) -> Option<Vec<u8>> {
+        read_bytes(&["--type", mime]).ok().flatten()
+    }
+
     pub fn paste_image() -> Option<(String, Vec<u8>)> {
         let types = read_bytes(&["--list-types"]).ok().flatten()?;
         let types = String::from_utf8_lossy(&types);
@@ -663,6 +764,45 @@ mod win {
         (n > 0).then(|| String::from_utf16_lossy(&buf[..n as usize]))
     }
 
+    /// Whether any registered (app-defined) format on the clipboard satisfies
+    /// `test`, e.g. VS Code's metadata inside "Chromium Web Custom MIME Data
+    /// Format". False when the clipboard can't be opened.
+    pub fn any_registered_format(test: impl Fn(&[u8]) -> bool) -> bool {
+        let Ok(_open) = OpenClipboardGuard::open() else {
+            return false;
+        };
+        let mut id = 0u32;
+        loop {
+            // SAFETY: the clipboard is open on this thread. 0 = no more formats.
+            id = unsafe { EnumClipboardFormats(id) };
+            if id == 0 {
+                return false;
+            }
+            if !win_formats::is_registered(id) || !win_formats::is_memory_format(id) {
+                continue;
+            }
+            // SAFETY: as in `save_formats`: the handle is only locked, read
+            // and unlocked while the clipboard is open.
+            let hit = unsafe {
+                let handle = GetClipboardData(id);
+                if handle.is_null() {
+                    continue;
+                }
+                let size = GlobalSize(handle);
+                let ptr = GlobalLock(handle);
+                if size == 0 || ptr.is_null() {
+                    continue;
+                }
+                let hit = test(std::slice::from_raw_parts(ptr.cast::<u8>(), size));
+                GlobalUnlock(handle);
+                hit
+            };
+            if hit {
+                return true;
+            }
+        }
+    }
+
     /// Copy every memory-backed format off the clipboard. Fails (so the caller
     /// saves text instead) when the clipboard can't be opened or the formats
     /// add up to more than the snapshot cap.
@@ -748,6 +888,19 @@ mod win {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vs_code_marker_found_in_either_encoding() {
+        let json = r#"{"version":1,"isFromEmptySelection":true,"mode":"rust"}"#;
+        assert!(marks_empty_selection(json.as_bytes()));
+        // Chromium custom data: a binary header, then UTF-16 strings.
+        let mut custom = vec![0x50, 0, 0, 0, 1, 0, 0, 0];
+        custom.extend(json.encode_utf16().flat_map(u16::to_le_bytes));
+        assert!(marks_empty_selection(&custom));
+        let selected = r#"{"version":1,"isFromEmptySelection":false}"#;
+        assert!(!marks_empty_selection(selected.as_bytes()));
+        assert!(!marks_empty_selection(b"plain text"));
+    }
 
     #[test]
     fn mock_save_set_restore_round_trips() {

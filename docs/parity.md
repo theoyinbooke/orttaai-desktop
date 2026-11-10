@@ -21,7 +21,10 @@ equivalent; behaviour, thresholds and copy follow the Mac.
 | Learning suggestions + learn from edits (`MemoryLearningService`, `EditLearningWatcher`) | `core/src/store/learning.rs`, `core/src/injection/edit_watch.rs` | Field reading through UI Automation (Windows) and AT-SPI (Linux) |
 | Text injection, clipboard, selection capture (`TextInjectionService`, AX) | `core/src/injection/`, `core/src/clipboard.rs` | SendInput / XTest / portal / wtype; paste with restore |
 | Polish: S1-mini + local LLM (`S1MiniPolish`, `LocalLLMTextProcessor`, `PolishEngine`) | `core/src/polish.rs`, `app/src-tauri/src/pipeline.rs` | Adapted: S1-mini needs Ollama or LM Studio (`hf.co/superwhisper/s1-mini-GGUF`); the Mac runs it inside the app |
-| Voice edit (`EditCommandProcessor`) | `core/src/edit.rs` | Ctrl+C capture, never invents text |
+| Voice edit (`EditCommandProcessor`) | `core/src/edit.rs` | Ctrl+C capture, never invents text; a VS Code whole-line copy (nothing selected) is not a selection |
+| Edit from the dictation shortcut (`EditInstructionClassifier`, `SelectionCaptureService.peekSelection`) | `core/src/edit.rs` `is_edit_instruction`, `core/src/selection.rs`, `core/src/focus.rs`, `core/src/coordinator.rs` | Same strict word rules; selection read through UI Automation (Windows) / AT-SPI (Linux), never the clipboard; English only; skips one-line fields, terminals; no model → types as before |
+| Edit the last dictation (`selectInsertedText`) | `core/src/selection.rs` `locate_inserted`, `core/src/focus.rs` | Nearest copy before the caret, confirmed before pasting; caret put back when the edit doesn't land |
+| Tap Right Command to edit (`ModifierTapMonitor`) | `core/src/hotkey/right_ctrl.rs` (`RightKeyListener`), `app/src-tauri/src/engine.rs` | Adapted: Right Shift (PC keyboards have no Right Command); same listener as Right Ctrl; unavailable on Wayland |
 | Ollama / LM Studio clients, local-only policy | `core/src/llm/` | Streaming, JSON schema, embeddings, pulls |
 | Chat AI (`ChatAIView`) | `core/src/chat.rs`, `views/ChatAI.tsx` | Saved conversations, memory context, reasoning |
 | Writing Insights, Tone of Voice | `core/src/writing.rs`, `views/analytics/*` | Deterministic fallback without an LLM |

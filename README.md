@@ -47,7 +47,8 @@ See [`docs/architecture.md`](docs/architecture.md) and the full build plan for d
   snippets, filler/stutter removal, spoken formatting ("new line", lists), automatic
   paragraphs, number formatting, style modes, vocabulary bias.
 - **Local AI** (Ollama or LM Studio, local endpoints only) — **Polish** (S1-mini or any
-  model), **voice edit** of the selected text, **Chat AI** over your own dictations
+  model), **voice edit** of the selected text (or of your last dictation; say an
+  instruction on the dictation shortcut, or **tap Right Shift**), **Chat AI** over your own dictations
   (streaming, saved conversations), **Writing Insights**, **Tone of Voice**.
 - **Memory Graph** — semantic index of your dictations: Activity, concept Map, Insights.
 - **Analytics**, **History** (search/filter), **Milestones** + share cards, **Coach**

@@ -3,10 +3,11 @@
 // preview. Owned by the text-pipeline area.
 import { useEffect, useRef, useState } from "react";
 import { Segmented, Spinner } from "../../ui";
-import { Row, Section, ToggleRow, usePatch } from "../../components/SettingsRows";
+import { Notice, Row, Section, ToggleRow, usePatch } from "../../components/SettingsRows";
 import ShortcutRecorder from "../../components/ShortcutRecorder";
 import { useEvent } from "../../lib/api";
 import { useSettings, type Settings } from "../../lib/settings";
+import { useEngine } from "../../lib/engine";
 import { memoryApi, type PipelinePreview } from "../../lib/memory";
 import "../../styles/memory.css";
 
@@ -27,8 +28,11 @@ const SAMPLES: { label: string; text: string }[] = [
 
 export default function TextSettings() {
   const { settings } = useSettings();
+  const { snapshot } = useEngine();
   const save = usePatch();
+  const rightKeysError = snapshot?.right_ctrl_error ?? null;
   if (!settings) return null;
+  const rightShift = settings.right_shift_edit_enabled;
   const raw = settings.style_mode === "raw";
   const styled = settings.style_mode === "formal" || settings.style_mode === "casual";
   const needsPolish = styled && !settings.polish_enabled;
@@ -84,17 +88,35 @@ export default function TextSettings() {
         <ToggleRow
           k="edit_commands_enabled"
           label="Edit Selection with Voice"
-          hint="Select text, press the edit shortcut, and say how to change it, like “make this more formal”. Uses the polish model set in Model › AI Features."
+          hint="Select text, press the edit shortcut, and say how to change it, like “make this more formal”. With nothing selected, the edit shortcut works on your last dictation. Uses the polish model set in Model › AI Features."
         />
         {settings.edit_commands_enabled && (
-          <Row label="Edit Shortcut">
-            <ShortcutRecorder
-              plain
-              value={settings.edit_shortcut}
-              other={settings.push_to_talk}
-              onChange={(c) => save({ edit_shortcut: c })}
+          <>
+            <ToggleRow
+              k="edit_with_dictation_key"
+              label="Edit with the Dictation Shortcut"
+              hint="Select text, press your dictation shortcut, and say an instruction like “make this shorter” or “fix the grammar”. Anything else you say replaces the selection, as before. English only, and only in apps that let Orttaai read the selection; elsewhere use the edit shortcut."
             />
-          </Row>
+            <ToggleRow
+              k="right_shift_edit_enabled"
+              label="Tap Right Shift to Edit"
+              hint={
+                !rightShift && rightKeysError
+                  ? rightKeysError
+                  : "Tap the Right Shift key, say how to change the selected text (or your last dictation, when nothing is selected), and tap it again to apply. Shift still works as usual."
+              }
+              disabled={!rightShift && !!rightKeysError}
+            />
+            {rightShift && rightKeysError && <Notice kind="warning">{rightKeysError}</Notice>}
+            <Row label="Edit Shortcut">
+              <ShortcutRecorder
+                plain
+                value={settings.edit_shortcut}
+                other={settings.push_to_talk}
+                onChange={(c) => save({ edit_shortcut: c })}
+              />
+            </Row>
+          </>
         )}
       </Section>
 

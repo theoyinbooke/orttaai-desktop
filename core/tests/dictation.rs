@@ -8,6 +8,7 @@ use orttaai_core::coordinator::{
 };
 use orttaai_core::injection::{InjectionLog, InjectionService, MockTextInjector};
 use orttaai_core::memory::MemoryService;
+use orttaai_core::selection::{MockFieldSelector, SelectionPeek};
 use orttaai_core::settings::{InjectionMode, Settings};
 use orttaai_core::store::{Store, TranscriptionRecord};
 use orttaai_core::transcription::MockTranscriber;
@@ -871,6 +872,234 @@ fn edit_tap_goes_hands_free_and_dictation_key_is_inert() {
     assert_eq!(r.coord.state(), RecordingState::Processing);
     let out = r.coord.finish_pending().unwrap();
     assert_eq!(out.transcript.as_deref(), Some("TAP EDIT"));
+}
+
+// ---- Editing from the dictation shortcut, and the last dictation -----------------------
+
+struct Offline;
+impl EditRewriter for Offline {
+    fn rewrite(&self, _s: &str, _i: &str) -> orttaai_core::Result<String> {
+        Err(CoreError::Llm("connection refused".into()))
+    }
+}
+
+/// A rig whose transcript is `words`, with a scripted accessibility selector.
+fn selection_rig(
+    words: &str,
+    rewriter: Option<Box<dyn EditRewriter>>,
+    s: &Settings,
+) -> (Rig, MockFieldSelector) {
+    let mut r = rig_with(
+        words,
+        MockTextInjector::new(),
+        MockAudioCapture::new(1.5),
+        MemoryService::new(),
+        s,
+    );
+    r.coord.set_rewriter(rewriter);
+    let selector = MockFieldSelector::new();
+    r.coord.set_field_selector(Arc::new(selector.clone()));
+    (r, selector)
+}
+
+/// Hold the dictation shortcut for a second and process the recording.
+fn dictate(r: &mut Rig) -> orttaai_core::coordinator::DictationOutcome {
+    r.coord.handle_hotkey_down();
+    r.run(1000, &[]);
+    r.coord.handle_hotkey_up();
+    assert_eq!(r.coord.state(), RecordingState::Processing);
+    r.coord.finish_pending().unwrap()
+}
+
+fn selected(text: &str) -> SelectionPeek {
+    SelectionPeek::Selected {
+        text: text.into(),
+        single_line: false,
+    }
+}
+
+#[test]
+fn instruction_on_the_dictation_key_edits_the_selection() {
+    let (mut r, sel) = selection_rig("Make this shorter.", Some(Box::new(Shout)), &settings());
+    sel.set_peek(selected("hello there"));
+    let out = dictate(&mut r);
+    assert_eq!(out.kind, SessionKind::Edit);
+    assert_eq!(out.edit_instruction.as_deref(), Some("Make this shorter."));
+    assert_eq!(out.transcript.as_deref(), Some("HELLO THERE"));
+    assert_eq!(r.log.all(), vec!["HELLO THERE"]);
+    assert_eq!(r.coord.state(), RecordingState::Idle);
+}
+
+#[test]
+fn ordinary_words_replace_the_selection_as_before() {
+    let (mut r, sel) = selection_rig(
+        "Thanks, see you Monday.",
+        Some(Box::new(Shout)),
+        &settings(),
+    );
+    sel.set_peek(selected("old sentence"));
+    let out = dictate(&mut r);
+    assert_eq!(out.kind, SessionKind::Dictation);
+    assert_eq!(r.log.last().as_deref(), Some("Thanks, see you Monday."));
+}
+
+#[test]
+fn one_line_fields_are_never_edited_from_the_dictation_key() {
+    // An address bar selects its URL when clicked.
+    let (mut r, sel) = selection_rig("Translate to French.", Some(Box::new(Shout)), &settings());
+    sel.set_peek(SelectionPeek::Selected {
+        text: "https://example.com".into(),
+        single_line: true,
+    });
+    let out = dictate(&mut r);
+    assert_eq!(out.kind, SessionKind::Dictation);
+    assert_eq!(r.log.last().as_deref(), Some("Translate to French."));
+}
+
+#[test]
+fn without_a_model_the_dictation_key_types_as_before() {
+    let (mut r, sel) = selection_rig("Make this shorter.", None, &settings());
+    sel.set_peek(selected("old sentence"));
+    dictate(&mut r);
+    assert_eq!(sel.peeks(), 0, "no model: nothing is read");
+    assert_eq!(r.log.last().as_deref(), Some("Make this shorter."));
+
+    let (mut r, sel) = selection_rig("Make this shorter.", Some(Box::new(Offline)), &settings());
+    sel.set_peek(selected("old sentence"));
+    let out = dictate(&mut r);
+    assert_eq!(out.kind, SessionKind::Dictation);
+    assert_eq!(r.log.last().as_deref(), Some("Make this shorter."));
+    assert_eq!(r.coord.state(), RecordingState::Idle);
+}
+
+#[test]
+fn failed_edit_keeps_the_words_in_history_and_types_nothing() {
+    let (mut r, sel) = selection_rig("Make this shorter.", Some(Box::new(Refuse)), &settings());
+    sel.set_peek(selected("keep this"));
+    let out = dictate(&mut r);
+    assert!(r.log.all().is_empty(), "the selection is left as it was");
+    assert_eq!(r.coord.state(), RecordingState::Error);
+    let rec = out
+        .to_record(1_700_000_000)
+        .expect("the words reach History");
+    assert_eq!(rec.text, "Make this shorter.");
+    assert_eq!(rec.entry_kind, "dictation");
+}
+
+#[test]
+fn edit_is_not_pasted_when_the_selection_moved_away() {
+    let (mut r, sel) = selection_rig("Make this shorter.", Some(Box::new(Shout)), &settings());
+    sel.set_peek(selected("hello there"));
+    sel.set_current(Some("")); // a click cleared it while the instruction was spoken
+    dictate(&mut r);
+    assert!(r.log.all().is_empty());
+    assert_eq!(
+        r.coord.status().error.as_deref(),
+        Some("The selection changed, so nothing was replaced")
+    );
+}
+
+#[test]
+fn dictation_key_editing_needs_english_the_setting_and_no_terminal() {
+    let mut french = settings();
+    french.dictation_language = "fr".into();
+    let (mut r, sel) = selection_rig("Make this shorter.", Some(Box::new(Shout)), &french);
+    sel.set_peek(selected("x y"));
+    dictate(&mut r);
+    assert_eq!(sel.peeks(), 0);
+
+    let mut off = settings();
+    off.edit_with_dictation_key = false;
+    let (mut r, sel) = selection_rig("Make this shorter.", Some(Box::new(Shout)), &off);
+    dictate(&mut r);
+    assert_eq!(sel.peeks(), 0);
+
+    let (mut r, sel) = selection_rig("Make this shorter.", Some(Box::new(Shout)), &settings());
+    r.coord
+        .set_focused_app_provider(Box::new(|| Some("WindowsTerminal".to_string())));
+    dictate(&mut r);
+    assert_eq!(sel.peeks(), 0, "terminals are left alone");
+}
+
+#[test]
+fn edit_key_with_nothing_selected_edits_the_last_dictation() {
+    let (mut r, sel) = selection_rig("see you on monday", Some(Box::new(Shout)), &settings());
+    dictate(&mut r);
+    assert_eq!(r.log.last().as_deref(), Some("see you on monday"));
+    sel.set_selectable(true);
+
+    r.coord.handle_edit_hotkey_down();
+    r.run(1000, &[]);
+    r.coord.handle_edit_hotkey_up();
+    assert_eq!(sel.selected(), vec!["see you on monday"]);
+    let out = r.coord.finish_pending().unwrap();
+    assert_eq!(out.kind, SessionKind::Edit);
+    assert_eq!(r.log.last().as_deref(), Some("SEE YOU ON MONDAY"));
+    assert!(sel.deselected().is_empty());
+}
+
+#[test]
+fn failed_edit_of_the_last_dictation_puts_the_caret_back() {
+    let (mut r, sel) = selection_rig("see you on monday", Some(Box::new(Refuse)), &settings());
+    dictate(&mut r);
+    sel.set_selectable(true);
+    r.coord.handle_edit_hotkey_down();
+    r.run(1000, &[]);
+    r.coord.handle_edit_hotkey_up();
+    r.coord.finish_pending().unwrap();
+    assert_eq!(sel.deselected(), vec!["see you on monday"]);
+}
+
+#[test]
+fn the_last_dictation_is_forgotten_after_ten_minutes_or_a_new_dictation() {
+    let (mut r, sel) = selection_rig("see you on monday", Some(Box::new(Shout)), &settings());
+    dictate(&mut r);
+    sel.set_selectable(true);
+    r.advance(601_000);
+    r.coord.handle_edit_hotkey_down();
+    r.run(1000, &[]);
+    r.coord.handle_edit_hotkey_up();
+    assert_eq!(r.coord.status().error.as_deref(), Some("Select text first"));
+    assert!(sel.selected().is_empty());
+}
+
+#[test]
+fn right_shift_tap_records_an_edit_until_the_next_tap() {
+    let (mut r, sel) = selection_rig("see you on monday", Some(Box::new(Shout)), &settings());
+    dictate(&mut r);
+    sel.set_selectable(true);
+    r.coord.handle_right_shift_tap();
+    assert_eq!(r.coord.kind(), SessionKind::Edit);
+    assert_eq!(r.coord.mode(), RecordingMode::HandsFree);
+    r.run(1000, &[]);
+    r.coord.handle_right_shift_tap();
+    assert_eq!(r.coord.state(), RecordingState::Processing);
+    r.coord.finish_pending().unwrap();
+    assert_eq!(r.log.last().as_deref(), Some("SEE YOU ON MONDAY"));
+}
+
+#[test]
+fn right_shift_tap_never_disturbs_a_dictation_and_needs_editing_on() {
+    let (mut r, _sel) = selection_rig("hello", Some(Box::new(Shout)), &settings());
+    r.coord.handle_right_key_tap();
+    r.coord.handle_right_shift_tap();
+    assert_eq!(r.coord.kind(), SessionKind::Dictation);
+    assert_eq!(r.coord.state(), RecordingState::Recording);
+
+    let mut off = settings();
+    off.edit_commands_enabled = false;
+    let (mut r, _sel) = selection_rig("hello", Some(Box::new(Shout)), &off);
+    r.coord.handle_right_shift_tap();
+    assert_eq!(r.coord.state(), RecordingState::Idle);
+}
+
+#[test]
+fn right_shift_tap_with_nothing_to_edit_never_records() {
+    let (mut r, _sel) = selection_rig("hello", Some(Box::new(Shout)), &settings());
+    r.coord.handle_right_shift_tap();
+    assert_eq!(r.coord.state(), RecordingState::Error);
+    assert_eq!(r.coord.status().error.as_deref(), Some("Select text first"));
+    assert!(!r.coord.has_pending());
 }
 
 // ---- Records + status ---------------------------------------------------------------

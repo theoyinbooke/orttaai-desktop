@@ -28,6 +28,7 @@ pub mod milestones;
 #[cfg(feature = "models")]
 pub mod models;
 pub mod polish;
+pub mod selection;
 pub mod semantic;
 pub mod settings;
 pub mod store;

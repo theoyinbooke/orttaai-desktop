@@ -48,6 +48,29 @@ pub const MAX_DETAIL_LENGTH: usize = 140;
 /// at most three highlights, the ones people will notice, in plain words.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.5.0",
+        items: &[
+            Item {
+                id: "0.5-right-shift",
+                title: "Tap Right Shift to edit",
+                detail: "Tap Right Shift, say how to change your text, and tap again. Turn it on in Settings › Text.",
+                art: Art::Symbol("keyboard"),
+            },
+            Item {
+                id: "0.5-instruction",
+                title: "Edit with your dictation key",
+                detail: "Select text, press your dictation shortcut and say “make this shorter”. Anything else still replaces it.",
+                art: Art::Symbol("edit"),
+            },
+            Item {
+                id: "0.5-last-dictation",
+                title: "Fix what you just said",
+                detail: "With nothing selected, the edit key changes your last dictation, like “make that more formal”.",
+                art: Art::Symbol("restart"),
+            },
+        ],
+    },
+    Release {
         version: "0.4.0",
         items: &[
             Item {

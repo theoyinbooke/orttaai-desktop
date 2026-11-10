@@ -160,6 +160,14 @@ pub struct Settings {
     pub edit_shortcut: HotkeyCombo,
     pub edit_timeout_ms: u64,
     pub edit_max_chars: usize,
+    /// With text selected, an instruction said on the dictation shortcut
+    /// ("make this shorter") edits it; anything else replaces it as before
+    /// (Mac "Edit with the Dictation Shortcut"). English only.
+    pub edit_with_dictation_key: bool,
+    /// Tap Right Shift to record an edit (of the selection, or the last
+    /// dictation) and tap it again to apply it (Mac "Tap Right Command to
+    /// Edit"). Off by default; Windows and X11 only.
+    pub right_shift_edit_enabled: bool,
 
     // ---- Text --------------------------------------------------------------
     pub style_mode: StyleMode,
@@ -280,6 +288,8 @@ impl Default for Settings {
             },
             edit_timeout_ms: 6000,
             edit_max_chars: 1500,
+            edit_with_dictation_key: true,
+            right_shift_edit_enabled: false,
 
             style_mode: StyleMode::Clean,
             spoken_formatting: true,

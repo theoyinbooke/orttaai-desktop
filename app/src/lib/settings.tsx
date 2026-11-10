@@ -44,6 +44,10 @@ export type Settings = {
   edit_shortcut: HotkeyCombo;
   edit_timeout_ms: number;
   edit_max_chars: number;
+  /** With text selected, an instruction said on the dictation shortcut edits it. English only. */
+  edit_with_dictation_key: boolean;
+  /** Tap Right Shift to edit the selection or the last dictation (Mac: Right Command). */
+  right_shift_edit_enabled: boolean;
 
   style_mode: "raw" | "clean" | "formal" | "casual";
   spoken_formatting: boolean;

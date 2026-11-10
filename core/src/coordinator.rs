@@ -25,6 +25,9 @@ use crate::error::{CoreError, Result};
 use crate::gesture::{GestureInterpreter, ReleaseAction};
 use crate::injection::{Delivery, InjectionConfig, InjectionService, SelectionCapture};
 use crate::memory::MemoryService;
+use crate::selection::{
+    is_still_selected, FieldSelector, SelectOutcome, SelectionPeek, SystemFieldSelector,
+};
 use crate::settings::Settings;
 use crate::store::TranscriptionRecord;
 use crate::transcription::{bias_prompt_for, Transcriber};
@@ -34,7 +37,7 @@ use crate::types::{
 };
 use crate::vad::{AutoStopPolicy, VoiceDetector};
 use serde::Serialize;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 // ---- Pipeline seams -----------------------------------------------------------
@@ -157,6 +160,11 @@ pub struct CoordinatorConfig {
     pub max_recording: Duration,
     pub edit_enabled: bool,
     pub edit_max_chars: usize,
+    /// With text selected, an instruction said on the dictation shortcut edits
+    /// it (Mac `editWithDictationKeyEnabled`).
+    pub edit_with_dictation_key: bool,
+    /// Dictation is in English: the instruction rules are English only.
+    pub english: bool,
     pub show_processing_estimate: bool,
     pub vocabulary_bias: bool,
     /// Decode while the speaker talks (Whisper always; Express when
@@ -187,6 +195,8 @@ impl CoordinatorConfig {
             max_recording: Duration::from_secs(s.max_recording_secs.clamp(10, 300) as u64),
             edit_enabled: s.edit_commands_enabled,
             edit_max_chars: s.edit_max_chars,
+            edit_with_dictation_key: s.edit_with_dictation_key,
+            english: s.dictation_language.trim().eq_ignore_ascii_case("en"),
             show_processing_estimate: s.show_processing_estimate,
             vocabulary_bias: s.vocabulary_bias,
             live_decoding: true,
@@ -215,6 +225,13 @@ pub enum StopReason {
 }
 
 // ---- Constants (Mac) ------------------------------------------------------------
+
+/// How long after a dictation the edit key still reaches for it (Mac
+/// `lastInsertionEditWindow`).
+pub const LAST_INSERTION_EDIT_WINDOW: Duration = Duration::from_secs(600);
+/// How long an instruction waits for the selection read at the recording's
+/// start (it normally finished long before).
+const PEEK_WAIT: Duration = Duration::from_millis(1500);
 
 /// Recordings shorter than this are discarded as accidental.
 pub const MIN_RECORDING: Duration = Duration::from_millis(500);
@@ -429,6 +446,49 @@ struct Session {
     device: Option<String>,
     /// Edit sessions: the captured selection (read at the edit key's release).
     selection: Option<String>,
+    selection_source: SelectionSource,
+    /// Dictations: what was selected when recording started, read in the
+    /// background without the clipboard.
+    peek: Option<mpsc::Receiver<SelectionPeek>>,
+}
+
+/// Where an edit's selection came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum SelectionSource {
+    /// Copied with Ctrl+C: apps that hide their text from accessibility.
+    #[default]
+    Copied,
+    /// Read through accessibility when a dictation started.
+    Peeked,
+    /// Orttaai's last dictation, found and selected in the field.
+    LastInsertion,
+}
+
+/// The text Orttaai last typed, so the edit key can work on it when nothing
+/// is selected.
+struct LastInsertion {
+    text: String,
+    app: Option<String>,
+    window: Option<u64>,
+    at: Duration,
+}
+
+/// What became of a dictation that might have been an instruction.
+enum KeyEdit {
+    /// Handled as an edit (applied or not); nothing more to do.
+    Done(DictationOutcome),
+    /// An ordinary dictation after all: type it.
+    Dictate(DictationOutcome),
+}
+
+/// How an edit ended, for the dictation-shortcut path that keeps the words
+/// when the edit didn't land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditStatus {
+    Applied,
+    NotApplied,
+    /// No local model answered; the words may be typed instead.
+    ModelUnavailable,
 }
 
 struct Pending {
@@ -439,6 +499,8 @@ struct Pending {
     window: Option<u64>,
     device: Option<String>,
     selection: Option<String>,
+    selection_source: SelectionSource,
+    peek: Option<mpsc::Receiver<SelectionPeek>>,
     lost_audio: bool,
 }
 
@@ -450,6 +512,8 @@ pub struct DictationCoordinator {
     injection: InjectionService,
     pipeline: Box<dyn TranscriptPipeline>,
     rewriter: Option<Box<dyn EditRewriter>>,
+    selector: Arc<dyn FieldSelector>,
+    last_insertion: Option<LastInsertion>,
     voice: Option<Box<dyn VoiceDetector>>,
     clock: Arc<dyn Clock>,
     focused_app: FocusedAppProvider,
@@ -503,6 +567,8 @@ impl DictationCoordinator {
             injection,
             pipeline,
             rewriter: None,
+            selector: Arc::new(SystemFieldSelector),
+            last_insertion: None,
             voice: None,
             clock: Arc::new(SystemClock::new()),
             focused_app: Box::new(crate::focus::focused_app),
@@ -610,6 +676,11 @@ impl DictationCoordinator {
 
     pub fn set_rewriter(&mut self, rewriter: Option<Box<dyn EditRewriter>>) {
         self.rewriter = rewriter;
+    }
+
+    /// Replace the accessibility selection reader (tests script it).
+    pub fn set_field_selector(&mut self, selector: Arc<dyn FieldSelector>) {
+        self.selector = selector;
     }
 
     /// Silero (or any) voice detector for hands-free auto-stop; `None` uses the
@@ -830,6 +901,41 @@ impl DictationCoordinator {
         }
     }
 
+    /// A clean tap of Right Shift (Mac: a tap of Right Command): the first
+    /// records an edit instruction, hands-free, for the selected text or, with
+    /// nothing selected, the last dictation; the next tap stops it and applies
+    /// the edit. The tap fires on release, so no key is held when the
+    /// selection is copied. Ignored while a dictation records, while anything
+    /// is being processed, and while an error shows.
+    pub fn handle_right_shift_tap(&mut self) {
+        if !self.config.edit_enabled {
+            return;
+        }
+        match self.state {
+            RecordingState::Idle => {
+                if self.rewriter.is_none() {
+                    self.set_error(
+                        "Voice edit needs a local AI model. Set one up in Settings › AI Features.",
+                    );
+                    return;
+                }
+                self.begin_session(SessionKind::Edit);
+                if self.state == RecordingState::Recording && self.ensure_selection() {
+                    self.promote_to_hands_free();
+                }
+            }
+            RecordingState::Recording => {
+                if self.kind == SessionKind::Edit && self.mode == RecordingMode::HandsFree {
+                    tracing::info!("edit recording stopped by a Right Shift tap");
+                    self.stop_recording(StopReason::HotkeyTapStop);
+                }
+            }
+            RecordingState::Processing | RecordingState::Error => {
+                tracing::info!("ignoring a Right Shift tap while {:?}", self.state);
+            }
+        }
+    }
+
     /// Tray / click-to-record / overlay mic: idle → a hands-free recording
     /// (plain recording when hands-free is off); recording → stop.
     pub fn toggle(&mut self) {
@@ -897,6 +1003,11 @@ impl DictationCoordinator {
         }
         self.mode = RecordingMode::PushToTalk;
         self.kind = kind;
+        if kind == SessionKind::Dictation {
+            // A new dictation: the edit key must never reach past it to an
+            // older one, even if this one doesn't get typed.
+            self.last_insertion = None;
+        }
         // Capture the target app NOW, before any overlay appears.
         let app = (self.focused_app)();
         let window = self.windows.current();
@@ -904,12 +1015,15 @@ impl DictationCoordinator {
         match self.audio.start(device) {
             Ok(()) => {
                 let now = self.clock.now();
+                let peek = self.start_selection_peek(kind, app.as_deref());
                 self.session = Some(Session {
                     started: now,
                     app,
                     window,
                     device: self.audio.active_device(),
                     selection: None,
+                    selection_source: SelectionSource::default(),
+                    peek,
                 });
                 self.policy = AutoStopPolicy::new();
                 self.last_silence_check = now;
@@ -933,6 +1047,58 @@ impl DictationCoordinator {
                 self.set_error(start_failure_message(&e));
             }
         }
+    }
+
+    /// For a dictation that might turn out to be an instruction, read what's
+    /// selected in the background while the person talks. Never with the
+    /// clipboard, never in terminals (selected output there isn't replaced by
+    /// a paste), and only when an edit could actually run.
+    fn start_selection_peek(
+        &self,
+        kind: SessionKind,
+        app: Option<&str>,
+    ) -> Option<mpsc::Receiver<SelectionPeek>> {
+        if kind != SessionKind::Dictation
+            || !self.config.edit_enabled
+            || !self.config.edit_with_dictation_key
+            || !self.config.english
+            || self.rewriter.is_none()
+            || is_terminal_app(app)
+        {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel();
+        let selector = Arc::clone(&self.selector);
+        std::thread::Builder::new()
+            .name("orttaai-selection-peek".into())
+            .spawn(move || {
+                let _ = tx.send(selector.peek());
+            })
+            .ok()?;
+        Some(rx)
+    }
+
+    /// Keep what was just typed, and where, for the edit key.
+    fn remember_insertion(&mut self, text: &str, app: Option<String>) {
+        self.last_insertion = Some(LastInsertion {
+            text: text.to_string(),
+            app,
+            window: self.target_window,
+            at: self.clock.now(),
+        });
+    }
+
+    /// The last dictation, when the edit key may still reach for it: recent,
+    /// in the same window and app, and not in a terminal.
+    fn reachable_last_insertion(&self) -> Option<String> {
+        let last = self.last_insertion.as_ref()?;
+        let session = self.session.as_ref()?;
+        let recent = self.clock.now().saturating_sub(last.at) <= LAST_INSERTION_EDIT_WINDOW;
+        (recent
+            && last.window == session.window
+            && last.app == session.app
+            && !is_terminal_app(session.app.as_deref()))
+        .then(|| last.text.clone())
     }
 
     /// Switch an in-progress push-to-talk recording to hands-free. Capture
@@ -1074,11 +1240,30 @@ impl DictationCoordinator {
                 } else {
                     if let Some(s) = self.session.as_mut() {
                         s.selection = Some(text);
+                        s.selection_source = SelectionSource::Copied;
                     }
                     return true;
                 }
             }
-            SelectionCapture::NoSelection => "Select text first",
+            // Nothing selected: reach for the dictation just typed here.
+            SelectionCapture::NoSelection => match self.reachable_last_insertion() {
+                Some(last) if last.chars().count() > self.config.edit_max_chars => {
+                    // Too long to edit: say so without selecting it.
+                    "Selection too long to edit"
+                }
+                Some(last) => match self.selector.select_inserted(&last) {
+                    SelectOutcome::Selected(text) => {
+                        if let Some(s) = self.session.as_mut() {
+                            s.selection = Some(text);
+                            s.selection_source = SelectionSource::LastInsertion;
+                        }
+                        return true;
+                    }
+                    SelectOutcome::Secure => "Can't edit password fields",
+                    SelectOutcome::NotFound => "Select text first",
+                },
+                None => "Select text first",
+            },
             SelectionCapture::BlockedSecureField => "Can't edit password fields",
         };
         self.abort_session(message);
@@ -1145,10 +1330,20 @@ impl DictationCoordinator {
             self.state = RecordingState::Idle;
             return;
         };
+        // The recording ends without an edit: don't leave the last dictation
+        // selected, or the next key typed replaces it.
+        let release_selection = |me: &Self| {
+            if session.selection_source == SelectionSource::LastInsertion {
+                if let Some(text) = session.selection.as_deref() {
+                    me.selector.deselect(text);
+                }
+            }
+        };
         let samples = match self.audio.stop() {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("stop capture failed: {e}");
+                release_selection(self);
                 self.end_session();
                 self.set_error("Microphone unavailable. Try again.");
                 return;
@@ -1160,6 +1355,7 @@ impl DictationCoordinator {
 
         if duration < MIN_RECORDING {
             tracing::info!("recording too short ({:?}); skipping", duration);
+            release_selection(self);
             self.end_session();
             self.state = RecordingState::Idle;
             return;
@@ -1180,6 +1376,7 @@ impl DictationCoordinator {
                     "rejecting incomplete recording ({:.0}% coverage)",
                     coverage * 100.0
                 );
+                release_selection(self);
                 self.end_session();
                 self.set_error("Audio was dropped. Please dictate again.");
                 return;
@@ -1204,6 +1401,8 @@ impl DictationCoordinator {
             window: session.window,
             device: session.device,
             selection: session.selection,
+            selection_source: session.selection_source,
+            peek: session.peek,
             lost_audio,
         });
         self.countdown = None;
@@ -1260,8 +1459,14 @@ impl DictationCoordinator {
         out.raw_text = (!cleaned.is_empty()).then(|| cleaned.clone());
 
         let outcome = match p.kind {
-            SessionKind::Edit => self.finish_edit(out, &cleaned, p.selection),
-            SessionKind::Dictation => self.finish_dictation(out, &cleaned, p.lost_audio),
+            SessionKind::Edit => {
+                self.finish_edit(out, &cleaned, p.selection, p.selection_source, false)
+                    .0
+            }
+            SessionKind::Dictation => match self.edit_from_dictation_key(out, &cleaned, p.peek) {
+                KeyEdit::Done(edited) => edited,
+                KeyEdit::Dictate(out) => self.finish_dictation(out, &cleaned, p.lost_audio),
+            },
         };
         let mut outcome = outcome;
         outcome.processing_ms = started.elapsed().as_millis() as i64;
@@ -1335,6 +1540,8 @@ impl DictationCoordinator {
         out.transcript = Some(text);
         match delivery.result {
             InjectionResult::Success => {
+                let typed = out.transcript.clone().unwrap_or_default();
+                self.remember_insertion(&typed, out.app.clone());
                 if lost_audio {
                     self.fail(&mut out, "Some audio was lost. The rest was inserted.");
                 } else {
@@ -1354,57 +1561,153 @@ impl DictationCoordinator {
         out
     }
 
+    /// A dictation whose words are an instruction for the text that was
+    /// selected when it started edits that text instead of typing over it
+    /// (Mac `processRecording`'s dictation-key path). [`KeyEdit::Dictate`] hands
+    /// the outcome back for an ordinary dictation: not an instruction, nothing selected, a
+    /// one-line field, or no local model answering (then the words are typed
+    /// over the selection, as they always were). When the edit doesn't land,
+    /// the spoken words are still kept in History.
+    fn edit_from_dictation_key(
+        &mut self,
+        mut out: DictationOutcome,
+        words: &str,
+        peek: Option<mpsc::Receiver<SelectionPeek>>,
+    ) -> KeyEdit {
+        // The words are checked first, so an ordinary dictation never waits
+        // on the selection read.
+        let Some(peek) = peek else {
+            return KeyEdit::Dictate(out);
+        };
+        if !crate::edit::is_edit_instruction(words) {
+            return KeyEdit::Dictate(out);
+        }
+        let selected = match peek.recv_timeout(PEEK_WAIT) {
+            Ok(SelectionPeek::Selected {
+                text,
+                single_line: false,
+            }) if !text.trim().is_empty() => text,
+            _ => return KeyEdit::Dictate(out),
+        };
+        tracing::info!(
+            "dictation treated as an edit of the selection ({} chars)",
+            selected.chars().count()
+        );
+        if selected.chars().count() > self.config.edit_max_chars {
+            out.transcript = Some(words.to_string());
+            self.fail(&mut out, "Selection too long to edit");
+            return KeyEdit::Done(out);
+        }
+        out.kind = SessionKind::Edit;
+        let (mut out, status) =
+            self.finish_edit(out, words, Some(selected), SelectionSource::Peeked, true);
+        match status {
+            EditStatus::Applied => KeyEdit::Done(out),
+            EditStatus::NotApplied => {
+                // Keep the words in History as the dictation they were.
+                out.kind = SessionKind::Dictation;
+                out.edit_instruction = None;
+                out.transcript = Some(words.to_string());
+                out.injection_method = None;
+                KeyEdit::Done(out)
+            }
+            EditStatus::ModelUnavailable => {
+                tracing::info!("no edit model answered; typing the dictation");
+                out.kind = SessionKind::Dictation;
+                out.edit_instruction = None;
+                KeyEdit::Dictate(out)
+            }
+        }
+    }
+
     /// Apply the spoken instruction to the captured selection and replace it.
     /// Every failure leaves the selection untouched and shows an honest error —
-    /// a refusal or garbage response is never injected.
+    /// a refusal or garbage response is never injected. With
+    /// `quiet_when_unavailable`, a model that can't be reached is reported as
+    /// [`EditStatus::ModelUnavailable`] with no error shown, so the caller can
+    /// type the words instead.
     fn finish_edit(
         &mut self,
         mut out: DictationOutcome,
         instruction: &str,
         selection: Option<String>,
-    ) -> DictationOutcome {
+        source: SelectionSource,
+        quiet_when_unavailable: bool,
+    ) -> (DictationOutcome, EditStatus) {
         let instruction = instruction.trim();
+        // An edit of the last dictation selected it; when the edit doesn't
+        // land, the caret goes back after it so the next key typed doesn't
+        // replace it.
+        let release = |me: &Self| {
+            if source == SelectionSource::LastInsertion {
+                if let Some(text) = selection.as_deref() {
+                    me.selector.deselect(text);
+                }
+            }
+        };
         if instruction.is_empty() {
+            release(self);
             self.fail(&mut out, "Didn't catch the instruction. Try again.");
-            return out;
+            return (out, EditStatus::NotApplied);
         }
         out.edit_instruction = Some(instruction.to_string());
-        let Some(selection) = selection else {
+        let Some(selected) = selection.clone() else {
             self.fail(&mut out, "Select text first");
-            return out;
+            return (out, EditStatus::NotApplied);
         };
         let Some(rewriter) = self.rewriter.as_ref() else {
+            if quiet_when_unavailable {
+                return (out, EditStatus::ModelUnavailable);
+            }
+            release(self);
             self.fail(
                 &mut out,
                 "Voice edit needs a local AI model. Set one up in Settings › AI Features.",
             );
-            return out;
+            return (out, EditStatus::NotApplied);
         };
         let t0 = Instant::now();
-        let edited = rewriter.rewrite(&selection, instruction);
+        let edited = rewriter.rewrite(&selected, instruction);
         out.text_ms = t0.elapsed().as_millis() as i64;
         let edited = match edited {
             Ok(e) => e,
             Err(e) => {
+                let unavailable = matches!(
+                    crate::llm::classify_error(&e),
+                    crate::llm::LlmFailure::Unreachable | crate::llm::LlmFailure::ModelMissing
+                );
+                if unavailable && quiet_when_unavailable {
+                    return (out, EditStatus::ModelUnavailable);
+                }
                 let reason = match e {
                     CoreError::Llm(m) | CoreError::Transcription(m) => m,
                     other => other.to_string(),
                 };
                 tracing::warn!("edit failed: {reason}");
+                release(self);
                 self.fail(&mut out, &format!("Couldn't edit: {reason}"));
-                return out;
+                return (out, EditStatus::NotApplied);
             }
         };
         if edited.trim().is_empty() {
+            release(self);
             self.fail(
                 &mut out,
                 "Couldn't edit the text. The selection was left as it was.",
             );
-            return out;
+            return (out, EditStatus::NotApplied);
         }
-        if edited.trim() == selection.trim() {
+        if edited.trim() == selected.trim() {
+            release(self);
             self.fail(&mut out, "No changes needed");
-            return out;
+            return (out, EditStatus::NotApplied);
+        }
+        // The edit is pasted over whatever is selected now. If the selection
+        // read through accessibility is gone (a click while the instruction
+        // was spoken), pasting would add the result beside the original.
+        if source != SelectionSource::Copied && !is_still_selected(&*self.selector, &selected) {
+            self.fail(&mut out, "The selection changed, so nothing was replaced");
+            return (out, EditStatus::NotApplied);
         }
         let delivery = self.deliver_to_target(&edited, out.app.as_deref());
         out.injection_ms = delivery.ms;
@@ -1412,22 +1715,27 @@ impl DictationCoordinator {
         out.result = delivery.result;
         match delivery.result {
             InjectionResult::Success => {
+                // A second edit with nothing selected works on this result.
+                self.remember_insertion(&edited, out.app.clone());
                 out.transcript = Some(edited);
                 self.state = RecordingState::Idle;
+                (out, EditStatus::Applied)
             }
             InjectionResult::BlockedSecureField => {
                 self.fail(&mut out, "Can't edit password fields");
+                (out, EditStatus::NotApplied)
             }
             _ => {
+                // The selection stays, so Ctrl+V replaces it.
                 out.transcript = Some(edited);
                 out.inject_error = delivery.error;
                 self.fail(
                     &mut out,
                     "Couldn't insert the edit. Press Ctrl+V to paste it.",
                 );
+                (out, EditStatus::NotApplied)
             }
         }
-        out
     }
 
     /// How the session about to start decodes while recording, if at all.
@@ -1664,6 +1972,12 @@ impl DictationCoordinator {
         out.error = Some(message.to_string());
         self.set_error(message);
     }
+}
+
+/// Terminals show selected text that a paste doesn't replace.
+fn is_terminal_app(app: Option<&str>) -> bool {
+    app.is_some()
+        && crate::injection::paste_chord_for(app) == crate::injection::PasteChord::ShiftInsert
 }
 
 /// whisper.cpp annotates non-speech audio with bracketed tags like

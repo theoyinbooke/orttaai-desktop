@@ -318,6 +318,174 @@ pub fn rewrite_selection(
         .ok_or_else(|| CoreError::Llm("Couldn't apply the edit".into()))
 }
 
+// ---- Instructions spoken on the dictation shortcut --------------------------
+
+/// Longer than this is dictation, not a command.
+const INSTRUCTION_MAX_WORDS: usize = 14;
+
+/// Verbs that only mean "change this text". They count alone ("shorten") or
+/// followed by a word that points at the text or says how.
+const EDIT_VERBS: &[&str] = &[
+    "rewrite",
+    "rephrase",
+    "reword",
+    "paraphrase",
+    "shorten",
+    "lengthen",
+    "summarize",
+    "summarise",
+    "translate",
+    "proofread",
+    "simplify",
+    "condense",
+    "capitalize",
+    "capitalise",
+    "reformat",
+];
+const EDIT_VERB_FOLLOWERS: &[&str] = &[
+    "this",
+    "it",
+    "that",
+    "these",
+    "those",
+    "them",
+    "everything",
+    "all",
+    "to",
+    "into",
+    "as",
+    "in",
+    "for",
+];
+/// Nouns that name the text itself, after "the" ("summarize the text").
+const TEXT_NOUNS: &[&str] = &[
+    "text",
+    "selection",
+    "paragraph",
+    "paragraphs",
+    "sentence",
+    "sentences",
+    "wording",
+    "above",
+];
+/// Everyday verbs that also start ordinary sentences.
+const COMMON_VERBS: &[&str] = &[
+    "make", "fix", "change", "turn", "convert", "format", "add", "remove", "delete", "replace",
+    "correct", "clean", "put", "expand", "improve", "tighten", "polish", "soften", "trim", "write",
+    "cut",
+];
+/// What about the text should change: an everyday verb counts only with one.
+const QUALITY_WORDS: &[&str] = &[
+    "grammar",
+    "spelling",
+    "punctuation",
+    "typo",
+    "typos",
+    "tone",
+    "wording",
+    "formal",
+    "casual",
+    "friendly",
+    "friendlier",
+    "professional",
+    "polite",
+    "shorter",
+    "longer",
+    "simpler",
+    "clearer",
+    "concise",
+    "uppercase",
+    "lowercase",
+    "capitals",
+    "list",
+    "bullets",
+    "bullet",
+    "bulleted",
+    "numbered",
+    "text",
+    "selection",
+    "paragraph",
+    "paragraphs",
+    "sentence",
+    "sentences",
+];
+/// Short commands that count only as the whole utterance.
+const WHOLE_COMMANDS: &[&[&str]] = &[
+    &["fix", "this"],
+    &["fix", "it"],
+    &["fix", "that"],
+    &["clean", "this", "up"],
+    &["clean", "it", "up"],
+    &["tidy", "this", "up"],
+    &["tidy", "it", "up"],
+    &["improve", "this"],
+    &["improve", "it"],
+    &["make", "this", "better"],
+    &["make", "it", "better"],
+];
+/// Polite openers skipped before looking for the verb.
+const OPENERS: &[&[&str]] = &[
+    &["can", "you"],
+    &["could", "you"],
+    &["would", "you"],
+    &["will", "you"],
+    &["please"],
+    &["just"],
+    &["now"],
+    &["okay"],
+    &["ok"],
+];
+
+/// Whether words spoken on the dictation shortcut, with text selected, are an
+/// instruction for that text ("make this shorter") rather than new text to
+/// replace it (Mac `EditInstructionClassifier`). Fixed rules, strict on
+/// purpose: a missed instruction only types the words (one Ctrl+Z), while a
+/// sentence taken for an instruction rewrites the selection. "It", "this" and
+/// "that" alone never count ("put it on the calendar"). English only.
+pub fn is_edit_instruction(transcript: &str) -> bool {
+    let lower = transcript.to_lowercase();
+    let mut words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.is_empty() || words.len() > INSTRUCTION_MAX_WORDS {
+        return false;
+    }
+    loop {
+        let before = words.len();
+        for opener in OPENERS {
+            if words.len() > opener.len() && words.starts_with(opener) {
+                words.drain(..opener.len());
+            }
+        }
+        if words.len() == before {
+            break;
+        }
+    }
+    if WHOLE_COMMANDS.contains(&words.as_slice()) {
+        return true;
+    }
+    let Some((&verb, rest)) = words.split_first() else {
+        return false;
+    };
+    if EDIT_VERBS.contains(&verb) {
+        return match rest {
+            [] => true,
+            [next, ..] if EDIT_VERB_FOLLOWERS.contains(next) => true,
+            ["the", noun, ..] => TEXT_NOUNS.contains(noun),
+            _ => false,
+        };
+    }
+    if !COMMON_VERBS.contains(&verb) {
+        return false;
+    }
+    // "Make sure you call her" is a sentence, not a command.
+    if verb == "make" && rest.first() == Some(&"sure") {
+        return false;
+    }
+    rest.iter().any(|w| QUALITY_WORDS.contains(w))
+}
+
 /// Outcome of a voice edit (Mac `EditCommandOutcome`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -527,6 +695,62 @@ mod tests {
             vec!["disregard this email", "you are now a"]
         );
         assert!(injection_cues("ignore all of it").is_empty());
+    }
+
+    #[test]
+    fn instructions_are_recognised() {
+        for words in [
+            "Make this shorter.",
+            "make it more formal",
+            "Fix the grammar.",
+            "Fix the spelling",
+            "Rewrite this as a friendly email.",
+            "Translate to French.",
+            "Shorten.",
+            "Summarize",
+            "Turn this into a bulleted list.",
+            "Please make this more concise.",
+            "Can you fix the typos?",
+            "Okay, now change the tone to casual.",
+            "Remove the last sentence.",
+            "Put this in a numbered list",
+            "Clean this up.",
+            "Fix it",
+            "Summarize in three bullets",
+            "Rewrite for a five year old",
+            "Summarize the text",
+        ] {
+            assert!(is_edit_instruction(words), "{words}");
+        }
+    }
+
+    #[test]
+    fn ordinary_dictation_is_not_an_instruction() {
+        for words in [
+            "Thanks, see you on Monday.",
+            "Make sure you call the client tomorrow.",
+            "Add milk and eggs",
+            "Change of plans, we leave at nine.",
+            "I will fix it tomorrow.",
+            "The meeting has moved to four.",
+            "Please",
+            "",
+            "Fix",
+            "Make this shorter and then also send a copy over to Dana and Priya before the end of the day tomorrow.",
+            "Make it happen by Friday.",
+            "Put it on the calendar.",
+            "Add them to the invite.",
+            "Write it down.",
+            "Turn it off.",
+            "Make this happen.",
+            "Add this to my cart.",
+            "Fix it before the demo tomorrow.",
+            "translate hello into Spanish",
+            "summarize the history of Rome",
+            "rewrite rules for nginx",
+        ] {
+            assert!(!is_edit_instruction(words), "{words}");
+        }
     }
 
     #[test]

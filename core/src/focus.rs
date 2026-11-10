@@ -10,6 +10,7 @@
 //!   So this returns `None` there, and the dictation is stored without a source.
 
 use crate::injection::edit_watch::FieldRead;
+use crate::selection::{SelectOutcome, SelectionPeek};
 
 /// The focused text field's full value, for learn-from-edits. `None` when it
 /// can't be read (Linux has no portable API; password fields are never read).
@@ -44,6 +45,62 @@ pub fn focused_field_read() -> FieldRead {
     FieldRead::Unreadable
 }
 
+// ---- Selection, through accessibility (see `crate::selection`) ------------------
+
+/// What's selected in the focused field, read without the clipboard.
+#[cfg(target_os = "windows")]
+pub fn peek_selection() -> SelectionPeek {
+    uia_field::peek_selection()
+}
+#[cfg(all(target_os = "linux", feature = "portal"))]
+pub fn peek_selection() -> SelectionPeek {
+    atspi_field::peek_selection()
+}
+#[cfg(not(any(target_os = "windows", all(target_os = "linux", feature = "portal"))))]
+pub fn peek_selection() -> SelectionPeek {
+    SelectionPeek::Nothing
+}
+
+/// Find `text` (typed by Orttaai) in the focused field and select it.
+#[cfg(target_os = "windows")]
+pub fn select_inserted(text: &str) -> SelectOutcome {
+    uia_field::select_inserted(text)
+}
+#[cfg(all(target_os = "linux", feature = "portal"))]
+pub fn select_inserted(text: &str) -> SelectOutcome {
+    atspi_field::select_inserted(text)
+}
+#[cfg(not(any(target_os = "windows", all(target_os = "linux", feature = "portal"))))]
+pub fn select_inserted(_text: &str) -> SelectOutcome {
+    SelectOutcome::NotFound
+}
+
+/// The focused field's selected text; `None` when it can't be read.
+#[cfg(target_os = "windows")]
+pub fn selected_text() -> Option<String> {
+    uia_field::selected_text()
+}
+#[cfg(all(target_os = "linux", feature = "portal"))]
+pub fn selected_text() -> Option<String> {
+    atspi_field::selected_text()
+}
+#[cfg(not(any(target_os = "windows", all(target_os = "linux", feature = "portal"))))]
+pub fn selected_text() -> Option<String> {
+    None
+}
+
+/// If `text` is still selected, put the caret just after it.
+#[cfg(target_os = "windows")]
+pub fn deselect(text: &str) {
+    uia_field::deselect(text)
+}
+#[cfg(all(target_os = "linux", feature = "portal"))]
+pub fn deselect(text: &str) {
+    atspi_field::deselect(text)
+}
+#[cfg(not(any(target_os = "windows", all(target_os = "linux", feature = "portal"))))]
+pub fn deselect(_text: &str) {}
+
 /// Linux: the focused field over AT-SPI. A worker thread joins the
 /// accessibility bus, asks apps to report focus changes, and remembers the
 /// object that last gained focus; reads go to that object. Every step fails
@@ -52,15 +109,22 @@ pub fn focused_field_read() -> FieldRead {
 #[cfg(all(target_os = "linux", feature = "portal"))]
 mod atspi_field {
     use crate::injection::edit_watch::FieldRead;
+    use crate::selection::{locate_inserted, same_text, SelectOutcome, SelectionPeek};
     use std::sync::mpsc;
     use std::sync::OnceLock;
     use std::time::Duration;
     use zbus::zvariant::{OwnedObjectPath, OwnedValue, Structure, Value};
 
-    /// AT-SPI state bits (`AtspiStateType`) and the password role.
+    /// AT-SPI state bits (`AtspiStateType`) and roles (`AtspiRole`).
     const STATE_EDITABLE: u32 = 7;
     const STATE_FOCUSED: u32 = 12;
+    const STATE_SINGLE_LINE: u32 = 26;
     const ROLE_PASSWORD_TEXT: u32 = 40;
+    const ROLE_TERMINAL: u32 = 60;
+    const TEXT: &str = "org.a11y.atspi.Text";
+    /// Reads while waiting for the app to show a new selection.
+    const CONFIRM_ATTEMPTS: u32 = 5;
+    const CONFIRM_WAIT: Duration = Duration::from_millis(30);
     /// A single call to an app.
     const CALL_TIMEOUT: Duration = Duration::from_millis(800);
     /// A whole read, as the watcher sees it.
@@ -68,7 +132,14 @@ mod atspi_field {
     /// Fields longer than this (a whole document) aren't read.
     const MAX_CHARS: i32 = 100_000;
 
-    type Request = mpsc::Sender<FieldRead>;
+    /// One job for the worker; each answers on its own channel.
+    enum Request {
+        Read(mpsc::Sender<FieldRead>),
+        Peek(mpsc::Sender<SelectionPeek>),
+        Select(String, mpsc::Sender<SelectOutcome>),
+        Selected(mpsc::Sender<Option<String>>),
+        Deselect(String, mpsc::Sender<()>),
+    }
 
     static WORKER: OnceLock<Option<tokio::sync::mpsc::UnboundedSender<Request>>> = OnceLock::new();
 
@@ -100,16 +171,40 @@ mod atspi_field {
             .as_ref()
     }
 
-    pub fn read() -> FieldRead {
+    /// Send one job and wait for its answer; `fallback` when the bus is
+    /// unavailable or the app doesn't answer in time.
+    fn ask<T>(job: impl FnOnce(mpsc::Sender<T>) -> Request, fallback: T) -> T {
         let Some(worker) = worker() else {
-            return FieldRead::Unreadable;
+            return fallback;
         };
         let (tx, rx) = mpsc::channel();
-        if worker.send(tx).is_err() {
-            return FieldRead::Unreadable;
+        if worker.send(job(tx)).is_err() {
+            return fallback;
         }
-        rx.recv_timeout(READ_TIMEOUT)
-            .unwrap_or(FieldRead::Unreadable)
+        rx.recv_timeout(READ_TIMEOUT).unwrap_or(fallback)
+    }
+
+    pub fn read() -> FieldRead {
+        ask(Request::Read, FieldRead::Unreadable)
+    }
+
+    pub fn peek_selection() -> SelectionPeek {
+        ask(Request::Peek, SelectionPeek::Nothing)
+    }
+
+    pub fn select_inserted(text: &str) -> SelectOutcome {
+        ask(
+            |tx| Request::Select(text.to_string(), tx),
+            SelectOutcome::NotFound,
+        )
+    }
+
+    pub fn selected_text() -> Option<String> {
+        ask(Request::Selected, None)
+    }
+
+    pub fn deselect(text: &str) {
+        ask(|tx| Request::Deselect(text.to_string(), tx), ())
     }
 
     /// The object that last gained focus: its app's bus name and path.
@@ -120,24 +215,264 @@ mod atspi_field {
             Ok(bus) => bus,
             Err(e) => {
                 tracing::info!("accessibility bus unavailable, edits can't be read: {e}");
-                // Answer every read so callers never wait out the timeout.
-                while let Some(reply) = requests.recv().await {
-                    let _ = reply.send(FieldRead::Unreadable);
+                // Answer every job so callers never wait out the timeout.
+                while let Some(request) = requests.recv().await {
+                    answer_unavailable(request);
                 }
                 return;
             }
         };
         let focus: Focus = Default::default();
         tokio::spawn(follow_focus(bus.clone(), focus.clone()));
-        while let Some(reply) = requests.recv().await {
-            let target = focus.lock().unwrap().clone();
-            let read = match target {
-                Some((app, path)) => read_field(&bus, &app, &path)
-                    .await
-                    .unwrap_or(FieldRead::Unreadable),
-                None => FieldRead::Unreadable,
+        while let Some(request) = requests.recv().await {
+            let Some((app, path)) = focus.lock().unwrap().clone() else {
+                answer_unavailable(request);
+                continue;
             };
-            let _ = reply.send(read);
+            let field = Field {
+                bus: &bus,
+                app: &app,
+                path: &path,
+            };
+            match request {
+                Request::Read(reply) => {
+                    let read = read_field(&bus, &app, &path)
+                        .await
+                        .unwrap_or(FieldRead::Unreadable);
+                    let _ = reply.send(read);
+                }
+                Request::Peek(reply) => {
+                    let _ = reply.send(field.peek().await.unwrap_or(SelectionPeek::Nothing));
+                }
+                Request::Select(text, reply) => {
+                    let _ =
+                        reply.send(field.select(&text).await.unwrap_or(SelectOutcome::NotFound));
+                }
+                Request::Selected(reply) => {
+                    let _ = reply.send(field.selected_text().await);
+                }
+                Request::Deselect(text, reply) => {
+                    field.deselect(&text).await;
+                    let _ = reply.send(());
+                }
+            }
+        }
+    }
+
+    fn answer_unavailable(request: Request) {
+        match request {
+            Request::Read(r) => drop(r.send(FieldRead::Unreadable)),
+            Request::Peek(r) => drop(r.send(SelectionPeek::Nothing)),
+            Request::Select(_, r) => drop(r.send(SelectOutcome::NotFound)),
+            Request::Selected(r) => drop(r.send(None)),
+            Request::Deselect(_, r) => drop(r.send(())),
+        }
+    }
+
+    /// The focused field: its text, selection and caret through AT-SPI's
+    /// `Text` interface. Offsets are characters.
+    struct Field<'a> {
+        bus: &'a zbus::Connection,
+        app: &'a str,
+        path: &'a OwnedObjectPath,
+    }
+
+    /// What kind of field has focus.
+    enum Kind {
+        Text {
+            single_line: bool,
+        },
+        Secure,
+        /// Not focused any more, not editable, or a terminal.
+        Other,
+    }
+
+    impl Field<'_> {
+        async fn kind(&self) -> Option<Kind> {
+            const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
+            let states: Vec<u32> =
+                call(self.bus, self.app, self.path, ACCESSIBLE, "GetState", &()).await?;
+            let has = |bit: u32| {
+                states
+                    .get((bit / 32) as usize)
+                    .is_some_and(|word| word & (1 << (bit % 32)) != 0)
+            };
+            if !has(STATE_FOCUSED) || !has(STATE_EDITABLE) {
+                return Some(Kind::Other);
+            }
+            let role: u32 = call(self.bus, self.app, self.path, ACCESSIBLE, "GetRole", &()).await?;
+            Some(match role {
+                ROLE_PASSWORD_TEXT => Kind::Secure,
+                ROLE_TERMINAL => Kind::Other,
+                _ => Kind::Text {
+                    single_line: has(STATE_SINGLE_LINE),
+                },
+            })
+        }
+
+        async fn int_property(&self, name: &str) -> Option<i32> {
+            let v: OwnedValue = call(
+                self.bus,
+                self.app,
+                self.path,
+                "org.freedesktop.DBus.Properties",
+                "Get",
+                &(TEXT, name),
+            )
+            .await?;
+            i32::try_from(v).ok()
+        }
+
+        async fn text(&self, start: i32, end: i32) -> Option<String> {
+            call(
+                self.bus,
+                self.app,
+                self.path,
+                TEXT,
+                "GetText",
+                &(start, end),
+            )
+            .await
+        }
+
+        /// The first selection's offsets, `None` when nothing is selected.
+        async fn selection(&self) -> Option<(i32, i32)> {
+            let count: i32 =
+                call(self.bus, self.app, self.path, TEXT, "GetNSelections", &()).await?;
+            if count < 1 {
+                return None;
+            }
+            let (start, end): (i32, i32) = call(
+                self.bus,
+                self.app,
+                self.path,
+                TEXT,
+                "GetSelection",
+                &(0i32,),
+            )
+            .await?;
+            (end > start).then_some((start, end))
+        }
+
+        async fn peek(&self) -> Option<SelectionPeek> {
+            let single_line = match self.kind().await? {
+                Kind::Secure => return Some(SelectionPeek::Secure),
+                Kind::Other => return Some(SelectionPeek::Nothing),
+                Kind::Text { single_line } => single_line,
+            };
+            let Some((start, end)) = self.selection().await else {
+                return Some(SelectionPeek::Nothing);
+            };
+            let text = self.text(start, end).await?;
+            Some(if text.trim().is_empty() {
+                SelectionPeek::Nothing
+            } else {
+                SelectionPeek::Selected { text, single_line }
+            })
+        }
+
+        async fn selected_text(&self) -> Option<String> {
+            match self.kind().await? {
+                Kind::Text { .. } => {}
+                _ => return None,
+            }
+            match self.selection().await {
+                Some((start, end)) => self.text(start, end).await,
+                None => Some(String::new()),
+            }
+        }
+
+        async fn set_caret(&self, offset: i32) {
+            let _: Option<bool> = call(
+                self.bus,
+                self.app,
+                self.path,
+                TEXT,
+                "SetCaretOffset",
+                &(offset,),
+            )
+            .await;
+        }
+
+        async fn select(&self, needle: &str) -> Option<SelectOutcome> {
+            match self.kind().await? {
+                Kind::Secure => return Some(SelectOutcome::Secure),
+                Kind::Other => return Some(SelectOutcome::NotFound),
+                Kind::Text { .. } => {}
+            }
+            let count = self.int_property("CharacterCount").await?;
+            if !(0..=MAX_CHARS).contains(&count) {
+                return Some(SelectOutcome::NotFound);
+            }
+            let field = self.text(0, count).await?;
+            let caret = self.int_property("CaretOffset").await;
+            let Some((start, end)) =
+                locate_inserted(needle, &field, caret.and_then(|c| usize::try_from(c).ok()))
+            else {
+                return Some(SelectOutcome::NotFound);
+            };
+            let (start, end) = (i32::try_from(start).ok()?, i32::try_from(end).ok()?);
+            let had_selection = self.selection().await.is_some();
+            let method = if had_selection {
+                "SetSelection"
+            } else {
+                "AddSelection"
+            };
+            let taken: Option<bool> = if had_selection {
+                call(
+                    self.bus,
+                    self.app,
+                    self.path,
+                    TEXT,
+                    method,
+                    &(0i32, start, end),
+                )
+                .await
+            } else {
+                call(self.bus, self.app, self.path, TEXT, method, &(start, end)).await
+            };
+            if taken == Some(true) {
+                // Only a selection the app confirms is edited: the result is
+                // pasted over whatever is selected.
+                for attempt in 0..CONFIRM_ATTEMPTS {
+                    if attempt > 0 {
+                        tokio::time::sleep(CONFIRM_WAIT).await;
+                    }
+                    if self.selection().await == Some((start, end)) {
+                        let text = self.text(start, end).await?;
+                        if same_text(&text, needle) {
+                            return Some(SelectOutcome::Selected(text));
+                        }
+                    }
+                }
+            }
+            if let Some(caret) = caret {
+                self.set_caret(caret).await;
+            }
+            Some(SelectOutcome::NotFound)
+        }
+
+        async fn deselect(&self, needle: &str) {
+            let Some((start, end)) = self.selection().await else {
+                return;
+            };
+            if !self
+                .text(start, end)
+                .await
+                .is_some_and(|t| same_text(&t, needle))
+            {
+                return;
+            }
+            let _: Option<bool> = call(
+                self.bus,
+                self.app,
+                self.path,
+                TEXT,
+                "RemoveSelection",
+                &(0i32,),
+            )
+            .await;
+            self.set_caret(end).await;
         }
     }
 
@@ -335,6 +670,213 @@ mod uia_field {
             return Ok(FieldRead::Text(v.to_string()));
         }
         Ok(FieldRead::Unreadable)
+    }
+
+    // ---- Selection (see `crate::selection`) ----
+
+    use crate::selection::{same_text, SelectOutcome, SelectionPeek};
+    use windows::core::BSTR;
+    use windows::Win32::UI::Accessibility::{
+        IUIAutomationElement, IUIAutomationTextRange, TextPatternRangeEndpoint_End,
+        TextPatternRangeEndpoint_Start, UIA_EditControlTypeId,
+    };
+
+    /// Reads while waiting for the app to show a new selection.
+    const CONFIRM_ATTEMPTS: u32 = 5;
+    const CONFIRM_WAIT: std::time::Duration = std::time::Duration::from_millis(30);
+
+    enum Focused {
+        Secure,
+        Text(IUIAutomationElement, IUIAutomationTextPattern),
+        Other,
+    }
+
+    unsafe fn focused() -> windows::core::Result<Focused> {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let automation: IUIAutomation =
+            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+        let element = automation.GetFocusedElement()?;
+        if element.CurrentIsPassword()?.as_bool() {
+            return Ok(Focused::Secure);
+        }
+        Ok(
+            match element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) {
+                Ok(pattern) => Focused::Text(element, pattern),
+                Err(_) => Focused::Other,
+            },
+        )
+    }
+
+    /// The first selected range; a caret is an empty one.
+    unsafe fn first_selection(
+        pattern: &IUIAutomationTextPattern,
+    ) -> Option<IUIAutomationTextRange> {
+        let ranges = pattern.GetSelection().ok()?;
+        if ranges.Length().ok()? < 1 {
+            return None;
+        }
+        ranges.GetElement(0).ok()
+    }
+
+    unsafe fn text_of(range: &IUIAutomationTextRange) -> Option<String> {
+        range.GetText(MAX_CHARS).ok().map(|t| t.to_string())
+    }
+
+    pub fn peek_selection() -> SelectionPeek {
+        unsafe { peek_inner() }.unwrap_or(SelectionPeek::Nothing)
+    }
+
+    unsafe fn peek_inner() -> windows::core::Result<SelectionPeek> {
+        let (element, pattern) = match focused()? {
+            Focused::Secure => return Ok(SelectionPeek::Secure),
+            Focused::Other => return Ok(SelectionPeek::Nothing),
+            Focused::Text(e, p) => (e, p),
+        };
+        let Some(text) = first_selection(&pattern).and_then(|r| text_of(&r)) else {
+            return Ok(SelectionPeek::Nothing);
+        };
+        if text.trim().is_empty() {
+            return Ok(SelectionPeek::Nothing);
+        }
+        // UI Automation doesn't say whether an edit box is one line. Address
+        // bars and search boxes select all their text when clicked, so an
+        // edit box with everything selected counts as one.
+        let edit_box = element.CurrentControlType()? == UIA_EditControlTypeId;
+        let whole = pattern
+            .DocumentRange()
+            .ok()
+            .and_then(|d| text_of(&d))
+            .is_some_and(|all| same_text(&all, &text));
+        Ok(SelectionPeek::Selected {
+            text,
+            single_line: edit_box && whole,
+        })
+    }
+
+    pub fn selected_text() -> Option<String> {
+        unsafe {
+            match focused().ok()? {
+                Focused::Text(_, pattern) => Some(
+                    first_selection(&pattern)
+                        .and_then(|r| text_of(&r))
+                        .unwrap_or_default(),
+                ),
+                _ => None,
+            }
+        }
+    }
+
+    pub fn select_inserted(text: &str) -> SelectOutcome {
+        unsafe { select_inner(text) }.unwrap_or(SelectOutcome::NotFound)
+    }
+
+    /// `needle` as the field may store it: Windows fields keep line breaks
+    /// as `\r\n` or `\r`.
+    fn spellings(needle: &str) -> Vec<String> {
+        let mut out = vec![needle.to_string()];
+        if needle.contains('\n') {
+            out.push(needle.replace('\n', "\r\n"));
+            out.push(needle.replace('\n', "\r"));
+        }
+        out
+    }
+
+    /// The copy nearest before the caret, or the only copy in the field.
+    unsafe fn find(
+        pattern: &IUIAutomationTextPattern,
+        caret: Option<&IUIAutomationTextRange>,
+        needle: &str,
+    ) -> Option<IUIAutomationTextRange> {
+        let doc = pattern.DocumentRange().ok()?;
+        for spelling in spellings(needle) {
+            let wanted = BSTR::from(spelling.as_str());
+            if let Some(caret) = caret {
+                let before = doc.Clone().ok()?;
+                if before
+                    .MoveEndpointByRange(
+                        TextPatternRangeEndpoint_End,
+                        caret,
+                        TextPatternRangeEndpoint_End,
+                    )
+                    .is_ok()
+                {
+                    if let Ok(found) = before.FindText(&wanted, true, false) {
+                        return Some(found);
+                    }
+                }
+            }
+            if let (Ok(first), Ok(last)) = (
+                doc.FindText(&wanted, false, false),
+                doc.FindText(&wanted, true, false),
+            ) {
+                let same = first
+                    .CompareEndpoints(
+                        TextPatternRangeEndpoint_Start,
+                        &last,
+                        TextPatternRangeEndpoint_Start,
+                    )
+                    .ok()?
+                    == 0;
+                return same.then_some(first);
+            }
+        }
+        None
+    }
+
+    unsafe fn select_inner(text: &str) -> windows::core::Result<SelectOutcome> {
+        let pattern = match focused()? {
+            Focused::Secure => return Ok(SelectOutcome::Secure),
+            Focused::Other => return Ok(SelectOutcome::NotFound),
+            Focused::Text(_, p) => p,
+        };
+        let needle = text.trim();
+        if needle.is_empty() {
+            return Ok(SelectOutcome::NotFound);
+        }
+        let caret = first_selection(&pattern);
+        let Some(range) = find(&pattern, caret.as_ref(), needle) else {
+            return Ok(SelectOutcome::NotFound);
+        };
+        range.Select()?;
+        // Only a selection the app confirms is edited: the result is pasted
+        // over whatever is selected.
+        for attempt in 0..CONFIRM_ATTEMPTS {
+            if attempt > 0 {
+                std::thread::sleep(CONFIRM_WAIT);
+            }
+            let now = first_selection(&pattern).and_then(|r| text_of(&r));
+            if let Some(now) = now.filter(|t| same_text(t, needle)) {
+                return Ok(SelectOutcome::Selected(now));
+            }
+        }
+        if let Some(caret) = caret {
+            let _ = caret.Select();
+        }
+        Ok(SelectOutcome::NotFound)
+    }
+
+    pub fn deselect(text: &str) {
+        unsafe {
+            let Ok(Focused::Text(_, pattern)) = focused() else {
+                return;
+            };
+            let Some(range) = first_selection(&pattern) else {
+                return;
+            };
+            if !text_of(&range).is_some_and(|t| same_text(&t, text)) {
+                return;
+            }
+            if range
+                .MoveEndpointByRange(
+                    TextPatternRangeEndpoint_Start,
+                    &range,
+                    TextPatternRangeEndpoint_End,
+                )
+                .is_ok()
+            {
+                let _ = range.Select();
+            }
+        }
     }
 }
 

@@ -48,7 +48,9 @@ export type EngineSnapshot = {
   portal_hotkeys: boolean;
   /** "Tap Right Ctrl" is on and listening. */
   right_ctrl_active: boolean;
-  /** Why "Tap Right Ctrl" can't work here, or why it failed to start. */
+  /** "Tap Right Shift to Edit" is on and listening. */
+  right_shift_active: boolean;
+  /** Why tapping Right Ctrl or Right Shift can't work here, or why it failed to start. */
   right_ctrl_error: string | null;
 };
 

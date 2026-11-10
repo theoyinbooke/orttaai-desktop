@@ -20,7 +20,7 @@ use orttaai_core::coordinator::{
     CoordinatorConfig, CoordinatorStatus, DictationCoordinator, DictationOutcome,
 };
 use orttaai_core::hardware::{self, HardwareInfo};
-use orttaai_core::hotkey::right_ctrl::RightCtrlListener;
+use orttaai_core::hotkey::right_ctrl::{RightKeyListener, Taps};
 use orttaai_core::hotkey::{default_manager, HotkeyBinding, HotkeyCallback, HotkeyManager};
 use orttaai_core::injection::edit_watch::{EditObserver, EditWatcher, SystemFieldReader};
 use orttaai_core::injection::{InjectionService, SystemTextInjector, TextInjector};
@@ -77,6 +77,8 @@ pub enum Cmd {
     EditUp,
     /// A clean tap of Right Ctrl: start hands-free, or stop.
     RightCtrlTap,
+    /// A clean tap of Right Shift: start an edit, or apply it.
+    RightShiftTap,
     /// Tray / click-to-record: start hands-free, or stop.
     Toggle,
     /// The overlay's stop button.
@@ -99,6 +101,7 @@ impl Cmd {
                 | Cmd::EditDown
                 | Cmd::EditUp
                 | Cmd::RightCtrlTap
+                | Cmd::RightShiftTap
                 | Cmd::Toggle
                 | Cmd::Stop
         )
@@ -127,8 +130,10 @@ pub struct EngineSnapshot {
     pub portal_hotkeys: bool,
     /// "Tap Right Ctrl" is on and listening.
     pub right_ctrl_active: bool,
-    /// Why "Tap Right Ctrl" can't work here (Wayland, an unsupported system),
-    /// or why the listener failed to start.
+    /// "Tap Right Shift to Edit" is on and listening.
+    pub right_shift_active: bool,
+    /// Why tapping Right Ctrl or Right Shift can't work here (Wayland, an
+    /// unsupported system), or why the listener failed to start.
     pub right_ctrl_error: Option<String>,
 }
 
@@ -149,8 +154,10 @@ impl Drop for Monitor {
 #[derive(Default)]
 pub struct EngineState {
     hotkey: Mutex<Option<Box<dyn HotkeyManager>>>,
-    /// The "Tap Right Ctrl" listener while it's on.
-    right_ctrl: Mutex<Option<RightCtrlListener>>,
+    /// The Right Ctrl / Right Shift listener while either tap is on.
+    right_ctrl: Mutex<Option<RightKeyListener>>,
+    /// The listener is watching Right Ctrl (not only Right Shift).
+    right_ctrl_watched: AtomicBool,
     commands: Mutex<Option<Sender<Cmd>>>,
     running: AtomicBool,
     starting: AtomicBool,
@@ -218,7 +225,7 @@ pub fn engine_status(app: AppHandle) -> EngineSnapshot {
         snap.edit_hotkey = s.edit_commands_enabled.then(|| s.edit_shortcut.display());
         snap.wayland = is_wayland();
         snap.portal_hotkeys = orttaai_core::hotkey::uses_portal();
-        if !snap.right_ctrl_active && snap.right_ctrl_error.is_none() {
+        if !snap.right_ctrl_active && !snap.right_shift_active && snap.right_ctrl_error.is_none() {
             snap.right_ctrl_error =
                 orttaai_core::hotkey::right_ctrl::unavailable_reason().map(str::to_string);
         }
@@ -360,7 +367,10 @@ impl orttaai_core::focus::WindowFocus for OwnWindowFocus {
         for (label, w) in self.app.webview_windows() {
             let Ok(hwnd) = w.hwnd() else { continue };
             if hwnd.0 as usize as u64 == window {
-                return self.app.emit_to(label.as_str(), "insert-text", text).is_ok();
+                return self
+                    .app
+                    .emit_to(label.as_str(), "insert-text", text)
+                    .is_ok();
             }
         }
         let _ = (&self.app, text);
@@ -514,34 +524,53 @@ fn transcriber_id(path: &std::path::Path) -> String {
 }
 
 /// Watch Right Ctrl when "Tap Right Ctrl to Dictate" is on (Mac: the Right
-/// Option listener). Listen-only: keys still reach the focused app.
-fn start_right_ctrl(app: &AppHandle, settings: &Settings, tx: &Sender<Cmd>) {
+/// Option listener), and Right Shift when "Tap Right Shift to Edit" is (Mac:
+/// Right Command). Listen-only: keys still reach the focused app.
+fn start_right_keys(app: &AppHandle, settings: &Settings, tx: &Sender<Cmd>) {
     let state = app.state::<EngineState>();
     let reason = orttaai_core::hotkey::right_ctrl::unavailable_reason();
-    if !settings.right_ctrl_dictation_enabled || reason.is_some() {
+    let want_ctrl = settings.right_ctrl_dictation_enabled;
+    let want_shift = settings.right_shift_edit_enabled && settings.edit_commands_enabled;
+    state.right_ctrl_watched.store(false, Ordering::SeqCst);
+    if !(want_ctrl || want_shift) || reason.is_some() {
         publish_snapshot(app, |s| {
             s.right_ctrl_active = false;
+            s.right_shift_active = false;
             s.right_ctrl_error = reason.map(str::to_string);
         });
         return;
     }
-    let tx = tx.clone();
-    match RightCtrlListener::start(Box::new(move || {
-        if accept_right_ctrl_tap(TapSource::Hook) {
-            let _ = tx.send(Cmd::RightCtrlTap);
-        }
-    })) {
+    let ctrl_tx = tx.clone();
+    let shift_tx = tx.clone();
+    let taps = Taps {
+        right_ctrl: want_ctrl.then(|| -> orttaai_core::hotkey::right_ctrl::TapCallback {
+            Box::new(move || {
+                if accept_right_ctrl_tap(TapSource::Hook) {
+                    let _ = ctrl_tx.send(Cmd::RightCtrlTap);
+                }
+            })
+        }),
+        right_shift: want_shift.then(|| -> orttaai_core::hotkey::right_ctrl::TapCallback {
+            Box::new(move || {
+                let _ = shift_tx.send(Cmd::RightShiftTap);
+            })
+        }),
+    };
+    match RightKeyListener::start(taps) {
         Ok(listener) => {
             *state.right_ctrl.lock().unwrap() = Some(listener);
+            state.right_ctrl_watched.store(want_ctrl, Ordering::SeqCst);
             publish_snapshot(app, |s| {
-                s.right_ctrl_active = true;
+                s.right_ctrl_active = want_ctrl;
+                s.right_shift_active = want_shift;
                 s.right_ctrl_error = None;
             });
         }
         Err(e) => {
-            eprintln!("orttaai: Tap Right Ctrl unavailable: {e}");
+            eprintln!("orttaai: tapping Right Ctrl or Right Shift is unavailable: {e}");
             publish_snapshot(app, |s| {
                 s.right_ctrl_active = false;
+                s.right_shift_active = false;
                 s.right_ctrl_error = Some(e.to_string());
             });
         }
@@ -593,8 +622,10 @@ fn accept_tap_at(
 pub fn right_ctrl_window_tap(app: AppHandle) {
     let state = app.state::<EngineState>();
     // Only while Tap Right Ctrl is on and listening (not paused for the
-    // shortcut recorder, not off in Settings).
-    if state.right_ctrl.lock().unwrap().is_none() {
+    // shortcut recorder, not off in Settings, not only Right Shift watched).
+    if state.right_ctrl.lock().unwrap().is_none()
+        || !state.right_ctrl_watched.load(Ordering::SeqCst)
+    {
         return;
     }
     if accept_right_ctrl_tap(TapSource::Window) {
@@ -657,7 +688,7 @@ fn register_hotkeys(app: &AppHandle, settings: &Settings) {
     let Some(tx) = state.commands.lock().unwrap().clone() else {
         return;
     };
-    start_right_ctrl(app, settings, &tx);
+    start_right_keys(app, settings, &tx);
     let cb = |cmd: fn() -> Cmd| -> HotkeyCallback {
         let tx = tx.clone();
         Box::new(move || {
@@ -725,6 +756,7 @@ pub fn stop_dictation(app: AppHandle, state: State<EngineState>) -> Result<(), S
         s.status = None;
         s.model_id = None;
         s.right_ctrl_active = false;
+        s.right_shift_active = false;
     });
     Ok(())
 }
@@ -787,7 +819,15 @@ pub fn validate_shortcut(combo: HotkeyCombo, other: Option<HotkeyCombo>) -> Resu
 /// What decides which speech model is loaded. Express fixes its thread count
 /// when it loads, so for Express that counts too; the last field is whether
 /// English dictation swaps in an English-only Small.
-type ModelKey = (String, Option<String>, SpeechEngine, String, bool, i32, bool);
+type ModelKey = (
+    String,
+    Option<String>,
+    SpeechEngine,
+    String,
+    bool,
+    i32,
+    bool,
+);
 
 fn model_key(s: &Settings) -> ModelKey {
     let express = s.express_active();
@@ -884,6 +924,7 @@ impl Worker {
             Cmd::EditDown => self.coord.handle_edit_hotkey_down(),
             Cmd::EditUp => self.coord.handle_edit_hotkey_up(),
             Cmd::RightCtrlTap => self.coord.handle_right_key_tap(),
+            Cmd::RightShiftTap => self.coord.handle_right_shift_tap(),
             Cmd::Toggle => self.coord.toggle(),
             Cmd::Stop => self
                 .coord
@@ -1252,7 +1293,8 @@ pub fn on_settings_changed(app: &AppHandle, old: &Settings, new: &Settings) {
         let shortcuts_changed = old.push_to_talk != new.push_to_talk
             || old.edit_shortcut != new.edit_shortcut
             || old.edit_commands_enabled != new.edit_commands_enabled
-            || old.right_ctrl_dictation_enabled != new.right_ctrl_dictation_enabled;
+            || old.right_ctrl_dictation_enabled != new.right_ctrl_dictation_enabled
+            || old.right_shift_edit_enabled != new.right_shift_edit_enabled;
         if shortcuts_changed && !state.hotkeys_suspended.load(Ordering::SeqCst) {
             let app2 = app.clone();
             let settings = new.clone();

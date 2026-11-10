@@ -368,11 +368,15 @@ impl InjectionService {
             return SelectionCapture::NoSelection;
         }
         let mut copied: Option<String> = None;
+        let mut whole_line = false;
         if self.injector.copy_chord().is_ok() {
             for _ in 0..COPY_POLL_ATTEMPTS {
                 (self.sleep)(Duration::from_millis(COPY_POLL_INTERVAL_MS));
                 match self.clipboard.get_text() {
                     Ok(Some(t)) if t != sentinel => {
+                        // VS Code and its forks copy the whole line when
+                        // nothing is selected; that line is not a selection.
+                        whole_line = self.clipboard.copied_from_empty_selection();
                         copied = Some(t);
                         break;
                     }
@@ -381,6 +385,10 @@ impl InjectionService {
             }
         }
         let _ = self.clipboard.restore();
+        if whole_line {
+            tracing::info!("no selection: the editor copied the current line");
+            return SelectionCapture::NoSelection;
+        }
         match copied {
             Some(t) if !t.trim().is_empty() => SelectionCapture::Captured(t),
             _ => SelectionCapture::NoSelection,
@@ -1009,6 +1017,18 @@ mod tests {
             s.capture_selection(),
             SelectionCapture::Captured("same".into())
         );
+    }
+
+    #[test]
+    fn code_editor_line_copy_is_not_a_selection() {
+        let clip = Arc::new(MockClipboard::with_text("user's copy"));
+        clip.set_empty_selection_copy(true);
+        let inj = MockTextInjector::new()
+            .with_clipboard(clip.clone())
+            .with_selection("let total = items.len();\n");
+        let s = service(inj, clip.clone());
+        assert_eq!(s.capture_selection(), SelectionCapture::NoSelection);
+        assert_eq!(clip.get_text().unwrap().as_deref(), Some("user's copy"));
     }
 
     #[test]
