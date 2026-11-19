@@ -274,7 +274,10 @@ pub async fn start_dictation(app: AppHandle, model_path: Option<String>) -> Resu
 }
 
 /// The model file for `settings` (must be downloaded).
-fn resolve_model(settings: &Settings, explicit: Option<String>) -> Result<PathBuf, String> {
+pub(crate) fn resolve_model(
+    settings: &Settings,
+    explicit: Option<String>,
+) -> Result<PathBuf, String> {
     if let Some(p) = explicit {
         return Ok(PathBuf::from(p));
     }

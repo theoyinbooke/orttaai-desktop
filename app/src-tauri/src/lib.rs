@@ -21,6 +21,7 @@ mod persist;
 mod pipeline;
 mod semantic;
 mod settings_cmds;
+mod speedtest;
 
 use engine::{EngineState, TRAY_ID};
 use orttaai_core::settings::Settings;
@@ -556,6 +557,7 @@ pub fn run() {
             engine::stop_level_monitor,
             engine::reset_audio,
             engine::hardware_info,
+            speedtest::run_speed_test,
             engine::platform_check,
             engine::list_models,
             engine::models_storage,

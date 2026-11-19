@@ -607,6 +607,8 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
           onChange={(v) => save({ decode: { n_threads: v } })}
         />
         <MDivider />
+        <SpeedTestRow />
+        <MDivider />
         <MRow title="Decoding Profile" info={whisperOnly(PROFILE_INFO)} disabled={usingExpress}>
           <Segmented
             value={settings.decode.preset}
@@ -816,3 +818,65 @@ export default function Models() {
   );
 }
 
+
+type SpeedTestResult = {
+  model: string;
+  trials: { threads: number; ms: number }[];
+  best: number;
+  recommended: number;
+  sample_seconds: number;
+};
+
+const seconds = (ms: number) => `${(ms / 1000).toFixed(2)} s`;
+
+/** Settings › Performance › Speed Test: times this computer's speech model at a
+ *  few thread counts and sets Decode Threads to the fastest. */
+function SpeedTestRow() {
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState<{ threads: number; index: number; total: number } | null>(null);
+  const [result, setResult] = useState<SpeedTestResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEvent<{ threads: number; index: number; total: number; ms: number | null }>("speed-test-progress", (e) => {
+    if (e.ms === null) setProgress({ threads: e.threads, index: e.index, total: e.total });
+  });
+  const run = () => {
+    setRunning(true);
+    setError(null);
+    setResult(null);
+    call<SpeedTestResult>("run_speed_test")
+      .then(setResult)
+      .catch((e) => setError(String(e)))
+      .finally(() => {
+        setRunning(false);
+        setProgress(null);
+      });
+  };
+  const auto = result?.trials.find((t) => t.threads === result.recommended);
+  const best = result?.trials.find((t) => t.threads === result.best);
+  return (
+    <>
+      <MRow
+        title="Speed Test"
+        info="Times a few seconds of sample speech with your speech model at several thread counts, then sets Decode Threads to the fastest. Takes about a minute; dictation keeps working meanwhile."
+      >
+        <MButton glyph="bolt" loading={running} disabled={running} onClick={run}>
+          {running
+            ? progress
+              ? `${progress.threads} threads… ${progress.index + 1}/${progress.total}`
+              : "Starting…"
+            : result
+              ? "Run Again"
+              : "Run Test"}
+        </MButton>
+      </MRow>
+      {result && best && (
+        <MFootnote>
+          Fastest: {result.best} threads, {seconds(best.ms)} for {result.sample_seconds} s of speech with {result.model}
+          {auto && result.best !== result.recommended ? ` (Auto's ${result.recommended} took ${seconds(auto.ms)})` : ""}.
+          Decode Threads is now {result.best}.
+        </MFootnote>
+      )}
+      {error && <MFootnote>Couldn't run the speed test: {error}</MFootnote>}
+    </>
+  );
+}

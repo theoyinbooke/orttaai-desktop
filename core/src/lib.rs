@@ -32,6 +32,7 @@ pub mod polish;
 pub mod selection;
 pub mod semantic;
 pub mod settings;
+pub mod speedtest;
 pub mod store;
 #[cfg(feature = "link")]
 pub mod sync;
