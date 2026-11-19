@@ -114,6 +114,17 @@ export type Settings = {
   github_star_prompt_completed: boolean;
   github_star_prompt_shown_count: number;
   github_star_prompt_last_shown_at: number;
+  last_speed_test: SpeedTestRecord | null;
+  speed_test_offer_dismissed: boolean;
+};
+
+export type SpeedTestRecord = {
+  model: string;
+  best: number;
+  best_ms: number;
+  recommended: number;
+  recommended_ms: number | null;
+  at: number;
 };
 
 type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> | T[K] : T[K] };

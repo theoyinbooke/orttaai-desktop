@@ -5,8 +5,37 @@
 //! every one of them; measuring is.
 
 use crate::cpu::CoreCounts;
+use crate::settings::Settings;
 use crate::types::TARGET_SAMPLE_RATE;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+/// A finished speed test, kept in the settings so Performance can show it and
+/// the offer card knows it ran.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpeedTestRecord {
+    /// The model that was timed, as the UI names it.
+    pub model: String,
+    /// The fastest thread count, saved as Decode Threads.
+    pub best: usize,
+    pub best_ms: u64,
+    /// What Auto would use, and how long it took.
+    pub recommended: usize,
+    pub recommended_ms: Option<u64>,
+    /// Unix seconds.
+    pub at: i64,
+}
+
+/// Whether to offer the speed test on a card: after setup, with a speech
+/// model ready to time, once. Not after a test, "Not now", or a Decode
+/// Threads count someone already chose (by hand or with the 0.7.0 test).
+pub fn should_offer(settings: &Settings, model_ready: bool) -> bool {
+    settings.has_completed_setup
+        && model_ready
+        && !settings.speed_test_offer_dismissed
+        && settings.last_speed_test.is_none()
+        && settings.decode.n_threads == 0
+}
 
 /// Seconds of sample audio each trial decodes: long enough that the encoder
 /// dominates, as in a real dictation, short enough for the whole test to take
@@ -97,6 +126,34 @@ mod tests {
 
     fn cores(performance: usize, total: usize) -> Option<CoreCounts> {
         Some(CoreCounts { performance, total })
+    }
+
+    #[test]
+    fn the_offer_shows_once_after_setup_with_a_model() {
+        let mut s = Settings {
+            has_completed_setup: true,
+            ..Default::default()
+        };
+        assert!(should_offer(&s, true));
+        assert!(!should_offer(&s, false), "no model to time yet");
+        s.has_completed_setup = false;
+        assert!(!should_offer(&s, true), "setup still running");
+        s.has_completed_setup = true;
+        s.decode.n_threads = 6;
+        assert!(!should_offer(&s, true), "threads already chosen");
+        s.decode.n_threads = 0;
+        s.speed_test_offer_dismissed = true;
+        assert!(!should_offer(&s, true), "Not now");
+        s.speed_test_offer_dismissed = false;
+        s.last_speed_test = Some(SpeedTestRecord {
+            model: "Express".into(),
+            best: 4,
+            best_ms: 900,
+            recommended: 4,
+            recommended_ms: Some(900),
+            at: 0,
+        });
+        assert!(!should_offer(&s, true), "already ran");
     }
 
     #[test]

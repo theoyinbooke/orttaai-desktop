@@ -10,7 +10,7 @@ import "../styles/analytics.css";
 import { Icon, useToast } from "../ui";
 import { call, useEvent } from "../lib/api";
 import { useSettings } from "../lib/settings";
-import { useWhatsNewOpen, type BadgeView, type MilestonesOverview } from "../lib/analytics";
+import { useSpeedTestCardOpen, useWhatsNewOpen, type BadgeView, type MilestonesOverview } from "../lib/analytics";
 import { MilestoneBadge } from "./ShareCardBadge";
 import ShareCardSheet from "./ShareCardSheet";
 
@@ -36,6 +36,7 @@ export default function Celebrations() {
   const { settings } = useSettings();
   const celebrate = settings?.celebrate_milestones ?? true;
   const whatsNew = useWhatsNewOpen();
+  const speedTestCard = useSpeedTestCardOpen();
   const active = useWindowActive();
   const toastErr = useToast();
   const [queue, setQueue] = useState<BadgeView[]>([]);
@@ -81,7 +82,7 @@ export default function Celebrations() {
 
   const dismissToast = useCallback(() => setToast(null), []);
   const current = queue[0];
-  const showCelebration = celebrate && active && !whatsNew && !share && !!current;
+  const showCelebration = celebrate && active && !whatsNew && !speedTestCard && !share && !!current;
 
   return (
     <>

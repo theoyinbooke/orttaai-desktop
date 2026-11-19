@@ -341,6 +341,12 @@ function createStore<T>(initial: T) {
 /** Celebrations wait for What's New to close. */
 export const whatsNewOpen = createStore(false);
 export const useWhatsNewOpen = () => useSyncExternalStore(whatsNewOpen.subscribe, whatsNewOpen.get);
+/** What's New has checked for notes to show; the speed test card waits for it. */
+export const whatsNewChecked = createStore(false);
+export const useWhatsNewChecked = () => useSyncExternalStore(whatsNewChecked.subscribe, whatsNewChecked.get);
+/** The card offering the speed test is up; celebrations wait for it too. */
+export const speedTestCardOpen = createStore(false);
+export const useSpeedTestCardOpen = () => useSyncExternalStore(speedTestCardOpen.subscribe, speedTestCardOpen.get);
 
 /** Which Analytics tab to open next (Home's "Open History"). */
 export type AnalyticsTab = "dashboard" | "tone" | "history";

@@ -10,6 +10,7 @@ import { call, useEvent } from "../lib/api";
 import { useSettings } from "../lib/settings";
 import { formatBytes, useDownloads, useExpressInUse, type DownloadState, type HardwareInfo, type ModelInfo } from "../lib/engine";
 import { usePatch } from "../components/SettingsRows";
+import { progressLabel, SAMPLE_SECONDS, seconds, type SpeedTestDone, type SpeedTestProgress, type SpeedTestStatus } from "../lib/speedtest";
 import ExpressCard, {
   Glyph,
   MButton,
@@ -819,61 +820,59 @@ export default function Models() {
 }
 
 
-type SpeedTestResult = {
-  model: string;
-  trials: { threads: number; ms: number }[];
-  best: number;
-  recommended: number;
-  sample_seconds: number;
-};
-
-const seconds = (ms: number) => `${(ms / 1000).toFixed(2)} s`;
-
 /** Settings › Performance › Speed Test: times this computer's speech model at a
- *  few thread counts and sets Decode Threads to the fastest. */
+ *  few thread counts and sets Decode Threads to the fastest. It runs in the
+ *  background (the toast on finishing comes from SpeedTestCard), so this row
+ *  picks up a test already running and shows the last result. */
 function SpeedTestRow() {
+  const { settings } = useSettings();
   const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState<{ threads: number; index: number; total: number } | null>(null);
-  const [result, setResult] = useState<SpeedTestResult | null>(null);
+  const [progress, setProgress] = useState<SpeedTestProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEvent<{ threads: number; index: number; total: number; ms: number | null }>("speed-test-progress", (e) => {
-    if (e.ms === null) setProgress({ threads: e.threads, index: e.index, total: e.total });
+  useEffect(() => {
+    call<SpeedTestStatus>("speed_test_status")
+      .then((s) => {
+        setRunning(s.running);
+        setProgress(s.progress);
+      })
+      .catch(() => {});
+  }, []);
+  useEvent<SpeedTestProgress>("speed-test-progress", (e) => {
+    setRunning(true);
+    if (e.ms === null) setProgress(e);
+  });
+  useEvent<SpeedTestDone>("speed-test-done", (e) => {
+    setRunning(false);
+    setProgress(null);
+    setError(e.error ?? null);
   });
   const run = () => {
     setRunning(true);
+    setProgress(null);
     setError(null);
-    setResult(null);
-    call<SpeedTestResult>("run_speed_test")
-      .then(setResult)
-      .catch((e) => setError(String(e)))
-      .finally(() => {
-        setRunning(false);
-        setProgress(null);
-      });
+    call("start_speed_test").catch((e) => {
+      setRunning(false);
+      setError(String(e));
+    });
   };
-  const auto = result?.trials.find((t) => t.threads === result.recommended);
-  const best = result?.trials.find((t) => t.threads === result.best);
+  const last = settings?.last_speed_test ?? null;
   return (
     <>
       <MRow
         title="Speed Test"
-        info="Times a few seconds of sample speech with your speech model at several thread counts, then sets Decode Threads to the fastest. Takes about a minute; dictation keeps working meanwhile."
+        info="Times a few seconds of sample speech with your speech model at several thread counts, then sets Decode Threads to the fastest. Takes about a minute in the background; dictation keeps working meanwhile."
       >
         <MButton glyph="bolt" loading={running} disabled={running} onClick={run}>
-          {running
-            ? progress
-              ? `${progress.threads} threads… ${progress.index + 1}/${progress.total}`
-              : "Starting…"
-            : result
-              ? "Run Again"
-              : "Run Test"}
+          {running ? progressLabel(progress) : last ? "Run Again" : "Run Test"}
         </MButton>
       </MRow>
-      {result && best && (
+      {last && !running && (
         <MFootnote>
-          Fastest: {result.best} threads, {seconds(best.ms)} for {result.sample_seconds} s of speech with {result.model}
-          {auto && result.best !== result.recommended ? ` (Auto's ${result.recommended} took ${seconds(auto.ms)})` : ""}.
-          Decode Threads is now {result.best}.
+          Fastest: {last.best} threads, {seconds(last.best_ms)} for {SAMPLE_SECONDS} s of speech with {last.model}
+          {last.recommended_ms !== null && last.best !== last.recommended
+            ? ` (Auto's ${last.recommended} took ${seconds(last.recommended_ms)})`
+            : ""}
+          .{settings?.decode.n_threads === last.best ? ` Decode Threads is ${last.best}.` : ""}
         </MFootnote>
       )}
       {error && <MFootnote>Couldn't run the speed test: {error}</MFootnote>}

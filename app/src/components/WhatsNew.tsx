@@ -7,7 +7,7 @@ import { createPortal } from "react-dom";
 import "../styles/analytics.css";
 import { Icon } from "../ui";
 import { call } from "../lib/api";
-import { whatsNewOpen, type WhatsNewArt, type WhatsNewRelease } from "../lib/analytics";
+import { whatsNewChecked, whatsNewOpen, type WhatsNewArt, type WhatsNewRelease } from "../lib/analytics";
 import { MilestoneBadge } from "./ShareCardBadge";
 
 export default function WhatsNew() {
@@ -23,7 +23,8 @@ export default function WhatsNew() {
           whatsNewOpen.set(true);
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => whatsNewChecked.set(true));
   }, []);
 
   const close = () => {

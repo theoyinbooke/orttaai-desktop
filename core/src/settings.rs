@@ -254,6 +254,10 @@ pub struct Settings {
     pub github_star_prompt_completed: bool,
     pub github_star_prompt_shown_count: u32,
     pub github_star_prompt_last_shown_at: i64,
+    /// The last speed test's result (Settings › Model › Performance).
+    pub last_speed_test: Option<crate::speedtest::SpeedTestRecord>,
+    /// "Not now" on the card that offers the speed test.
+    pub speed_test_offer_dismissed: bool,
 }
 
 impl Default for Settings {
@@ -352,6 +356,8 @@ impl Default for Settings {
             github_star_prompt_completed: false,
             github_star_prompt_shown_count: 0,
             github_star_prompt_last_shown_at: 0,
+            last_speed_test: None,
+            speed_test_offer_dismissed: false,
         }
     }
 }

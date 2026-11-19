@@ -22,6 +22,7 @@ import SettingsView from "./views/Settings";
 import About from "./views/About";
 import WhatsNew from "./components/WhatsNew";
 import Celebrations from "./components/Celebrations";
+import SpeedTestCard from "./components/SpeedTestCard";
 
 type Section = { tab: Tab; label: string; icon: string; tag?: string };
 
@@ -277,6 +278,7 @@ function AppShell() {
           {tab === "about" && <About info={info} />}
         </main>
         <WhatsNew />
+        <SpeedTestCard />
         <Celebrations />
       </div>
     </ShellContext.Provider>
