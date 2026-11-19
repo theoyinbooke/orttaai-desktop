@@ -48,6 +48,29 @@ pub const MAX_DETAIL_LENGTH: usize = 140;
 /// at most three highlights, the ones people will notice, in plain words.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.6.0",
+        items: &[
+            Item {
+                id: "0.6-express-pro",
+                title: "Meet Express Pro",
+                detail: "Fluid Speech Pro, the Mac's Express Pro model, in 25 European languages. Choose it in Model › Express Model.",
+                art: Art::Symbol("bolt"),
+            },
+            Item {
+                id: "0.6-languages",
+                title: "Every Express language",
+                detail: "Settings › Dictation lists all 25 Express languages, and Word Boost now runs on English only.",
+                art: Art::Symbol("globe"),
+            },
+            Item {
+                id: "0.6-speed",
+                title: "Faster on Intel PCs",
+                detail: "Speech uses your fast cores, and Windows no longer slows Orttaai down while another app is in front.",
+                art: Art::Symbol("speedometer"),
+            },
+        ],
+    },
+    Release {
         version: "0.5.0",
         items: &[
             Item {
