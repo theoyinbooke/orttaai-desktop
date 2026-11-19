@@ -9,20 +9,39 @@ import ShortcutRecorder from "../../components/ShortcutRecorder";
 import { useEngine, useExpressInUse, type ModelInfo } from "../../lib/engine";
 import "../../styles/engine.css";
 
+/** English first, then A to Z (Mac `supportedLanguages`). Express Pro and
+ * Parakeet v3 cover the European ones; Whisper covers them all. */
 export const SUPPORTED_LANGUAGES: { code: string; name: string }[] = [
   { code: "en", name: "English" },
-  { code: "es", name: "Spanish" },
+  { code: "ar", name: "Arabic" },
+  { code: "bg", name: "Bulgarian" },
+  { code: "zh", name: "Chinese" },
+  { code: "hr", name: "Croatian" },
+  { code: "cs", name: "Czech" },
+  { code: "da", name: "Danish" },
+  { code: "nl", name: "Dutch" },
+  { code: "et", name: "Estonian" },
+  { code: "fi", name: "Finnish" },
   { code: "fr", name: "French" },
   { code: "de", name: "German" },
-  { code: "ja", name: "Japanese" },
-  { code: "zh", name: "Chinese" },
-  { code: "ko", name: "Korean" },
-  { code: "pt", name: "Portuguese" },
-  { code: "it", name: "Italian" },
-  { code: "nl", name: "Dutch" },
-  { code: "ru", name: "Russian" },
-  { code: "ar", name: "Arabic" },
+  { code: "el", name: "Greek" },
   { code: "hi", name: "Hindi" },
+  { code: "hu", name: "Hungarian" },
+  { code: "it", name: "Italian" },
+  { code: "ja", name: "Japanese" },
+  { code: "ko", name: "Korean" },
+  { code: "lv", name: "Latvian" },
+  { code: "lt", name: "Lithuanian" },
+  { code: "mt", name: "Maltese" },
+  { code: "pl", name: "Polish" },
+  { code: "pt", name: "Portuguese" },
+  { code: "ro", name: "Romanian" },
+  { code: "ru", name: "Russian" },
+  { code: "sk", name: "Slovak" },
+  { code: "sl", name: "Slovenian" },
+  { code: "es", name: "Spanish" },
+  { code: "sv", name: "Swedish" },
+  { code: "uk", name: "Ukrainian" },
   { code: "auto", name: "Auto-detect" },
 ];
 
@@ -74,12 +93,15 @@ export default function DictationSettings() {
   // Only matters when Whisper does the work.
   const englishOnlyMismatch = !expressInUse && activeModel?.english_only && settings.dictation_language !== "en";
   const linux = platform?.platform === "linux";
-  // Express takes no language: v2 is English only (other languages fall back to
-  // Whisper), the multilingual model detects the language itself.
+  // English-only Express models fall back to Whisper for other languages.
+  // Express Pro runs the language chosen here (Auto-detect uses Whisper, as on
+  // the Mac); Parakeet v3 also detects the language itself.
   const expressChosen = settings.engine === "express";
   const expressModel = expressModels.find((m) => m.id === settings.express_model) ?? expressModels[0];
   const languageHint = expressChosen && expressModel
-    ? expressModel.multilingual
+    ? expressModel.id === "fluid-speech-pro-onnx"
+      ? "Express Pro dictates English and 24 more European languages: choose yours here. With Auto-detect or another language, dictation uses your Whisper model."
+      : expressModel.multilingual
       ? "Express detects the language you speak by itself. This choice applies when Whisper is in use."
       : expressInUse
         ? "Express is English only. Pick another language and dictation uses your Whisper model instead."

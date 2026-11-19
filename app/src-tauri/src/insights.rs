@@ -54,7 +54,9 @@ fn clock(store: &Store) -> Result<Clock, String> {
 /// The model the Performance card names, and whether it is Express.
 fn current_model(settings: &Settings) -> (Option<String>, bool) {
     if settings.express_active() {
-        (Some("Express (Parakeet TDT)".to_string()), true)
+        let name = orttaai_core::transcription::express::spec(settings.express_model.trim())
+            .map_or("Express", |spec| spec.name);
+        (Some(name.to_string()), true)
     } else {
         (Some(settings.model_id.clone()), false)
     }
@@ -505,9 +507,8 @@ fn native_copy(bytes: &[u8], mime: Option<&str>) -> Result<(), String> {
             }
         }
     }
-    Err(failure.unwrap_or_else(|| {
-        "No clipboard tool found (install wl-clipboard or xclip).".into()
-    }))
+    Err(failure
+        .unwrap_or_else(|| "No clipboard tool found (install wl-clipboard or xclip).".into()))
 }
 
 #[cfg(not(target_os = "linux"))]

@@ -323,10 +323,10 @@ fn vocabulary_terms(settings: &Settings) -> Vec<String> {
 }
 
 /// Word Boost's words: the Memory dictionary's targets with the spellings
-/// mapped to them, while Express and Word Boost are on (Mac
-/// `sessionWordBoostTerms`).
+/// mapped to them, while Express and Word Boost are on and dictation is in
+/// English, the language Word Boost's model knows (Mac `sessionWordBoostTerms`).
 fn word_boost_terms(settings: &Settings) -> Vec<orttaai_core::text::WordBoostTerm> {
-    if !settings.express_active() || !settings.express_word_boost {
+    if !settings.express_english() || !settings.express_word_boost {
         return Vec::new();
     }
     Store::open_default()
@@ -879,7 +879,9 @@ fn model_key(s: &Settings) -> ModelKey {
         s.express_model.clone(),
         express,
         if express { s.decode.n_threads } else { 0 },
-        models::english_variant(&s.model_id, &s.effective_language()).is_some(),
+        // Whisper's English variant; Express doesn't use it, so a language
+        // change between Express languages doesn't reload Express.
+        !express && models::english_variant(&s.model_id, &s.effective_language()).is_some(),
     )
 }
 
@@ -1033,6 +1035,52 @@ impl Worker {
             return false;
         }
         emit_state(&self.app, "loading");
+        // Switching from one Express model to another keeps the current one
+        // when the new one can't load, rather than falling back to Whisper
+        // (Mac `ExpressController.switchModel`).
+        let (_, _, loaded_engine, loaded_express_model, loaded_express, _, _) = &self.loaded;
+        if *loaded_express
+            && *loaded_engine == SpeechEngine::Express
+            && self.settings.express_active()
+            && loaded_express_model.trim() != self.settings.express_model.trim()
+        {
+            let previous = loaded_express_model.clone();
+            match load_express(&self.settings) {
+                Ok((t, id)) => {
+                    self.coord.replace_transcriber(t);
+                    if self.settings.warm_models {
+                        let _ = self.coord.warm_up();
+                    }
+                    publish_snapshot(&self.app, |s| s.model_id = Some(id));
+                }
+                Err(why) => {
+                    let name = |id: &str| {
+                        orttaai_core::transcription::express::spec(id.trim())
+                            .map_or_else(|| id.trim().to_string(), |s| s.name.to_string())
+                    };
+                    let _ = self.app.emit(
+                        "engine-warning",
+                        format!(
+                            "{} couldn't start, so Express keeps using {}. {why}",
+                            name(&self.settings.express_model),
+                            name(&previous)
+                        ),
+                    );
+                    self.settings.express_model = previous.clone();
+                    // Saved off this thread: saving tells the engine, which is this thread.
+                    let app = self.app.clone();
+                    std::thread::spawn(move || {
+                        let patch = serde_json::json!({ "express_model": previous });
+                        if let Err(e) = crate::settings_cmds::update_settings(app, patch) {
+                            eprintln!("orttaai: couldn't restore the Express model setting: {e}");
+                        }
+                    });
+                }
+            }
+            self.loaded = model_key(&self.settings);
+            emit_state(&self.app, "idle");
+            return true;
+        }
         match load_transcriber(&self.settings, None) {
             Ok(((t, id), fallback)) => {
                 if let Some(why) = fallback {

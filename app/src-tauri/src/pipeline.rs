@@ -22,6 +22,8 @@ use std::time::Instant;
 pub struct AppPipeline {
     processor: TextProcessor,
     polisher: Option<Polisher>,
+    /// Express on English dictation: its number words are formatted the way
+    /// Whisper writes them. Other languages keep the model's text.
     express: bool,
 }
 
@@ -90,7 +92,7 @@ pub fn build_pipeline(settings: &Settings) -> Box<dyn TranscriptPipeline> {
     Box::new(AppPipeline {
         processor,
         polisher,
-        express: settings.express_active(),
+        express: settings.express_english(),
     })
 }
 

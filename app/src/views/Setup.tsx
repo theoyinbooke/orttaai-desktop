@@ -42,6 +42,12 @@ type ExpressModel = {
 
 const STEPS = ["Welcome", "Permissions", "Engine", "Ready"];
 
+/** The languages the multilingual Express models dictate besides English (Rust `PARAKEET_V3_LANGUAGES`). */
+const EXPRESS_LANGUAGES = [
+  "bg", "hr", "cs", "da", "nl", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt",
+  "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk",
+];
+
 const COPY = [
   { title: "Welcome to Orttaai", sub: "Hold a key, speak, and Orttaai types it into any app. Privately, on this computer." },
   { title: "Two quick permissions", sub: "The microphone so it can hear you, and a way to type where your cursor is." },
@@ -380,8 +386,16 @@ function EngineStep({ onReady }: { onReady: (ready: boolean) => void }) {
 
   const expressModel = express.find((m) => m.id === settings?.express_model) ?? express[0];
   const whisper = models.find((m) => m.recommended) ?? models.find((m) => m.id === settings?.model_id);
-  const english = (settings?.dictation_language ?? "en").toLowerCase().startsWith("en");
-  const expressAvailable = !!expressModel && english;
+  const language = (settings?.dictation_language ?? "en").toLowerCase();
+  const english = language.startsWith("en");
+  // Rust `Settings::express_active`: English, or one of a multilingual model's
+  // languages ("auto" only for Parakeet v3; Express Pro needs a chosen one).
+  const expressCovers =
+    !!expressModel &&
+    (english ||
+      (expressModel.multilingual &&
+        (EXPRESS_LANGUAGES.includes(language) || (language === "auto" && expressModel.id !== "fluid-speech-pro-onnx"))));
+  const expressAvailable = expressCovers;
   const running = engine === "idle" || engine === "recording" || engine === "processing";
   const usingExpress = settings?.engine === "express" && !!expressModel?.downloaded;
   const usingWhisper = settings?.engine !== "express" && !!whisper?.downloaded && settings?.model_id === whisper.id;
@@ -466,13 +480,19 @@ function EngineStep({ onReady }: { onReady: (ready: boolean) => void }) {
       {expressModel && (
         <EngineChoice
           icon="bolt"
-          title="Express"
-          badge={english ? "Recommended" : null}
-          subtitle={`${expressModel.name} + Word Boost`}
-          detail={english ? `Fastest dictation, best with names. English only, ${formatBytes(expressModel.approx_size_mb * 1024 * 1024)}.` : "English only. Set dictation to English to use it."}
+          title={expressModel.id === "fluid-speech-pro-onnx" ? "Express Pro" : "Express"}
+          badge={expressCovers ? "Recommended" : null}
+          subtitle={`${expressModel.name.replace(/^Express(?: Pro)? · /, "")} + Word Boost`}
+          detail={
+            expressCovers
+              ? `Fastest dictation, best with names. ${expressModel.multilingual ? "25 European languages" : "English only"}, ${formatBytes(expressModel.approx_size_mb * 1024 * 1024)}.`
+              : expressModel.multilingual
+                ? "Doesn't cover this language. Choose one of its 25 languages to use it."
+                : "English only. Set dictation to English to use it."
+          }
           selected={usingExpress}
           actionTitle={usingExpress ? (running ? "Ready" : "Loading...") : expressProgress !== null ? "Downloading..." : expressModel.downloaded ? "Use Downloaded" : anyInstalled ? "Download Instead" : "Download"}
-          disabled={busy || usingExpress || !english}
+          disabled={busy || usingExpress || !expressCovers}
           onAction={pickExpress}
         >
           {expressProgress !== null && <DownloadProgress label="Downloading Express models..." fraction={expressProgress} />}

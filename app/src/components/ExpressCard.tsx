@@ -515,6 +515,7 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
   const downloadingId = Object.keys(progress)[0];
   const pct = downloadingId ? progress[downloadingId] : undefined;
   const downloading = pct !== undefined;
+  const downloadingModel = models.find((m) => m.id === downloadingId);
 
   const download = (id: string) => {
     setFailure(null);
@@ -542,16 +543,29 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
     }
   };
 
+  // One switch at a time: picking a model stops any other model's download,
+  // and picking the model in use again calls off a switch still downloading.
+  // The model in use keeps dictating until the new one is here (Mac
+  // `ExpressController.setModel`).
   const chooseModel = (id: string) => {
     const m = models.find((x) => x.id === id);
     if (!m) return;
+    for (const other of Object.keys(progress)) {
+      if (other !== id) call("express_cancel", { id: other });
+    }
     if (usingExpress && !m.downloaded) {
       enableAfterDownload.current = id;
       if (progress[id] === undefined) download(id);
       return;
     }
-    save({ express_model: id });
+    enableAfterDownload.current = null;
+    if (id !== settings.express_model) save({ express_model: id });
   };
+  /** The model the picker shows: the one being switched to, if any. */
+  const shownModelId = (downloading && enableAfterDownload.current) || selected?.id;
+  const shownModel = models.find((m) => m.id === shownModelId) ?? selected;
+  const pro = shownModel?.id === "fluid-speech-pro-onnx";
+  const english = settings.dictation_language === "en";
 
   // The model that replaces the selected one, when it has been replaced.
   const successor = selected?.previous ? models.find((m) => !m.previous && m.multilingual === selected.multilingual) : undefined;
@@ -561,12 +575,14 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
     if (successor.downloaded) finishUpgrade(successor.id);
     else download(successor.id);
   };
-  const fluid = selected?.id.startsWith("fluid-speech");
+  const fluid = shownModel?.id.startsWith("fluid-speech");
 
   const needsBoostModel = !!boostModel && !boostModel.installed;
   const wordBoostStatus =
     boostProgress !== null
       ? `Downloading the Word Boost model… ${Math.round(boostProgress * 100)}%`
+      : usingExpress && settings.express_word_boost && !english
+        ? "Works on English dictation only."
       : usingExpress && settings.express_word_boost && needsBoostModel
         ? `Needs its model, a one-time ${boostModel?.size_mb ?? 132} MB download.`
         : !usingExpress || !settings.express_word_boost || boosted === null
@@ -597,18 +613,18 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
     <StatusChip title="Not downloaded" glyph="downloadCircle" tone="plain" />
   );
 
-  const size = selected ? formatBytes(selected.approx_size_mb * 1024 * 1024) : "";
+  const size = shownModel ? formatBytes(shownModel.approx_size_mb * 1024 * 1024) : "";
   return (
     <MCard
       title="Express Engine"
-      info="Fluid Speech Mini, the compact speech model the Mac's Express engine runs, here on your CPU through ONNX Runtime. It's typically several times faster than Whisper without a GPU. Other languages use NVIDIA Parakeet v3. Your Whisper model stays selected for when Express is off."
+      info="The speech models the Mac's Express engine runs, here on your CPU through ONNX Runtime: Fluid Speech Mini for English, and Express Pro (Fluid Speech Pro) for English and 24 more European languages. NVIDIA Parakeet v3 is also offered. They're typically several times faster than Whisper without a GPU. Your Whisper model stays selected for when Express is off."
       accessory={chip}
     >
       <DetailRow
         title="Use Express for dictation"
         detail={
-          selected
-            ? `${selected.multilingual ? "25 European languages" : "English only"}. Downloads ${size} once.`
+          shownModel
+            ? `${shownModel.multilingual ? "25 European languages" : "English only"}. Downloads ${size} once.`
             : "Checking the Express models…"
         }
       >
@@ -621,9 +637,9 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
       <MDivider />
       {models.length > 1 && selected && (
         <>
-          <MRow title="Express Model" info={selected.description}>
+          <MRow title="Express Model" info={shownModel?.description ?? selected.description}>
             <Select
-              value={selected.id}
+              value={shownModel?.id ?? selected.id}
               onChange={chooseModel}
               options={models.map((m) => ({ value: m.id, label: m.name.replace(/^Express · /, "") }))}
               ariaLabel="Express model"
@@ -674,7 +690,7 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
       <div className="mset-stack">
         {downloading && (
           <MProgress
-            label={`Downloading Express… ${Math.round((pct ?? 0) * 100)}%`}
+            label={`Downloading ${downloadingModel ? shortName(downloadingModel) : "Express"}… ${Math.round((pct ?? 0) * 100)}%`}
             fraction={pct ?? 0}
             trailing={
               <button type="button" className="mset-link" onClick={() => call("express_cancel", { id: downloadingId })}>
@@ -695,6 +711,11 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
         {usingExpress && selected && !selected.multilingual && settings.dictation_language !== "en" && (
           <MNotice kind="info">This Express model is English only, so dictation uses Whisper until the dictation language is English.</MNotice>
         )}
+        {usingExpress && selected?.id === "fluid-speech-pro-onnx" && settings.dictation_language === "auto" && (
+          <MNotice kind="info">
+            Express Pro needs a chosen language, so dictation uses Whisper while the language is set to Auto-detect.
+          </MNotice>
+        )}
         {failure && (
           <MNotice kind="error" onDismiss={() => setFailure(null)}>
             Express couldn't start: {failure}
@@ -710,7 +731,7 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
       </div>
       <p className="mset-foot mset-foot-top">
         {fluid
-          ? "Fluid Speech Mini by FluidVoice, built on NVIDIA Parakeet TDT 0.6B v3 and Moondream Parakeet Ultra (CC BY 4.0), run through ONNX Runtime."
+          ? `${pro ? "Fluid Speech Pro" : "Fluid Speech Mini"} by FluidVoice, built on NVIDIA Parakeet TDT 0.6B v3 and Moondream Parakeet Ultra (CC BY 4.0), run through ONNX Runtime${pro ? " with sherpa-onnx" : ""}.`
           : "NVIDIA Parakeet TDT 0.6B (CC BY 4.0), run through ONNX Runtime with sherpa-onnx."}
       </p>
       <ConfirmDialog

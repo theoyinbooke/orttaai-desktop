@@ -119,7 +119,18 @@ pub fn express_cancel(id: String) {
     }
 }
 
+/// Delete an Express model's files, unless it is downloading or dictation is
+/// using it: its files may be open, and on Windows half a folder can be left.
 #[tauri::command]
 pub fn express_delete(id: String) -> Result<(), String> {
+    if downloads().lock().unwrap().contains_key(&id) {
+        return Err("This Express model is still downloading. Cancel the download first.".into());
+    }
+    let settings = orttaai_core::settings::Settings::load_or_default();
+    if settings.engine == orttaai_core::settings::SpeechEngine::Express
+        && settings.express_model.trim() == id.trim()
+    {
+        return Err("Dictation is using this Express model. Turn Express off or choose another model first.".into());
+    }
     express::delete(&id).map_err(err)
 }

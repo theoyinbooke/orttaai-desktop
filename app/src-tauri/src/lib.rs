@@ -94,8 +94,7 @@ fn wire_learn_from_edits(app: &AppHandle) {
             let logged = match (obs.outcome, obs.before, obs.after) {
                 (Watched::Edited, Some(before), Some(after)) => {
                     let settings = Settings::load_or_default();
-                    let english = settings.dictation_language.eq_ignore_ascii_case("en")
-                        || settings.express_active();
+                    let english = settings.effective_language() == "en";
                     store
                         .learn_from_edit(
                             &Learn {

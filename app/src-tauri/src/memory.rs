@@ -300,7 +300,7 @@ pub async fn preview_text_pipeline(
     tauri::async_runtime::spawn_blocking(move || {
         let settings = Settings::load_or_default();
         let processor = store()?.text_processor(&settings).map_err(err)?;
-        let input = if settings.express_active() {
+        let input = if settings.express_english() {
             format_numbers(&text)
         } else {
             text

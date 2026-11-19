@@ -356,10 +356,19 @@ impl Default for Settings {
     }
 }
 
-/// Express models that dictate more than English (Parakeet v3).
-pub const MULTILINGUAL_EXPRESS_MODELS: &[&str] = &["sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"];
+/// Express models that dictate more than English: Parakeet v3 and Fluid
+/// Speech Pro (the Mac's Express Pro).
+pub const MULTILINGUAL_EXPRESS_MODELS: &[&str] = &[
+    "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+    "fluid-speech-pro-onnx",
+];
 
-/// The 25 languages Parakeet TDT v3 transcribes.
+/// Multilingual models that also run when the language is "auto": Parakeet v3,
+/// as it always has. Fluid Speech Pro, like the Mac's Express Pro, needs a
+/// chosen language, since "auto" may mean one it doesn't know.
+pub const AUTO_DETECT_EXPRESS_MODELS: &[&str] = &["sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"];
+
+/// The 25 languages Parakeet TDT v3 and Fluid Speech Pro transcribe.
 pub const PARAKEET_V3_LANGUAGES: &[&str] = &[
     "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt",
     "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk",
@@ -377,16 +386,26 @@ impl Settings {
     }
 
     /// Express runs only when it is chosen and can dictate the language: English,
-    /// or one of the multilingual model's languages (or auto). Anything else
-    /// dictates with the Whisper model (Mac `isExpressEngineActive`).
+    /// or one of the multilingual model's languages (and "auto" for Parakeet
+    /// v3). Anything else dictates with the Whisper model (Mac
+    /// `isExpressEngineActive`).
     pub fn express_active(&self) -> bool {
         if self.engine != SpeechEngine::Express {
             return false;
         }
         let lang = self.effective_language();
+        let model = self.express_model.trim();
         lang == "en"
-            || (MULTILINGUAL_EXPRESS_MODELS.contains(&self.express_model.trim())
-                && (lang == "auto" || PARAKEET_V3_LANGUAGES.contains(&lang.as_str())))
+            || (MULTILINGUAL_EXPRESS_MODELS.contains(&model)
+                && (PARAKEET_V3_LANGUAGES.contains(&lang.as_str())
+                    || (lang == "auto" && AUTO_DETECT_EXPRESS_MODELS.contains(&model))))
+    }
+
+    /// Express on English dictation: when its English-only steps run, the
+    /// number formatter and Word Boost (Mac `isExpressWordBoostActive`). On
+    /// other languages, or "auto", Express's text is kept as the model wrote it.
+    pub fn express_english(&self) -> bool {
+        self.express_active() && self.effective_language() == "en"
     }
 
     /// Cross-platform config-file path, or `None` if no home dir can be resolved.
@@ -503,6 +522,45 @@ mod tests {
         assert!(!s.express_active(), "not one of Parakeet v3's languages");
         s.engine = super::SpeechEngine::Whisper;
         assert!(!s.express_active());
+    }
+
+    #[test]
+    fn fluid_speech_pro_needs_a_chosen_language() {
+        let mut s = super::Settings {
+            engine: super::SpeechEngine::Express,
+            express_model: "fluid-speech-pro-onnx".into(),
+            ..super::Settings::default()
+        };
+        for lang in ["en", "fr", "de", "uk", "mt"] {
+            s.dictation_language = lang.into();
+            assert!(s.express_active(), "{lang}");
+        }
+        s.dictation_language = "auto".into();
+        assert!(!s.express_active(), "auto stays on Whisper, as on the Mac");
+        s.dictation_language = "ja".into();
+        assert!(!s.express_active());
+    }
+
+    #[test]
+    fn english_only_steps_run_only_on_english_express_dictation() {
+        let mut s = super::Settings {
+            engine: super::SpeechEngine::Express,
+            express_model: super::MULTILINGUAL_EXPRESS_MODELS[0].into(),
+            ..super::Settings::default()
+        };
+        s.dictation_language = "en".into();
+        assert!(s.express_english());
+        for lang in ["de", "auto"] {
+            s.dictation_language = lang.into();
+            assert!(s.express_active(), "{lang}");
+            assert!(
+                !s.express_english(),
+                "{lang}: no English number formatting or Word Boost"
+            );
+        }
+        s.engine = super::SpeechEngine::Whisper;
+        s.dictation_language = "en".into();
+        assert!(!s.express_english());
     }
 
     use super::*;

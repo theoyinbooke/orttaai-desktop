@@ -1,13 +1,15 @@
 //! "Express" engine. English runs Fluid Speech Mini (FluidVoice), the model
 //! the Mac's Express engine runs as Core ML, here as its ONNX build on the ONNX
-//! Runtime that `sherpa-onnx` links statically ([`super::fluid`]). Other
-//! languages run NVIDIA Parakeet TDT 0.6B v3 (int8) through sherpa-onnx; PCs
-//! that installed the earlier English model, Parakeet TDT 0.6B v2, keep it
-//! until they switch.
+//! Runtime that `sherpa-onnx` links statically ([`super::fluid`]). Express Pro
+//! runs Fluid Speech Pro (the Mac's Express Pro, 25 languages) and other
+//! languages can also run NVIDIA Parakeet TDT 0.6B v3 (int8), both through
+//! sherpa-onnx; PCs that installed the earlier English model, Parakeet TDT
+//! 0.6B v2, keep it until they switch.
 //!
-//! Fluid Speech Mini's files come from Hugging Face, pinned to one revision and
-//! checked by SHA-256; the Parakeet models are `.tar.bz2` archives from the
-//! sherpa-onnx releases. Each unpacks to `<models>/express/<id>/`.
+//! The Fluid Speech models' files come from Hugging Face, pinned to one
+//! revision and checked by SHA-256; the Parakeet models are `.tar.bz2`
+//! archives from the sherpa-onnx releases. Each unpacks to
+//! `<models>/express/<id>/`.
 
 use crate::error::{CoreError, Result};
 use crate::models::download_resumable;
@@ -25,9 +27,12 @@ const RELEASE_BASE: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/downl
 
 /// Fluid Speech Mini, the English Express model (the Mac's).
 pub const FLUID_MINI_ID: &str = "fluid-speech-mini-onnx";
+/// Fluid Speech Pro, Express Pro: 25 languages (the Mac's Express Pro).
+pub const FLUID_PRO_ID: &str = "fluid-speech-pro-onnx";
 /// The English model before Fluid Speech Mini.
 pub const PARAKEET_V2_ID: &str = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
 const FLUID_MINI_BASE: &str = "https://huggingface.co/FluidVoice-Labs/fluid-speech-mini-onnx/resolve/fc592620325027419883cf272e70588d8a788c0a";
+const FLUID_PRO_BASE: &str = "https://huggingface.co/FluidVoice-Labs/fluid-speech-pro-onnx/resolve/fa588e9f87f1b9ad0ca2e2d8f7eaf84dc3803581";
 
 /// One file of a model downloaded file by file.
 #[derive(Debug, Clone, Copy)]
@@ -80,12 +85,63 @@ const FLUID_MINI_FILES: &[ModelFile] = &[
     },
 ];
 
+/// Fluid Speech Pro's int8 build for sherpa-onnx, with the licence and notice
+/// its CC BY 4.0 attribution travels with. Each graph keeps its weights in the
+/// `.data` file beside it, under the name the graph refers to.
+const FLUID_PRO_FILES: &[ModelFile] = &[
+    ModelFile {
+        name: "encoder-model.int8.onnx.data",
+        bytes: 745_971_712,
+        sha256: "d2f8bfbb1fa399f207cde85aa3fabee0d67f6730cb31cbf31832c10de69f9c3c",
+    },
+    ModelFile {
+        name: "decoder.int8.onnx.data",
+        bytes: 47_251_456,
+        sha256: "632c3cbf59d3e52d2f7f4dda3bf8e28c045f7a3bb3dbef0f44529ba63926efaa",
+    },
+    ModelFile {
+        name: "joiner.int8.onnx.data",
+        bytes: 6_564_352,
+        sha256: "7473427ab99417fae8cf7025ba11507cb5dcc223194bae2f79064dde0936d0af",
+    },
+    ModelFile {
+        name: "encoder-model.int8.onnx",
+        bytes: 955_592,
+        sha256: "07ad77459bd3bb165c2c53e978ed1dfd64c6e129b18af2ec5ee38343be1d4451",
+    },
+    ModelFile {
+        name: "vocab.txt",
+        bytes: 93_939,
+        sha256: "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
+    },
+    ModelFile {
+        name: "decoder.int8.onnx",
+        bytes: 4_797,
+        sha256: "0bd3e225124a8a90373e500f62516270fd85fdf42237aa569489b232d21cac08",
+    },
+    ModelFile {
+        name: "joiner.int8.onnx",
+        bytes: 2_754,
+        sha256: "c0e995b659ed5e15fc0c38408ee56cd9a03e6d3329f304c32b9d5017c8cdd381",
+    },
+    ModelFile {
+        name: "LICENSE",
+        bytes: 18_657,
+        sha256: "9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411",
+    },
+    ModelFile {
+        name: "NOTICE",
+        bytes: 451,
+        sha256: "fb46bca8b337792a755ec6c77e0e33ebd27d181f46540e4b88382d179942625c",
+    },
+];
+
 /// Where a model comes from.
 #[derive(Debug, Clone, Copy)]
 pub enum ModelSource {
     /// A sherpa-onnx release archive holding a Parakeet transducer.
     SherpaArchive,
-    /// Files fetched one by one (Fluid Speech Mini).
+    /// Files fetched one by one (Fluid Speech Mini and Pro).
     Files {
         base: &'static str,
         files: &'static [ModelFile],
@@ -134,6 +190,20 @@ pub fn catalog() -> Vec<ExpressModelSpec> {
             },
         },
         ExpressModelSpec {
+            id: FLUID_PRO_ID,
+            name: "Express Pro · 25 languages (Fluid Speech Pro)",
+            description: "The Mac's Express Pro model. A few fewer mistakes than Parakeet v3 in every language. Choose your language: Auto-detect uses Whisper.",
+            // With Word Boost's model (WORD_BOOST_MB), which comes with it.
+            approx_size_mb: 933,
+            multilingual: true,
+            archive_bytes: 800_863_710,
+            previous: false,
+            source: ModelSource::Files {
+                base: FLUID_PRO_BASE,
+                files: FLUID_PRO_FILES,
+            },
+        },
+        ExpressModelSpec {
             id: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
             name: "Express · Multilingual (Parakeet v3)",
             description: "Fast on CPU. 25 European languages, auto-detected.",
@@ -171,13 +241,13 @@ mod catalog_tests {
     }
 }
 
-/// The model id a dictation records: Fluid Speech Mini under the Mac's id, so
-/// History and Insights name it the same on every device.
+/// The model id a dictation records: the Fluid Speech models under the Mac's
+/// ids, so History and Insights name them the same on every device.
 pub fn recorded_model_id(id: &str) -> &str {
-    if id == FLUID_MINI_ID {
-        "fluid-speech-mini"
-    } else {
-        id
+    match id {
+        FLUID_MINI_ID => "fluid-speech-mini",
+        FLUID_PRO_ID => "fluid-speech-pro",
+        _ => id,
     }
 }
 
@@ -216,19 +286,44 @@ pub fn model_dir(id: &str) -> Result<PathBuf> {
     express_path(id, has_model)
 }
 
-/// The four files a Parakeet transducer needs.
-fn model_files(dir: &Path) -> [PathBuf; 4] {
-    [
-        dir.join("encoder.int8.onnx"),
-        dir.join("decoder.int8.onnx"),
-        dir.join("joiner.int8.onnx"),
-        dir.join("tokens.txt"),
-    ]
+/// A sherpa-onnx release's Parakeet transducer: encoder, decoder, joiner, tokens.
+const PARAKEET_FILES: [&str; 4] = [
+    "encoder.int8.onnx",
+    "decoder.int8.onnx",
+    "joiner.int8.onnx",
+    "tokens.txt",
+];
+/// Fluid Speech Pro's transducer, in the same order, and the weights its
+/// graphs load from beside them.
+const FLUID_PRO_TRANSDUCER: [&str; 4] = [
+    "encoder-model.int8.onnx",
+    "decoder.int8.onnx",
+    "joiner.int8.onnx",
+    "vocab.txt",
+];
+const FLUID_PRO_WEIGHTS: [&str; 3] = [
+    "encoder-model.int8.onnx.data",
+    "decoder.int8.onnx.data",
+    "joiner.int8.onnx.data",
+];
+
+/// The encoder, decoder, joiner and tokens of the whole transducer in `dir`
+/// that sherpa-onnx runs: Fluid Speech Pro's or a Parakeet release's.
+fn transducer_files(dir: &Path) -> Option<[PathBuf; 4]> {
+    let all_there = |names: &[&str]| names.iter().all(|n| dir.join(n).is_file());
+    let names = if all_there(&FLUID_PRO_TRANSDUCER) && all_there(&FLUID_PRO_WEIGHTS) {
+        FLUID_PRO_TRANSDUCER
+    } else if all_there(&PARAKEET_FILES) {
+        PARAKEET_FILES
+    } else {
+        return None;
+    };
+    Some(names.map(|n| dir.join(n)))
 }
 
-/// Whether `dir` holds a whole model of either kind.
+/// Whether `dir` holds a whole model of any kind.
 fn has_model(dir: &Path) -> bool {
-    fluid::is_model_dir(dir) || model_files(dir).iter().all(|f| f.is_file())
+    fluid::is_model_dir(dir) || transducer_files(dir).is_some()
 }
 
 pub fn is_installed(id: &str) -> bool {
@@ -520,19 +615,14 @@ pub fn download(
         let result = fetch_archive(
             &format!("{RELEASE_BASE}/{}.tar.bz2", spec.id),
             spec.archive_bytes,
-            &[
-                "encoder.int8.onnx",
-                "decoder.int8.onnx",
-                "joiner.int8.onnx",
-                "tokens.txt",
-            ],
+            &PARAKEET_FILES,
             &staging,
             &root.join(format!("{}.tar.bz2.part", spec.id)),
             cancel,
             &mut |f| on_progress(f * (1.0 - boost_share)),
         )
         .and_then(|()| {
-            if model_files(&staging).iter().all(|f| f.is_file()) {
+            if transducer_files(&staging).is_some() {
                 Ok(())
             } else {
                 Err(CoreError::Download(
@@ -606,8 +696,8 @@ fn fetch_files(
     Ok(())
 }
 
-/// The model behind Express: Fluid Speech Mini, or a Parakeet transducer
-/// through sherpa-onnx.
+/// The model behind Express: Fluid Speech Mini, or a transducer (Fluid Speech
+/// Pro or Parakeet) through sherpa-onnx.
 enum Recognizer {
     Fluid(Box<fluid::FluidModel>),
     Sherpa(OfflineRecognizer),
@@ -672,8 +762,9 @@ impl ExpressTranscriber {
         }
     }
 
-    /// Load from a model directory: Fluid Speech Mini's files, or a Parakeet
-    /// transducer's (encoder/decoder/joiner/tokens).
+    /// Load from a model directory: Fluid Speech Mini's files, or a
+    /// transducer's (Fluid Speech Pro's or Parakeet's encoder, decoder, joiner
+    /// and tokens).
     pub fn from_dir(dir: &Path, threads: i32) -> Result<Self> {
         let mut t = Self::new();
         if threads > 0 {
@@ -692,15 +783,12 @@ impl ExpressTranscriber {
             *self.recognizer.lock().unwrap() = Some(Recognizer::Fluid(Box::new(model)));
             return Ok(());
         }
-        let [encoder, decoder, joiner, tokens] = model_files(dir);
-        for f in [&encoder, &decoder, &joiner, &tokens] {
-            if !f.is_file() {
-                return Err(CoreError::Transcription(format!(
-                    "Express model file missing: {}",
-                    f.display()
-                )));
-            }
-        }
+        let Some([encoder, decoder, joiner, tokens]) = transducer_files(dir) else {
+            return Err(CoreError::Transcription(format!(
+                "Express model files missing in {}",
+                dir.display()
+            )));
+        };
         let s = |p: &PathBuf| Some(p.to_string_lossy().into_owned());
         let mut config = OfflineRecognizerConfig::default();
         config.model_config.transducer = OfflineTransducerModelConfig {
@@ -944,9 +1032,10 @@ mod tests {
     #[test]
     fn catalog_ids_are_unique_and_lookup_works() {
         let c = catalog();
-        assert_eq!(c.len(), 3);
+        assert_eq!(c.len(), 4);
         let ids: std::collections::HashSet<_> = c.iter().map(|s| s.id).collect();
-        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.len(), 4);
+        assert!(spec(FLUID_PRO_ID).is_some_and(|s| s.multilingual && !s.previous));
         assert!(spec(FLUID_MINI_ID).is_some());
         assert!(spec(PARAKEET_V2_ID).is_some_and(|s| s.previous));
         assert!(spec("nope").is_none());
@@ -970,8 +1059,55 @@ mod tests {
     }
 
     #[test]
-    fn fluid_speech_mini_is_recorded_under_the_macs_id() {
+    fn fluid_pro_files_add_up_and_hold_a_whole_transducer() {
+        let spec = spec(FLUID_PRO_ID).unwrap();
+        let ModelSource::Files { files, .. } = spec.source else {
+            panic!("Fluid Speech Pro downloads file by file");
+        };
+        assert_eq!(
+            files.iter().map(|f| f.bytes).sum::<u64>(),
+            spec.archive_bytes
+        );
+        let names: std::collections::HashSet<_> = files.iter().map(|f| f.name).collect();
+        assert_eq!(names.len(), files.len(), "duplicate file names");
+        for name in FLUID_PRO_TRANSDUCER.iter().chain(&FLUID_PRO_WEIGHTS) {
+            assert!(names.contains(name), "{name} missing");
+        }
+        assert!(files.iter().all(|f| f.sha256.len() == 64));
+        // The listed size is the download plus Word Boost's model.
+        let mb = (spec.archive_bytes as f64 / 1_000_000.0).round() as u32 + WORD_BOOST_MB;
+        assert_eq!(spec.approx_size_mb, mb);
+    }
+
+    #[test]
+    fn transducer_files_finds_pro_or_parakeet_and_needs_pros_weights() {
+        let dir = std::env::temp_dir().join(format!("orttaai-transducer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let touch = |n: &str| std::fs::write(dir.join(n), b"x").unwrap();
+        assert!(transducer_files(&dir).is_none());
+        FLUID_PRO_TRANSDUCER.iter().for_each(|n| touch(n));
+        assert!(
+            transducer_files(&dir).is_none(),
+            "Pro's graphs without their weights"
+        );
+        FLUID_PRO_WEIGHTS.iter().for_each(|n| touch(n));
+        assert_eq!(
+            transducer_files(&dir).unwrap()[0],
+            dir.join("encoder-model.int8.onnx")
+        );
+        assert!(has_model(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        PARAKEET_FILES.iter().for_each(|n| touch(n));
+        assert_eq!(transducer_files(&dir).unwrap()[3], dir.join("tokens.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fluid_speech_models_are_recorded_under_the_macs_ids() {
         assert_eq!(recorded_model_id(FLUID_MINI_ID), "fluid-speech-mini");
+        assert_eq!(recorded_model_id(FLUID_PRO_ID), "fluid-speech-pro");
         assert_eq!(recorded_model_id(PARAKEET_V2_ID), PARAKEET_V2_ID);
     }
 
