@@ -14,6 +14,7 @@ pub mod chat;
 pub mod clipboard;
 pub mod coach;
 pub mod coordinator;
+pub mod cpu;
 pub mod edit;
 pub mod error;
 pub mod focus;

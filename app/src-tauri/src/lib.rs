@@ -458,6 +458,16 @@ fn init_diagnostic_log() {
 
 pub fn run() {
     init_diagnostic_log();
+    // Dictation decodes while another app is in front: on Windows, keep
+    // Windows from slowing that down as background work (EcoQoS).
+    if orttaai_core::cpu::keep_full_speed_in_background() {
+        tracing::info!("Windows background throttling is off for Orttaai");
+    }
+    tracing::info!(
+        "Speech decoding uses {} threads ({:?})",
+        orttaai_core::cpu::speech_threads(),
+        orttaai_core::cpu::core_counts()
+    );
     tauri::Builder::default()
         // Must be first: a second launch focuses the running instance instead.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {

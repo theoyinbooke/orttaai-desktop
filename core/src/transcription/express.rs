@@ -916,7 +916,8 @@ impl Transcriber for ExpressTranscriber {
         if slot.is_none() && !terms.is_empty() {
             if let Some(dir) = std::env::var_os("ORTTAAI_WORD_BOOST_DIR") {
                 // Tests point at a model folder outside the data dir.
-                if let Ok(w) = crate::wordboost::WordBoost::load(Path::new(&dir), self.threads) {
+                let threads = crate::cpu::word_boost_threads(self.threads);
+                if let Ok(w) = crate::wordboost::WordBoost::load(Path::new(&dir), threads) {
                     *slot = Some(std::sync::Arc::new(w));
                 }
             }
@@ -928,8 +929,10 @@ impl Transcriber for ExpressTranscriber {
             return;
         }
         if slot.is_none() && word_boost_installed() {
-            match word_boost_dir().and_then(|d| crate::wordboost::WordBoost::load(&d, self.threads))
-            {
+            // Word Boost scores while Express decodes, so it gets a share of
+            // the threads rather than all of them again.
+            let threads = crate::cpu::word_boost_threads(self.threads);
+            match word_boost_dir().and_then(|d| crate::wordboost::WordBoost::load(&d, threads)) {
                 Ok(w) => *slot = Some(std::sync::Arc::new(w)),
                 Err(e) => tracing::warn!("Word Boost model failed to load: {e}"),
             }
@@ -980,11 +983,9 @@ pub fn normalize_spacing(text: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// The physical performance cores, as for Whisper ([`crate::cpu::speech_threads`]).
 fn default_threads() -> i32 {
-    std::thread::available_parallelism()
-        .map(|n| n.get() as i32)
-        .unwrap_or(4)
-        .clamp(1, 8)
+    crate::cpu::speech_threads()
 }
 
 #[cfg(test)]

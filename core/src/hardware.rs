@@ -265,7 +265,7 @@ fn cpu_info() -> (String, Option<u32>) {
     .and_then(|o| parse_reg_processor(&o))
     .or_else(|| std::env::var("PROCESSOR_IDENTIFIER").ok())
     .unwrap_or_default();
-    (name, None)
+    (name, crate::cpu::core_counts().map(|c| c.total as u32))
 }
 
 #[cfg(target_os = "macos")]

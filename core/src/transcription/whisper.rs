@@ -219,13 +219,11 @@ impl Transcriber for WhisperTranscriber {
 
 /// Default decode threads. whisper.cpp matmul is compute-bound, so on a hybrid
 /// CPU (P + E cores + hyperthreads) piling on every logical thread hurts — the
-/// slowest E-core/HT straggler gates each layer. Cap at ~the performance-core
-/// count; users can override via `DecodeOptions::n_threads`.
+/// slowest E-core/HT straggler gates each layer. The physical performance
+/// cores ([`crate::cpu::speech_threads`]); users can override via
+/// `DecodeOptions::n_threads`.
 fn default_threads() -> i32 {
-    let logical = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    logical.min(8) as i32
+    crate::cpu::speech_threads()
 }
 
 #[cfg(test)]
