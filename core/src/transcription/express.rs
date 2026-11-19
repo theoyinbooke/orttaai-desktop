@@ -191,7 +191,7 @@ pub fn catalog() -> Vec<ExpressModelSpec> {
         },
         ExpressModelSpec {
             id: FLUID_PRO_ID,
-            name: "Express Pro · 25 languages (Fluid Speech Pro)",
+            name: "Express Pro (Fluid Speech Pro)",
             description: "The Mac's Express Pro model. A few fewer mistakes than Parakeet v3 in every language. Choose your language: Auto-detect uses Whisper.",
             // With Word Boost's model (WORD_BOOST_MB), which comes with it.
             approx_size_mb: 933,

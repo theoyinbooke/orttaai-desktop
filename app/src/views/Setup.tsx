@@ -482,7 +482,7 @@ function EngineStep({ onReady }: { onReady: (ready: boolean) => void }) {
           icon="bolt"
           title={expressModel.id === "fluid-speech-pro-onnx" ? "Express Pro" : "Express"}
           badge={expressCovers ? "Recommended" : null}
-          subtitle={`${expressModel.name.replace(/^Express(?: Pro)? · /, "")} + Word Boost`}
+          subtitle={`${expressModel.id === "fluid-speech-pro-onnx" ? "Fluid Speech Pro" : expressModel.name.replace(/^Express · /, "")} + Word Boost`}
           detail={
             expressCovers
               ? `Fastest dictation, best with names. ${expressModel.multilingual ? "25 European languages" : "English only"}, ${formatBytes(expressModel.approx_size_mb * 1024 * 1024)}.`

@@ -662,7 +662,11 @@ export function Select<T extends string>({
       setOpen(false);
     };
     // A scroll/resize would detach the fixed menu from its trigger — just close.
-    const onShift = () => setOpen(false);
+    // Scrolling the menu's own list (a long one, like the languages) keeps it open.
+    const onShift = (e: Event) => {
+      if (e.target instanceof Node && menuRef.current?.contains(e.target)) return;
+      setOpen(false);
+    };
     document.addEventListener("mousedown", onDoc);
     window.addEventListener("resize", onShift);
     window.addEventListener("scroll", onShift, true);
@@ -676,6 +680,11 @@ export function Select<T extends string>({
   useEffect(() => {
     if (open) setActive(Math.max(0, options.findIndex((o) => o.value === value)));
   }, [open, options, value]);
+
+  // Keep the highlighted option in view as the arrow keys move it.
+  useEffect(() => {
+    if (open) menuRef.current?.querySelector(".select-option.active")?.scrollIntoView({ block: "nearest" });
+  }, [open, active]);
 
   const pick = (i: number) => {
     const o = options[i];
