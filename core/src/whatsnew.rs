@@ -48,6 +48,17 @@ pub const MAX_DETAIL_LENGTH: usize = 140;
 /// at most three highlights, the ones people will notice, in plain words.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.7.1",
+        items: &[
+            Item {
+                id: "0.7.1-speed-test-card",
+                title: "Faster dictation in one click",
+                detail: "Run the speed test from the card that follows. It runs in the background and sets the fastest option for this PC.",
+                art: Art::Symbol("speedometer"),
+            },
+        ],
+    },
+    Release {
         version: "0.7.0",
         items: &[
             Item {
