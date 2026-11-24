@@ -67,8 +67,19 @@ impl TranscriptPipeline for AppPipeline {
 /// The text processor for these settings, falling back to an empty memory if
 /// the store can't be opened (dictation must never fail on it).
 fn processor(settings: &Settings) -> TextProcessor {
-    match Store::open_default().and_then(|s| s.text_processor(settings)) {
-        Ok(p) => p,
+    match Store::open_default().and_then(|s| s.load_memory_rules()) {
+        Ok(mut memory) => {
+            // A pair from an ordinary word to a word with a sound anchor
+            // ("email" to Eimailar) is decided by the sound in the engine,
+            // not rewritten every time the ordinary word is said.
+            let anchors = crate::sound::book(settings);
+            if !anchors.is_empty() {
+                memory.leave_to_sound(|source, target| {
+                    orttaai_core::sound::learn::pair_decided_by_sound(&anchors, source, target)
+                });
+            }
+            TextProcessor::new(TextOptions::from_settings(settings), memory)
+        }
         Err(e) => {
             eprintln!("orttaai: personal memory unavailable ({e}); dictating without it");
             TextProcessor::new(TextOptions::from_settings(settings), MemoryService::new())

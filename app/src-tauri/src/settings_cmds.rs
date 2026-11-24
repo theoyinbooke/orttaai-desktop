@@ -102,6 +102,8 @@ pub async fn reset_app_data(app: AppHandle) -> Result<(), String> {
         tracing::warn!("reset: compacting the database failed: {e}");
     }
     drop(store);
+    // What fixes taught about how your words sound goes with the dictionary.
+    crate::sound::reset();
     let _ = app.emit("history-changed", ());
     let _ = app.emit("memory-changed", ());
 

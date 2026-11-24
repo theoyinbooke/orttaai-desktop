@@ -173,6 +173,9 @@ pub struct EngineState {
     /// Learn-from-edits observer, wired by the text area via
     /// [`set_edit_observer`].
     edit_observer: Mutex<Option<EditObserver>>,
+    /// The running engine's kept dictation sound, for learning how a fixed
+    /// word sounds (in memory only; gone when the engine stops).
+    sound_memory: Mutex<Option<Arc<orttaai_core::sound::SoundMemory>>>,
     /// Whether the floating panel is on screen, so it is shown only when it
     /// was hidden (showing again could pull focus on Windows).
     panel_shown: AtomicBool,
@@ -198,6 +201,15 @@ impl EngineState {
 /// `Settings::learn_from_edits` is on.
 pub fn set_edit_observer(app: &AppHandle, observer: EditObserver) {
     *app.state::<EngineState>().edit_observer.lock().unwrap() = Some(observer);
+}
+
+/// The running engine's kept dictation sound, if it is running.
+pub fn sound_memory(app: &AppHandle) -> Option<Arc<orttaai_core::sound::SoundMemory>> {
+    app.state::<EngineState>()
+        .sound_memory
+        .lock()
+        .unwrap()
+        .clone()
 }
 
 fn is_wayland() -> bool {
@@ -423,6 +435,8 @@ fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), Strin
     coord.set_rewriter(pipeline::build_rewriter(&settings));
     coord.set_vocabulary(vocabulary_terms(&settings));
     coord.set_word_boost_terms(&word_boost_terms(&settings));
+    coord.set_sound_anchors(crate::sound::book(&settings));
+    *state.sound_memory.lock().unwrap() = Some(coord.sound_memory());
     let voice = load_voice_detector();
     let has_voice = voice.is_some();
     coord.set_voice_detector(voice.map(|v| Box::new(v) as _));
@@ -960,6 +974,16 @@ impl Worker {
         }
         self.coord.cancel();
         self.watcher.finish_current();
+        // The kept sound goes with the engine.
+        self.coord.sound_memory().clear();
+        let state = self.app.state::<EngineState>();
+        let mut shared = state.sound_memory.lock().unwrap();
+        if shared
+            .as_ref()
+            .is_some_and(|m| Arc::ptr_eq(m, &self.coord.sound_memory()))
+        {
+            *shared = None;
+        }
     }
 
     /// `false` = shut down.
@@ -982,6 +1006,8 @@ impl Worker {
                 self.coord.set_vocabulary(vocabulary_terms(&self.settings));
                 self.coord
                     .set_word_boost_terms(&word_boost_terms(&self.settings));
+                self.coord
+                    .set_sound_anchors(crate::sound::book(&self.settings));
             }
             Cmd::ResetAudio(reply) => {
                 let r = self
@@ -1027,6 +1053,7 @@ impl Worker {
         self.coord.set_rewriter(pipeline::build_rewriter(next));
         self.coord.set_vocabulary(vocabulary_terms(next));
         self.coord.set_word_boost_terms(&word_boost_terms(next));
+        self.coord.set_sound_anchors(crate::sound::book(next));
     }
 
     /// Load the model the settings ask for, once the engine is idle: a change
@@ -1191,7 +1218,8 @@ impl Worker {
                 .unwrap()
                 .is_some()
         {
-            self.watcher.watch(&text, outcome.app.clone());
+            self.watcher
+                .watch_recording(&text, outcome.app.clone(), outcome.recording_id);
         }
         if let Some(err) = &outcome.inject_error {
             let _ = self.app.emit(
