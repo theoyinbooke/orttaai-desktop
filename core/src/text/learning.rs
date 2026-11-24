@@ -195,55 +195,19 @@ pub fn corrections(
     insertion_end_utf16: Option<usize>,
     raw_after: &str,
 ) -> Vec<Correction> {
-    let inserted = comparable(inserted);
-    let before: Vec<char> = comparable(raw_before).chars().collect();
-    let after: Vec<char> = comparable(raw_after).chars().collect();
-    let caret = insertion_end_utf16.map(|caret| {
-        let prefix = utf16_prefix(raw_before, caret);
-        comparable(prefix).chars().count()
-    });
-    if before == after {
-        return Vec::new();
-    }
-    let Some((ins_start, ins_end)) = locate(&inserted, &before, caret) else {
+    let Some(aligned) = Aligned::new(inserted, raw_before, insertion_end_utf16, raw_after) else {
         return Vec::new();
     };
-
-    // Only the stretch that differs needs aligning: trim what the two texts
-    // share at both ends, but keep the whole dictated text in view.
-    let shared_prefix = before
-        .iter()
-        .zip(&after)
-        .take_while(|(a, b)| a == b)
-        .count();
-    let limit = before.len().min(after.len()) - shared_prefix;
-    let shared_suffix = before
-        .iter()
-        .rev()
-        .zip(after.iter().rev())
-        .take(limit)
-        .take_while(|(a, b)| a == b)
-        .count();
-    let window_start = shared_prefix.min(ins_start);
-    let kept_suffix = shared_suffix.min(before.len() - ins_end);
-    let before_words = words(&before, window_start, before.len() - kept_suffix);
-    let after_words = words(&after, window_start, after.len() - kept_suffix);
-    if before_words.len() > MAX_ALIGNED_WORDS || after_words.len() > MAX_ALIGNED_WORDS {
-        return Vec::new();
-    }
-
-    let inserted_word_count = words(&before, ins_start, ins_end).len();
+    let (before, after) = (&aligned.before, &aligned.after);
     let mut found = Vec::new();
     let mut changed_inserted_words = 0usize;
-    let a: Vec<&str> = before_words.iter().map(|w| w.text.as_str()).collect();
-    let b: Vec<&str> = after_words.iter().map(|w| w.text.as_str()).collect();
-    for (heard_range, corrected_range) in replacement_blocks(&a, &b) {
-        let heard_words = &before_words[heard_range];
-        let corrected_words = &after_words[corrected_range];
+    for (heard_range, corrected_range) in aligned.blocks(false) {
+        let heard_words = &aligned.before_words[heard_range];
+        let corrected_words = &aligned.after_words[corrected_range];
         let (Some(first), Some(last)) = (heard_words.first(), heard_words.last()) else {
             continue;
         };
-        if first.start < ins_start || last.end > ins_end {
+        if first.start < aligned.ins_start || last.end > aligned.ins_end {
             continue;
         }
         changed_inserted_words += heard_words.len();
@@ -266,7 +230,7 @@ pub fn corrections(
             &corrected_texts,
             heard_words.len() > corrected_words.len(),
             // A fix that starts a new sentence capitalizes for that reason.
-            starts_sentence(first.start, &before) || starts_sentence(cf.start, &after),
+            starts_sentence(first.start, before) || starts_sentence(cf.start, after),
         ) {
             found.push(Correction { heard, corrected });
         }
@@ -274,11 +238,182 @@ pub fn corrections(
 
     // Rewording more than half of the dictation is a rewrite, not a fix
     // (short dictations still allow one full misheard name).
-    if changed_inserted_words > MAX_HEARD_WORDS.max(inserted_word_count / 2) {
+    if changed_inserted_words > MAX_HEARD_WORDS.max(aligned.inserted_word_count / 2) {
         return Vec::new();
     }
     found.truncate(MAX_CORRECTIONS_PER_EDIT);
     found
+}
+
+/// A dictated stretch the user replaced by hand, whatever it was replaced
+/// with: sound anchors learn from these ([`crate::sound::learn`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replacement {
+    /// What the dictation wrote.
+    pub heard: String,
+    /// What the user changed it to.
+    pub corrected: String,
+    /// Which time `heard` appears in the dictation, counting from 0.
+    pub occurrence: usize,
+}
+
+/// Everything the user did to one dictation, for learning by sound.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DictationEdits {
+    /// Small replacements inside the dictated text, in order.
+    pub replacements: Vec<Replacement>,
+    /// Every dictated word changed or removed, by its lowercased letters.
+    pub touched: Vec<String>,
+}
+
+/// What changed inside the dictation between `raw_before` and `raw_after`
+/// (see [`corrections`] for the arguments). `None` when the dictation can't
+/// be found in the field or more than half of it was reworded or removed:
+/// then nothing is known about the words that were left.
+pub fn dictation_edits(
+    inserted: &str,
+    raw_before: &str,
+    insertion_end_utf16: Option<usize>,
+    raw_after: &str,
+) -> Option<DictationEdits> {
+    let aligned = Aligned::new(inserted, raw_before, insertion_end_utf16, raw_after)?;
+    let mut edits = DictationEdits::default();
+    if aligned.before == aligned.after {
+        return Some(edits);
+    }
+    let inserted_words = words(&aligned.before, aligned.ins_start, aligned.ins_end);
+    let key = |w: &Word| letters(&w.text);
+    let mut changed = 0usize;
+    for (heard_range, corrected_range) in aligned.blocks(true) {
+        let heard_words: Vec<&Word> = aligned.before_words[heard_range]
+            .iter()
+            .filter(|w| w.start >= aligned.ins_start && w.end <= aligned.ins_end)
+            .collect();
+        let corrected_words = &aligned.after_words[corrected_range];
+        let (Some(first), Some(last)) = (heard_words.first(), heard_words.last()) else {
+            continue;
+        };
+        changed += heard_words.len();
+        edits.touched.extend(heard_words.iter().map(|w| key(w)));
+        if heard_words.len() > MAX_HEARD_WORDS
+            || corrected_words.is_empty()
+            || corrected_words.len() > MAX_CORRECTED_WORDS
+        {
+            continue;
+        }
+        let (cf, cl) = (
+            &corrected_words[0],
+            &corrected_words[corrected_words.len() - 1],
+        );
+        // Which time these words appear in the dictation.
+        let wanted: Vec<String> = heard_words.iter().map(|w| key(w)).collect();
+        let mut occurrence = 0;
+        let mut index = 0;
+        while index + wanted.len() <= inserted_words.len() {
+            let here = &inserted_words[index..index + wanted.len()];
+            if here[0].start >= first.start {
+                break;
+            }
+            if here.iter().map(key).eq(wanted.iter().cloned()) {
+                occurrence += 1;
+                index += wanted.len();
+            } else {
+                index += 1;
+            }
+        }
+        edits.replacements.push(Replacement {
+            heard: aligned.before[first.start..last.end].iter().collect(),
+            corrected: aligned.after[cf.start..cl.end].iter().collect(),
+            occurrence,
+        });
+    }
+    if changed > MAX_HEARD_WORDS.max(aligned.inserted_word_count / 2) {
+        return None;
+    }
+    Some(edits)
+}
+
+/// The dictation found in the field, and the stretch of the field that
+/// changed around it, as words.
+struct Aligned {
+    before: Vec<char>,
+    after: Vec<char>,
+    ins_start: usize,
+    ins_end: usize,
+    before_words: Vec<Word>,
+    after_words: Vec<Word>,
+    inserted_word_count: usize,
+}
+
+impl Aligned {
+    fn new(
+        inserted: &str,
+        raw_before: &str,
+        insertion_end_utf16: Option<usize>,
+        raw_after: &str,
+    ) -> Option<Self> {
+        let inserted = comparable(inserted);
+        let before: Vec<char> = comparable(raw_before).chars().collect();
+        let after: Vec<char> = comparable(raw_after).chars().collect();
+        let caret = insertion_end_utf16.map(|caret| {
+            let prefix = utf16_prefix(raw_before, caret);
+            comparable(prefix).chars().count()
+        });
+        let (ins_start, ins_end) = locate(&inserted, &before, caret)?;
+        if before == after {
+            let inserted_word_count = words(&before, ins_start, ins_end).len();
+            return Some(Self {
+                before,
+                after,
+                ins_start,
+                ins_end,
+                before_words: Vec::new(),
+                after_words: Vec::new(),
+                inserted_word_count,
+            });
+        }
+
+        // Only the stretch that differs needs aligning: trim what the two
+        // texts share at both ends, but keep the whole dictated text in view.
+        let shared_prefix = before
+            .iter()
+            .zip(&after)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let limit = before.len().min(after.len()) - shared_prefix;
+        let shared_suffix = before
+            .iter()
+            .rev()
+            .zip(after.iter().rev())
+            .take(limit)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let window_start = shared_prefix.min(ins_start);
+        let kept_suffix = shared_suffix.min(before.len() - ins_end);
+        let before_words = words(&before, window_start, before.len() - kept_suffix);
+        let after_words = words(&after, window_start, after.len() - kept_suffix);
+        if before_words.len() > MAX_ALIGNED_WORDS || after_words.len() > MAX_ALIGNED_WORDS {
+            return None;
+        }
+        let inserted_word_count = words(&before, ins_start, ins_end).len();
+        Some(Self {
+            before,
+            after,
+            ins_start,
+            ins_end,
+            before_words,
+            after_words,
+            inserted_word_count,
+        })
+    }
+
+    /// Runs of words that differ; with `one_sided`, also words only removed
+    /// or only added.
+    fn blocks(&self, one_sided: bool) -> Vec<Block> {
+        let a: Vec<&str> = self.before_words.iter().map(|w| w.text.as_str()).collect();
+        let b: Vec<&str> = self.after_words.iter().map(|w| w.text.as_str()).collect();
+        replacement_blocks(&a, &b, one_sided)
+    }
 }
 
 fn utf16_prefix(text: &str, utf16: usize) -> &str {
@@ -536,7 +671,7 @@ type Block = (std::ops::Range<usize>, std::ops::Range<usize>);
 
 /// Runs of words removed from `a` and added in `b` between the words the two
 /// lists share (longest common subsequence).
-fn replacement_blocks(a: &[&str], b: &[&str]) -> Vec<Block> {
+fn replacement_blocks(a: &[&str], b: &[&str], one_sided: bool) -> Vec<Block> {
     let mut lengths = vec![vec![0usize; b.len() + 1]; a.len() + 1];
     for i in (0..a.len()).rev() {
         for j in (0..b.len()).rev() {
@@ -553,7 +688,7 @@ fn replacement_blocks(a: &[&str], b: &[&str]) -> Vec<Block> {
     let close =
         |blocks: &mut Vec<Block>, start: &mut Option<(usize, usize)>, i: usize, j: usize| {
             if let Some((sa, sb)) = start.take() {
-                if i > sa && j > sb {
+                if (i > sa && j > sb) || (one_sided && (i > sa || j > sb)) {
                     blocks.push((sa..i, sb..j));
                 }
             }
@@ -1240,6 +1375,74 @@ mod tests {
             find_corrections("Ask Adayemi today.", "Ask Adeyemi today."),
             vec![pair("Adayemi", "Adeyemi")]
         );
+    }
+
+    #[test]
+    fn dictation_edits_list_every_replacement_and_touched_word() {
+        let inserted = "Open email and send the email to Bola at noon";
+        let edits = |after: &str| dictation_edits(inserted, inserted, None, after);
+        // Left alone.
+        assert_eq!(edits(inserted), Some(DictationEdits::default()));
+        // The second "email" fixed: an ordinary word to any word counts here.
+        let fixed = edits("Open email and send the Eimailar to Bola at noon").unwrap();
+        assert_eq!(
+            fixed.replacements,
+            vec![Replacement {
+                heard: "email".into(),
+                corrected: "Eimailar".into(),
+                occurrence: 1,
+            }]
+        );
+        assert_eq!(fixed.touched, vec!["email"]);
+        // And back the other way, which `corrections` never reports.
+        let back = dictation_edits(
+            "Open Eimailar now",
+            "Notes. Open Eimailar now",
+            None,
+            "Notes. Open email now",
+        )
+        .unwrap();
+        assert_eq!(back.replacements[0].heard, "Eimailar");
+        assert_eq!(back.replacements[0].corrected, "email");
+        assert!(corrections(
+            "Open Eimailar now",
+            "Open Eimailar now",
+            None,
+            "Open email now"
+        )
+        .is_empty());
+        // A removed word is touched, though nothing replaced it.
+        let removed = edits("Open and send the email to Bola at noon").unwrap();
+        assert!(removed.replacements.is_empty());
+        assert_eq!(removed.touched, vec!["email"]);
+        // Text typed after the dictation isn't an edit of it.
+        let more = dictation_edits(
+            inserted,
+            inserted,
+            None,
+            &format!("{inserted} today, thanks"),
+        );
+        assert_eq!(more, Some(DictationEdits::default()));
+    }
+
+    #[test]
+    fn a_rewritten_or_missing_dictation_tells_nothing() {
+        let inserted = "Open email and send it";
+        assert_eq!(
+            dictation_edits(inserted, "Something else", None, "Other"),
+            None
+        );
+        assert_eq!(
+            dictation_edits(
+                inserted,
+                inserted,
+                None,
+                "Completely different words here now"
+            ),
+            None
+        );
+        // Sent and cleared.
+        assert_eq!(dictation_edits(inserted, inserted, None, ""), None);
     }
 
     #[test]

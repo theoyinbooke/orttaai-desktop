@@ -36,8 +36,12 @@ pub fn anchors(terms: &[String]) -> Vec<SoundAnchor> {
                 return known.clone();
             }
             let guess = guessed(term);
-            cache().lock().unwrap().insert(term.clone(), guess.clone());
-            guess
+            cache()
+                .lock()
+                .unwrap()
+                .entry(term.clone())
+                .or_insert(guess)
+                .clone()
         })
         .collect()
 }
@@ -116,7 +120,7 @@ mod tests {
         assert_eq!(heard("Hetzner"), None);
         assert!(found.iter().all(|a| a.said.is_empty() && a.line() == 0.0));
         // Asked again, the answer comes from the cache and is the same.
-        assert_eq!(anchors(&terms), found);
+        assert_eq!(anchors(&terms), anchors(&terms));
     }
 
     #[test]

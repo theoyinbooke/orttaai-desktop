@@ -6,7 +6,7 @@
 
 use super::chunks;
 use super::ctc::{CtcModel, FRAME_SECONDS};
-use super::rescore::{boost, BoostOutcome, PreparedVocabulary, TokenTiming};
+use super::rescore::{boost_leaving, BoostOutcome, PreparedVocabulary, TokenTiming};
 use super::tokenizer::CtcTokenizer;
 use crate::error::{CoreError, Result};
 use crate::text::WordBoostTerm;
@@ -24,6 +24,8 @@ struct Scored {
 pub struct WordBoost {
     model: CtcModel,
     tokenizer: CtcTokenizer,
+    /// Token id to SentencePiece piece, for spelling what was heard.
+    pieces: Vec<String>,
     vocabulary: Mutex<Option<(Vec<WordBoostTerm>, Arc<PreparedVocabulary>)>>,
     scored: Mutex<HashMap<usize, Scored>>,
 }
@@ -36,6 +38,7 @@ impl WordBoost {
         let model = CtcModel::load(&dir.join("model.int8.onnx"), threads)?;
         Ok(Self {
             model,
+            pieces: tokenizer.pieces(),
             tokenizer,
             vocabulary: Mutex::new(None),
             scored: Mutex::new(HashMap::new()),
@@ -106,12 +109,66 @@ impl WordBoost {
         Ok(chunks::stitch(&parts, FRAME_SECONDS))
     }
 
-    /// Apply Word Boost to the recognizer's raw text and token timings.
+    /// `text` in the CTC model's tokens, for scoring it against the sound.
+    pub fn encode(&self, text: &str) -> Vec<usize> {
+        self.tokenizer
+            .encode(text)
+            .into_iter()
+            .map(|id| id as usize)
+            .collect()
+    }
+
+    /// The CTC blank: the class after the tokenizer's vocabulary.
+    pub fn blank_id(&self) -> usize {
+        self.tokenizer.vocab_size()
+    }
+
+    /// What the CTC model itself would write, with no word list: its best
+    /// single path through the frames, as lowercase words. How the recording
+    /// sounds, spelled the way that model spells sounds ("emmaler").
+    pub fn spelled_words(&self, log_probs: &[Vec<f32>]) -> Vec<String> {
+        let blank = self.blank_id();
+        let mut text = String::new();
+        let mut previous = usize::MAX;
+        for row in log_probs {
+            let best = row
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map_or(blank, |(i, _)| i);
+            if best != previous && best != blank {
+                if let Some(piece) = self.pieces.get(best) {
+                    text.push_str(piece);
+                }
+            }
+            previous = best;
+        }
+        text.replace(super::tokenizer::WORD_BOUNDARY, " ")
+            .to_lowercase()
+            .split(' ')
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// [`log_probs`](Self::log_probs) without the chunks kept for the
+    /// recording in progress: for scoring an older recording on the side.
+    pub fn log_probs_uncached(&self, samples: &[f32]) -> Result<Vec<Vec<f32>>> {
+        let mut parts = Vec::new();
+        for range in chunks::chunks(samples.len()) {
+            parts.push(self.model.log_probs(&samples[range])?);
+        }
+        Ok(chunks::stitch(&parts, FRAME_SECONDS))
+    }
+
+    /// Apply Word Boost to the recognizer's raw text and token timings,
+    /// leaving the terms `leave` names (those the sound check decides).
     pub fn boost(
         &self,
         text: &str,
         timings: &[TokenTiming],
         log_probs: &[Vec<f32>],
+        leave: &dyn Fn(&str) -> bool,
     ) -> Option<BoostOutcome> {
         let vocab = self
             .vocabulary
@@ -119,6 +176,13 @@ impl WordBoost {
             .unwrap()
             .as_ref()
             .map(|(_, v)| Arc::clone(v))?;
-        Some(boost(text, timings, log_probs, FRAME_SECONDS, &vocab))
+        Some(boost_leaving(
+            text,
+            timings,
+            log_probs,
+            FRAME_SECONDS,
+            &vocab,
+            leave,
+        ))
     }
 }

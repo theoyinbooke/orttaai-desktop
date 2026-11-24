@@ -312,7 +312,7 @@ pub fn margin(
         &encode(&phrase(term, window)),
         blank,
     );
-    (heard_score.is_finite() && term_score.is_finite()).then(|| term_score - heard_score)
+    (heard_score.is_finite() && term_score.is_finite()).then_some(term_score - heard_score)
 }
 
 #[cfg(test)]

@@ -12,8 +12,18 @@ pub mod anchors;
 pub mod contrast;
 pub mod guesses;
 pub mod judge;
+pub mod learn;
 pub mod slow_listen;
 
 pub use anchors::{SoundAnchor, SoundAnchorBook};
 pub use contrast::SoundWord;
 pub use judge::Decision;
+pub use learn::{KeptRecording, SoundMemory};
+
+/// What one fix taught: the ways your word sounded, best first, and how
+/// strongly the sound backed it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LearnedSound {
+    pub sounds: Vec<String>,
+    pub margin: f32,
+}

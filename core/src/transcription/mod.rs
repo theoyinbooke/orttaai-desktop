@@ -39,6 +39,35 @@ pub trait Transcriber: Send + Sync {
 
     /// Forget chunks scored for a recording that won't be transcribed.
     fn discard_prepared_word_boost(&self) {}
+
+    /// Sound anchors (Express): what your fixes taught about how your words
+    /// sound, plus the starting guesses. Takes effect from the next
+    /// dictation. Engines that can't score sound ignore them.
+    fn set_sound_anchors(&self, _book: std::sync::Arc<crate::sound::SoundAnchorBook>) {}
+
+    /// Whether this engine can judge and learn words by sound right now.
+    fn sound_ready(&self) -> bool {
+        false
+    }
+
+    /// What the sound anchors decided in the recent decode that returned
+    /// exactly `text`: each heard word kept or written your way.
+    fn sound_decisions(&self, _text: &str) -> Vec<crate::sound::Decision> {
+        Vec::new()
+    }
+
+    /// Learn from a fix: in this recording you said `term` where the speech
+    /// model wrote `heard` (its `occurrence`-th time, counting from 0).
+    /// `None` when sound can't be scored or the heard words aren't found.
+    fn learn_sound(
+        &self,
+        _samples: &[f32],
+        _heard: &str,
+        _term: &str,
+        _occurrence: usize,
+    ) -> Result<Option<crate::sound::LearnedSound>> {
+        Ok(None)
+    }
 }
 
 /// Run a silent warm-up decode so the first real dictation doesn't pay the
@@ -262,3 +291,5 @@ pub mod fluid;
 pub(crate) mod onnx;
 #[cfg(feature = "express")]
 pub use express::ExpressTranscriber;
+#[cfg(all(test, feature = "express"))]
+mod sound_lab;

@@ -166,13 +166,15 @@ pub struct Judged {
     pub decisions: Vec<Decision>,
 }
 
-/// `margin(range, heard, sound)` is the sound margin of a word range, scored
-/// as heard text against one way of sounding; `None` when it can't be scored.
+/// The sound margin of a word range, scored as the heard text against one way
+/// of sounding: `(range, heard, sound)`. `None` when it can't be scored.
+pub type MarginOf<'a> = &'a dyn Fn(&Range<usize>, &str, &str) -> Option<f32>;
+
 pub fn judge(
     book: &SoundAnchorBook,
     text: &str,
     words: &[SoundWord],
-    margin: &dyn Fn(&Range<usize>, &str, &str) -> Option<f32>,
+    margin: MarginOf<'_>,
 ) -> Judged {
     let mut out = Judged::default();
     if book.is_empty() || words.is_empty() {

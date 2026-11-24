@@ -250,6 +250,33 @@ impl SoundAnchorBook {
         self.trim();
     }
 
+    /// A spelling of your word's sound that isn't an English word ("emailer"
+    /// for Eimailar, heard as "email" plus an ending), fixed to your word: it
+    /// is your word wherever the speech model writes it. No margin is kept:
+    /// nothing was scored. `known` are the sounds a starting guess had.
+    pub fn learn_spelling(&mut self, heard: &str, term: &str, spelling: &str, known: &[String]) {
+        let key = judge::core_heard(heard);
+        let letters = super::contrast::letters(spelling);
+        if key.is_empty() || term.is_empty() || letters.is_empty() {
+            return;
+        }
+        let spelling = spelling.to_lowercase();
+        if let Some(anchor) = self
+            .anchors
+            .iter_mut()
+            .find(|a| a.heard == key && a.term == term)
+        {
+            anchor.forgotten.retain(|f| *f != letters);
+            anchor.sounds = merged(vec![spelling], &anchor.sounds);
+            anchor.updated = now();
+        } else {
+            let mut sounds = vec![spelling.as_str()];
+            sounds.extend(known.iter().map(String::as_str));
+            self.anchors.push(SoundAnchor::new(&key, term, &sounds));
+            self.trim();
+        }
+    }
+
     /// A fix back: you said `heard` where the sound check wrote `term`. With
     /// no anchor yet (the change came from a starting guess), one is made, so
     /// the fix back is remembered.
@@ -315,15 +342,21 @@ impl SoundAnchorBook {
         self.anchors.truncate(LARGEST_BOOK);
     }
 
-    /// These anchors, plus `guesses` for words they have none for.
+    /// These anchors, plus each of `guesses` they don't already hold (the
+    /// same heard word and term). On the iPhone a taught anchor replaces
+    /// every guess for its word; here a fix about one heard word ("emails")
+    /// must not take away what the guess knows about another ("email").
     pub fn adding(&self, guesses: &SoundAnchorBook) -> SoundAnchorBook {
-        let taught: Vec<String> = self.anchors.iter().map(|a| a.term.to_lowercase()).collect();
         let mut anchors = self.anchors.clone();
         anchors.extend(
             guesses
                 .anchors
                 .iter()
-                .filter(|a| !taught.contains(&a.term.to_lowercase()))
+                .filter(|g| {
+                    !self.anchors.iter().any(|a| {
+                        a.heard == g.heard && a.term.to_lowercase() == g.term.to_lowercase()
+                    })
+                })
                 .cloned(),
         );
         SoundAnchorBook { anchors }
@@ -482,6 +515,35 @@ mod tests {
         // Nothing is made from a fix to a word with no sounds to go on.
         book.learn_said("verse", "Vercel", &[], 2.0);
         assert_eq!(book.anchors.len(), 1);
+    }
+
+    #[test]
+    fn a_fix_about_another_heard_word_keeps_the_guess() {
+        let mut book = SoundAnchorBook::default();
+        book.learn_said("emails", "Eimailar", &["eimailar".to_string()], 1.0);
+        let merged = book.adding_guesses(&["Eimailar".to_string()]);
+        let heard: Vec<&str> = merged.anchors.iter().map(|a| a.heard.as_str()).collect();
+        assert_eq!(heard, ["emails", "email"]);
+    }
+
+    #[test]
+    fn a_spelling_fixed_to_your_word_is_learned_without_a_margin() {
+        let mut book = SoundAnchorBook::default();
+        let known = vec!["eimailar".to_string(), "emaila".to_string()];
+        book.learn_spelling("email", "Eimailar", "Emailer", &known);
+        let anchor = book.anchor("email", "Eimailar").unwrap();
+        assert_eq!(anchor.sounds, ["emailer", "eimailar", "emaila"]);
+        assert!(anchor.said.is_empty() && anchor.line() == 0.0);
+        // Fixed back, then taught again: no longer forgotten.
+        book.forget_spelling("emailer", "Eimailar");
+        assert!(!judge::sound_spellings(&book).contains_key("emailer"));
+        book.learn_spelling("email", "Eimailar", "emailer", &[]);
+        assert_eq!(
+            judge::sound_spellings(&book)
+                .get("emailer")
+                .map(String::as_str),
+            Some("Eimailar")
+        );
     }
 
     #[test]

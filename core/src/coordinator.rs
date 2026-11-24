@@ -385,6 +385,10 @@ pub struct DictationOutcome {
     pub lost_audio: bool,
     /// The error pill message for this session, if any.
     pub error: Option<String>,
+    /// The dictation's sound is kept in memory for a few minutes under this
+    /// id, so a fix by hand can teach how a word sounds
+    /// ([`crate::sound::SoundMemory`]).
+    pub recording_id: Option<u64>,
 }
 
 impl DictationOutcome {
@@ -412,6 +416,7 @@ impl DictationOutcome {
             snippet_hits: Vec::new(),
             lost_audio: false,
             error: None,
+            recording_id: None,
         }
     }
 
@@ -514,6 +519,8 @@ pub struct DictationCoordinator {
     rewriter: Option<Box<dyn EditRewriter>>,
     selector: Arc<dyn FieldSelector>,
     last_insertion: Option<LastInsertion>,
+    /// The last few dictations' sound, for learning how a fixed word sounds.
+    sound_memory: Arc<crate::sound::SoundMemory>,
     voice: Option<Box<dyn VoiceDetector>>,
     clock: Arc<dyn Clock>,
     focused_app: FocusedAppProvider,
@@ -569,6 +576,7 @@ impl DictationCoordinator {
             rewriter: None,
             selector: Arc::new(SystemFieldSelector),
             last_insertion: None,
+            sound_memory: Arc::new(crate::sound::SoundMemory::new()),
             voice: None,
             clock: Arc::new(SystemClock::new()),
             focused_app: Box::new(crate::focus::focused_app),
@@ -665,6 +673,18 @@ impl DictationCoordinator {
     /// Word Boost's dictionary words (Express).
     pub fn set_word_boost_terms(&mut self, terms: &[crate::text::WordBoostTerm]) {
         self.transcriber.set_word_boost_terms(terms);
+    }
+
+    /// Sound anchors (Express): what fixes taught about how the dictionary's
+    /// words sound, with the starting guesses.
+    pub fn set_sound_anchors(&mut self, book: Arc<crate::sound::SoundAnchorBook>) {
+        self.transcriber.set_sound_anchors(book);
+    }
+
+    /// The sound of the last few dictations, kept in memory for learning
+    /// from fixes. Shared with whoever watches the dictation afterwards.
+    pub fn sound_memory(&self) -> Arc<crate::sound::SoundMemory> {
+        Arc::clone(&self.sound_memory)
     }
 
     /// Use this pipeline from the next dictation, and warm its models (at
@@ -1165,7 +1185,9 @@ impl DictationCoordinator {
                     }
                 }
             }
-            _ => {}
+            // Sound kept for learning from fixes goes after ten minutes.
+            RecordingState::Idle => self.sound_memory.purge(),
+            RecordingState::Processing => {}
         }
     }
 
@@ -1483,6 +1505,19 @@ impl DictationCoordinator {
             },
         };
         let mut outcome = outcome;
+        // A typed dictation's sound is kept for a while, in memory only, so
+        // that fixing a word by hand can teach how it sounds.
+        if outcome.kind == SessionKind::Dictation
+            && outcome.result == InjectionResult::Success
+            && !outcome.practice
+            && self.transcriber.sound_ready()
+        {
+            outcome.recording_id = self.sound_memory.keep(
+                p.samples,
+                self.transcriber.sound_decisions(&raw),
+                Arc::clone(&self.transcriber),
+            );
+        }
         outcome.processing_ms = started.elapsed().as_millis() as i64;
         if outcome.transcript.is_some() && p.duration_ms > 0 {
             let measured = outcome.processing_ms as f32 / p.duration_ms as f32;
