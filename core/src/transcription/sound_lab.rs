@@ -247,8 +247,79 @@ fn own_voice(guesses: bool) {
     }
 }
 
-/// The 50 real-voice sentences recorded for Orttaai's tests: with the
-/// starting guess and a learned fix on, no transcript may change.
+/// The book after "one fix and 3 kept emails" in the owner's voice: a clip
+/// where Eimailar was said and the speech model wrote "email" is fixed by
+/// hand and learned by sound, then three plain "email"s are left alone. This
+/// is the book whose line follows the voice below zero, so it is the one
+/// most likely to change a real "email".
+fn taught_book(t: &Arc<dyn Transcriber>) -> SoundAnchorBook {
+    let folder = std::env::var("ORTTAAI_SOUND_LAB_OWN").expect("ORTTAAI_SOUND_LAB_OWN");
+    let folder = Path::new(&folder);
+    let clip = |id: &str| samples(&folder.join(format!("{id}.wav")));
+    let opts = DecodeOptions::default();
+    let dictionary = vec![TERM.to_string()];
+    let guessed = SoundAnchorBook::new(crate::sound::guesses::anchors(&dictionary));
+    let memory = crate::sound::SoundMemory::new();
+    let mut stored = SoundAnchorBook::default();
+    // Written "email" with no anchors: the fix a person would have to make.
+    t.set_sound_anchors(Arc::new(SoundAnchorBook::default()));
+    for id in ["term-03", "fast-04"] {
+        let audio = clip(id);
+        let raw = t.transcribe(&audio, &opts).unwrap();
+        let text = written(&raw);
+        if !contrast::key(&text).contains(&"email".to_string()) {
+            continue;
+        }
+        let after = text.replacen("email", TERM, 1);
+        let edits = crate::text::learning::dictation_edits(&text, &text, None, &after);
+        let kept = memory
+            .keep(audio, Vec::new(), Arc::clone(t))
+            .and_then(|id| memory.get(id));
+        let learned = crate::sound::learn::learn(
+            &mut stored,
+            &guessed,
+            &dictionary,
+            kept.as_ref(),
+            edits.as_ref(),
+        );
+        eprintln!("REAL taught from {id}: {learned:?}");
+        if learned.said > 0 {
+            break;
+        }
+    }
+    for id in ["word-01", "word-02", "word-03"] {
+        t.set_sound_anchors(Arc::new(stored.adding(&guessed)));
+        let audio = clip(id);
+        let raw = t.transcribe(&audio, &opts).unwrap();
+        let kept = memory
+            .keep(audio, t.sound_decisions(&raw), Arc::clone(t))
+            .and_then(|id| memory.get(id));
+        crate::sound::learn::learn(
+            &mut stored,
+            &guessed,
+            &dictionary,
+            kept.as_ref(),
+            Some(&crate::text::learning::DictationEdits::default()),
+        );
+    }
+    let book = stored.adding(&guessed);
+    for a in &book.anchors {
+        eprintln!(
+            "REAL taught anchor {} -> {}: sounds {:?}, said {:?}, kept {:?}, line {:.2}",
+            a.heard,
+            a.term,
+            a.sounds,
+            a.said,
+            a.not_said,
+            a.line()
+        );
+    }
+    book
+}
+
+/// The 50 real-voice sentences recorded for Orttaai's tests: no transcript
+/// may change, with the starting guess alone and with the book the owner's
+/// voice teaches (one fix and 3 kept "email"s), whose line sits below zero.
 #[test]
 #[ignore]
 fn sound_lab_real_corpus() {
@@ -256,51 +327,71 @@ fn sound_lab_real_corpus() {
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
     let base = Path::new(&manifest_path).parent().unwrap();
-    let t = transcriber();
+    let t: Arc<dyn Transcriber> = Arc::new(transcriber());
+    t.set_word_boost_terms(&terms());
+    assert!(t.sound_ready(), "Word Boost's model didn't load");
     let opts = DecodeOptions::default();
-    let mut book = SoundAnchorBook::default().adding_guesses(&[TERM.to_string()]);
-    // A fix as the own-voice lab learns it, so the taught path is on too.
-    book.learn_said(
-        "email",
-        TERM,
-        &["emaila".to_string(), "emailer".to_string()],
-        -1.5,
-    );
-    let (mut total, mut changed_plain, mut changed_boost, mut emails) = (0, 0, 0, 0);
-    for item in manifest["items"].as_array().unwrap() {
-        let audio = samples(&base.join(item["wav"].as_str().unwrap()));
-        // No dictionary at all.
-        t.set_word_boost_terms(&[]);
-        t.set_sound_anchors(Arc::new(SoundAnchorBook::default()));
-        let plain = t.transcribe(&audio, &opts).unwrap();
-        // The word in the dictionary, no anchors (as before this change).
-        t.set_word_boost_terms(&terms());
-        let boosted = t.transcribe(&audio, &opts).unwrap();
-        // The word in the dictionary with its anchor.
-        t.set_sound_anchors(Arc::new(book.clone()));
-        let anchored = t.transcribe(&audio, &opts).unwrap();
-        let decisions = t.sound_decisions(&anchored);
-        total += 1;
-        emails += decisions.len();
-        if written(&anchored) != written(&plain) {
-            changed_plain += 1;
-            eprintln!("REAL changed {}: «{plain}» -> «{anchored}»", item["id"]);
-        }
-        if anchored != boosted {
-            changed_boost += 1;
-            eprintln!(
-                "REAL differs from Word Boost alone {}: «{boosted}» -> «{anchored}»",
-                item["id"]
-            );
-        }
-        if !decisions.is_empty() {
-            eprintln!("REAL {} «{anchored}» {}", item["id"], scores(&decisions));
-        }
+    let taught = taught_book(&t);
+    let mut weak = taught.clone();
+    for anchor in weak.anchors.iter_mut().filter(|a| a.term == TERM) {
+        anchor.said = vec![-3.0];
+        eprintln!("REAL weak-fix line {:.2}", anchor.line());
     }
-    eprintln!(
-        "REAL: {changed_plain}/{total} transcripts changed with the anchor on ({emails} heard words judged; {changed_boost} differ from Word Boost alone)"
-    );
-    assert_eq!(changed_plain, 0);
+    let books = [
+        (
+            "starting guess",
+            SoundAnchorBook::default().adding_guesses(&[TERM.to_string()]),
+        ),
+        ("one fix and 3 kept emails", taught.clone()),
+        // The same, had the fix been weakly backed by the sound (as fixes
+        // are: a word is fixed where the sound check kept it). The line
+        // must not fall to the middle of a wide gap.
+        ("a weak fix (-3.0) and 3 kept emails", weak),
+    ];
+    let mut failed = 0;
+    for (name, book) in &books {
+        let (mut total, mut changed_plain, mut changed_boost, mut judged) = (0, 0, 0, 0);
+        for item in manifest["items"].as_array().unwrap() {
+            let audio = samples(&base.join(item["wav"].as_str().unwrap()));
+            // No dictionary at all.
+            t.set_word_boost_terms(&[]);
+            t.set_sound_anchors(Arc::new(SoundAnchorBook::default()));
+            let plain = t.transcribe(&audio, &opts).unwrap();
+            // The word in the dictionary, no anchors (as before this change).
+            t.set_word_boost_terms(&terms());
+            let boosted = t.transcribe(&audio, &opts).unwrap();
+            // The word in the dictionary with its anchor.
+            t.set_sound_anchors(Arc::new(book.clone()));
+            let anchored = t.transcribe(&audio, &opts).unwrap();
+            let decisions = t.sound_decisions(&anchored);
+            total += 1;
+            judged += decisions.len();
+            if written(&anchored) != written(&plain) {
+                changed_plain += 1;
+                eprintln!(
+                    "REAL [{name}] changed {}: «{plain}» -> «{anchored}»",
+                    item["id"]
+                );
+            }
+            if anchored != boosted {
+                changed_boost += 1;
+            }
+            if !decisions.is_empty() {
+                eprintln!(
+                    "REAL [{name}] {} «{anchored}» {}",
+                    item["id"],
+                    scores(&decisions)
+                );
+            }
+        }
+        eprintln!(
+            "REAL [{name}]: {changed_plain}/{total} transcripts changed with the anchor on ({judged} heard words judged; {changed_boost} differ from Word Boost alone)"
+        );
+        // The check ran for real: the corpus has two plain "email"s.
+        assert!(judged >= 2, "the sound check never ran");
+        failed += changed_plain;
+    }
+    assert_eq!(failed, 0, "transcripts changed");
 }
 
 /// Synthetic voices (the iPhone lab's clips, made with macOS `say`): files

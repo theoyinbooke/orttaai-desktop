@@ -28,8 +28,15 @@ pub const LOWEST_LINE_AFTER_ONE_FIX: f32 = -1.0;
 pub const LOWEST_LINE: f32 = -2.0;
 /// Never above this, however a fix back scored.
 pub const HIGHEST_LINE: f32 = 8.0;
-/// How far above your highest kept heard word the line stays.
-pub const MARGIN_ABOVE_YOUR_WORD: f32 = 0.25;
+/// How far above your highest kept heard word the line stays. It was 0.25:
+/// on the Mac's run of the owner's 50 real recordings, "no email until the
+/// evening" scored -4.89 after the line had learned from three kept "email"s
+/// (highest -5.5) and was changed. At 1.5 the line is -4.0: it keeps that
+/// "email" and still takes the owner's fast Eimailar (-3.57).
+pub const MARGIN_ABOVE_YOUR_WORD: f32 = 1.5;
+/// How far below your weakest fix the line may sit when your kept heard
+/// words are far below it.
+pub const MARGIN_BELOW_YOUR_FIX: f32 = 1.5;
 /// Kept heard words ("email" you left as it was) needed before the line
 /// follows your voice below [`LOWEST_LINE`].
 pub const OWN_WORDS_TO_TRUST: usize = 3;
@@ -114,8 +121,14 @@ impl SoundAnchor {
                 line = if lowest_said > highest_not_said {
                     // Your voice on both sides: between them, nearer to never
                     // changing the heard word.
+                    //
+                    // And never far below your weakest fix (not on the
+                    // iPhone or Mac). Plain "email"s here score around -11,
+                    // so halfway to a fix at -3 is -7: on the 50 real
+                    // recordings that changed an "email" that scored -5.7.
                     ((lowest_said + highest_not_said) / 2.0)
                         .max(highest_not_said + MARGIN_ABOVE_YOUR_WORD)
+                        .max((lowest_said - MARGIN_BELOW_YOUR_FIX).min(0.0))
                 } else {
                     // Overlapping: halfway between the two sides' middles.
                     (median(&self.said) + median(&self.not_said)) / 2.0
@@ -421,9 +434,9 @@ mod tests {
     fn fixes_both_ways_put_the_line_between() {
         let mut anchor = anchor(&[3.0, 5.0]);
         anchor.learn_not_said(1.0);
-        assert_eq!(anchor.line(), 2.0);
-        assert!(!anchor.accepts(1.5));
-        assert!(anchor.accepts(2.5));
+        assert_eq!(anchor.line(), 2.5);
+        assert!(!anchor.accepts(2.4));
+        assert!(anchor.accepts(2.6));
     }
 
     #[test]
@@ -454,10 +467,29 @@ mod tests {
         anchor.learn_not_said(-9.3);
         assert_eq!(anchor.line(), -2.0); // two kept words: not trusted yet
         anchor.learn_not_said(-5.5);
-        assert_eq!(anchor.line(), -5.25);
+        assert_eq!(anchor.line(), -4.0);
         assert!(anchor.accepts(-3.6));
+        assert!(!anchor.accepts(-4.89));
         assert!(!anchor.accepts(-5.5));
         assert!(!anchor.accepts(-6.6));
+    }
+
+    #[test]
+    fn the_line_stays_near_a_weak_fix_when_kept_words_are_far_below() {
+        // This PC's voice: a fix at -3, kept "email"s near -11.
+        let mut anchor = SoundAnchor::new("email", "Eimailar", &["emaila"]).with_said(&[-3.0]);
+        for kept in [-11.9, -11.4, -11.4] {
+            anchor.learn_not_said(kept);
+        }
+        assert_eq!(anchor.line(), -4.5);
+        assert!(!anchor.accepts(-5.7), "a real email from the 50 recordings");
+        assert!(anchor.accepts(-3.0));
+        // A strong fix doesn't lift the line above zero.
+        let mut strong = SoundAnchor::new("email", "Eimailar", &["emaila"]).with_said(&[3.9]);
+        for kept in [-11.9, -11.4, -11.4] {
+            strong.learn_not_said(kept);
+        }
+        assert_eq!(strong.line(), 0.0);
     }
 
     #[test]

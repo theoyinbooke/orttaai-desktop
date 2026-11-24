@@ -464,12 +464,12 @@ mod tests {
 
     #[test]
     fn the_bar_before_an_ending_never_drops_with_your_fixes() {
-        // A line your voice took down to -5.25 still asks for 4 before "at".
+        // A line your voice took down to -4 still asks for 4 before "at".
         let mut anchor = SoundAnchor::new("email", "Eimailar", &["emaila"]).with_said(&[-5.2]);
         for kept in [-9.4, -9.3, -5.5] {
             anchor.learn_not_said(kept);
         }
-        assert_eq!(anchor.line(), -5.25);
+        assert_eq!(anchor.line(), -4.0);
         let book = SoundAnchorBook::new(vec![anchor]);
         let w = words(&["read", "the", "email", "at", "lunch"]);
         let text = "read the email at lunch";

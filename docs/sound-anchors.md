@@ -50,7 +50,7 @@ Word Boost no longer decides a word that has an anchor. It also merges an ordina
 | Change a dictated ordinary word to a dictionary word ("email" → Eimailar), or to itself plus the ending it lost ("email" → "emailer") | You said your word there. Its sound is learned from the recording. No dictionary pair is suggested. |
 | Change a spelling of the sound to your word ("emailer" → Eimailar) | That spelling is your word from now on. |
 | Change your word back ("Eimailar" → "email") where the sound wrote it | You didn't say it there. The line moves above that margin. No pair is made the other way. A spelling you put back is never used again. |
-| Leave an "email" the sound check kept as it was | One of your own "email"s. With three or more, the line follows your voice (down to −8). |
+| Leave an "email" the sound check kept as it was | One of your own "email"s. With three or more, and a fix to your word, the line follows your voice: at least 1.5 above your highest kept "email", and no more than 1.5 below your weakest fix. |
 
 A fix of a misspelling ("Emila" → Eimailar) still becomes a dictionary suggestion, as before: a pair from a word that isn't English is safe.
 
@@ -84,7 +84,15 @@ All measured on this Mac through the full desktop Express path (Fluid Speech Min
 
 ### The 50 real-voice sentences (`gauntlet/asr_eval/corpus_real`)
 
-With the starting guess and a learned fix on: **0 of 50 transcripts changed**. The two sentences with plain "email" were kept, at margins −9.3 and −5.7 (iPhone: −5.5 and −5.7).
+The two sentences with plain "email" scored −9.3 and −5.7 (iPhone: −5.5 and −5.7). Run against three books:
+
+| Book | Line | Transcripts changed |
+|---|---|---|
+| Starting guess only | 0 | **0/50** |
+| One fix and 3 kept "email"s, in your voice (the fix scored +3.9, the kept ones about −11.5) | 0 | **0/50** |
+| The same with a weakly backed fix (−3.0) | −4.5 | **0/50** |
+
+The third book found a fault in the line rule and is why it differs here (see below). With the rule as ported, that line was −7.2 and "no email until the evening" (−5.7) became Eimailar.
 
 ### Synthetic voices (the iPhone lab's 720 clips)
 
@@ -110,6 +118,7 @@ The slow listen's catches had margins from −14.9 to −0.4, the same range as 
 
 ## Different from the iPhone, and why
 
+- **The line never sits more than 1.5 below your weakest fix.** With fixes both ways the iPhone puts the line halfway between them, or 1.5 above your highest kept word (`marginAboveYourWord`, raised from 0.25 on 2026-11-24). On this model plain "email"s score around −11, so halfway to a fix at −3 is −7, and a real "email" at −5.7 was changed. The extra bound holds it at −4.5. It never lifts the line above 0. The same could happen on the Mac or iPhone for a voice whose kept words score far below its fixes.
 - **A guess stays unless a fix is about the same heard word.** On the iPhone a taught anchor replaces every guess for its word. Here a fix about "emails" would then take away what the guess knows about "email".
 - **A sound spelling fixed to your word is learned as a spelling**, not as an anchor for "emailer" scored against "emailerer". In the own-voice lab the second way took the count from 1/10 to 0/9; the first takes it to 9/9.
 - **A slow listen you change back is not tried for that pair again**, and the line learns from the sound check's own margin instead of the marker value 50.
