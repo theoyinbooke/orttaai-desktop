@@ -104,6 +104,20 @@ pub fn word_count() -> usize {
     words().len()
 }
 
+/// `word` (lowercase) is in the list itself, not only as an inflection:
+/// "email" and "sounder" are, "emailer" isn't (Mac `isListedWord`).
+pub fn is_listed_word(word: &str) -> bool {
+    if word.chars().count() < 3 {
+        return SHORT_WORDS.contains(&word);
+    }
+    words().contains(word) || SUPPLEMENTAL_WORDS.contains(&word)
+}
+
+/// Every word in the bundled list (Mac `listedWords`), in no set order.
+pub fn listed_words() -> impl Iterator<Item = &'static str> {
+    words().iter().copied()
+}
+
 /// `word` must already be lowercase. Accepts listed words and their regular
 /// inflections (verses, codes, stopped, running).
 pub fn is_real_word(word: &str) -> bool {
