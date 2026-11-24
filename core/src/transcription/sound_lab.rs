@@ -101,15 +101,19 @@ fn own_voice(guesses: bool) {
         })
         .collect();
     let clip = |id: &str| samples(&folder.join(format!("{id}.wav")));
-    let t = transcriber();
+    let t: Arc<dyn Transcriber> = Arc::new(transcriber());
     t.set_word_boost_terms(&terms());
     assert!(t.sound_ready(), "Word Boost's model didn't load");
     let opts = DecodeOptions::default();
-    let mut book = if guesses {
-        SoundAnchorBook::default().adding_guesses(&[TERM.to_string()])
+    let dictionary = vec![TERM.to_string()];
+    let guessed = if guesses {
+        SoundAnchorBook::new(crate::sound::guesses::anchors(&dictionary))
     } else {
         SoundAnchorBook::default()
     };
+    // What your fixes taught (stored), and what dictation listens with.
+    let mut stored = SoundAnchorBook::default();
+    let listening = |stored: &SoundAnchorBook| Arc::new(stored.adding(&guessed));
     // What Express writes with the word in the dictionary and no anchors,
     // and how long each decode takes without the sound check.
     let mut plain_ms = 0u128;
@@ -121,6 +125,7 @@ fn own_voice(guesses: bool) {
             eprintln!("{tag} without anchors {id} «{raw}»");
         }
     }
+    let memory = crate::sound::SoundMemory::new();
     let mut fixed: Option<String> = None;
     let mut results = Vec::new();
     let taught_ids = ["word-01", "word-02", "word-03"];
@@ -134,24 +139,31 @@ fn own_voice(guesses: bool) {
             // The first three plain "email"s, left as they were, teach where
             // this voice's "email"s end; they're then left out of the count.
             for id in taught_ids {
-                t.set_sound_anchors(Arc::new(book.clone()));
-                let text = t.transcribe(&clip(id), &opts).unwrap();
-                for d in t.sound_decisions(&text) {
-                    if !d.applied {
-                        book.learn_not_said(&d.heard, &d.term, d.margin);
-                    }
-                }
+                t.set_sound_anchors(listening(&stored));
+                let audio = clip(id);
+                let raw = t.transcribe(&audio, &opts).unwrap();
+                let kept = memory
+                    .keep(audio, t.sound_decisions(&raw), Arc::clone(&t))
+                    .and_then(|id| memory.get(id));
+                let untouched = crate::text::learning::DictationEdits::default();
+                crate::sound::learn::learn(
+                    &mut stored,
+                    &guessed,
+                    &dictionary,
+                    kept.as_ref(),
+                    Some(&untouched),
+                );
             }
-            let line = book
+            let line = listening(&stored)
                 .anchors
                 .iter()
                 .find(|a| a.term == TERM)
                 .map(|a| a.line());
             eprintln!("{tag} line now {line:?}");
         }
-        t.set_sound_anchors(Arc::new(book.clone()));
+        t.set_sound_anchors(listening(&stored));
         let (mut right, mut said, mut changed, mut plain) = (0, 0, 0, 0);
-        let mut first_wrong: Option<String> = None;
+        let mut first_wrong: Option<(String, String)> = None;
         let (mut slowest, mut total_ms) = (0u128, 0u128);
         for (id, is_term) in &items {
             if fixed.as_deref() == Some(id) || (last && taught_ids.contains(&id.as_str())) {
@@ -173,7 +185,7 @@ fn own_voice(guesses: bool) {
                 if has {
                     right += 1;
                 } else if first_wrong.is_none() {
-                    first_wrong = Some(id.clone());
+                    first_wrong = Some((id.clone(), text.clone()));
                 }
             } else {
                 plain += 1;
@@ -189,23 +201,40 @@ fn own_voice(guesses: bool) {
         );
         results.push((stage, right, said, changed, plain));
         if stage == "before any fix" {
-            if let Some(id) = first_wrong {
+            if let Some((id, text)) = first_wrong {
+                // The fix a person would make: the word that should have been
+                // Eimailar, retyped, and learned the way the app learns it.
                 let audio = clip(&id);
-                // The fix a person would make: the word that came out "email".
-                t.set_sound_anchors(Arc::new(SoundAnchorBook::default()));
                 let raw = t.transcribe(&audio, &opts).unwrap();
-                t.set_sound_anchors(Arc::new(book.clone()));
-                let heard = raw
+                let wrong = text
                     .split(' ')
-                    .find(|w| contrast::key(w).concat().starts_with("email"))
+                    .find(|w| {
+                        let l = contrast::letters(w);
+                        l.starts_with("emai") || l.starts_with("emil")
+                    })
                     .map(str::to_string);
-                if let Some(heard) = heard {
-                    if let Some(learned) = t.learn_sound(&audio, &heard, TERM, 0).unwrap() {
-                        eprintln!(
-                            "{tag} fixed {id}: learned {:?}, margin {:.2}",
-                            learned.sounds, learned.margin
-                        );
-                        book.learn_said(&heard, TERM, &learned.sounds, learned.margin);
+                if let Some(wrong) = wrong {
+                    let after = text.replacen(&wrong, TERM, 1);
+                    let edits = crate::text::learning::dictation_edits(&text, &text, None, &after);
+                    let kept = memory
+                        .keep(audio, t.sound_decisions(&raw), Arc::clone(&t))
+                        .and_then(|id| memory.get(id));
+                    let learned = crate::sound::learn::learn(
+                        &mut stored,
+                        &guessed,
+                        &dictionary,
+                        kept.as_ref(),
+                        edits.as_ref(),
+                    );
+                    eprintln!(
+                        "{tag} fixed {id} («{wrong}» to {TERM}): {learned:?}; anchors now {:?}",
+                        stored
+                            .anchors
+                            .iter()
+                            .map(|a| (a.heard.as_str(), a.sounds.clone(), a.said.clone()))
+                            .collect::<Vec<_>>()
+                    );
+                    if learned.said > 0 {
                         fixed = Some(id);
                     }
                 }
