@@ -29,8 +29,8 @@ pub const LOWEST_LINE: f32 = -2.0;
 /// Never above this, however a fix back scored.
 pub const HIGHEST_LINE: f32 = 8.0;
 /// How far above your highest kept heard word the line stays. It was 0.25:
-/// on the Mac's run of the owner's 50 real recordings, "no email until the
-/// evening" scored -4.89 after the line had learned from three kept "email"s
+/// on the Mac's run of the owner's 50 real recordings, a plain "email"
+/// scored -4.89 after the line had learned from three kept "email"s
 /// (highest -5.5) and was changed. At 1.5 the line is -4.0: it keeps that
 /// "email" and still takes the owner's fast Eimailar (-3.57).
 pub const MARGIN_ABOVE_YOUR_WORD: f32 = 1.5;

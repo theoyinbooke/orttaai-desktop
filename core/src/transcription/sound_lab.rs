@@ -11,6 +11,9 @@
 //! ORTTAAI_SOUND_LAB_SYNTH=…/sound-lab-e2e \
 //! cargo test --release -p orttaai-core --features express --lib -- --ignored sound_lab --nocapture
 //! ```
+//!
+//! The output holds clip ids, counts and scores. What was said is printed
+//! only with `ORTTAAI_SOUND_LAB_SHOW_TEXT=1`.
 
 use super::express::ExpressTranscriber;
 use super::Transcriber;
@@ -56,6 +59,17 @@ fn written(raw: &str) -> String {
     memory.add_term(TERM, TERM);
     let processor = TextProcessor::new(TextOptions::default(), memory);
     processor.process(&format_numbers(raw)).text
+}
+
+/// What was written, for the log: nothing but a word count unless
+/// `ORTTAAI_SOUND_LAB_SHOW_TEXT=1`. The recordings are the owner's own
+/// words, and logs hold counts and scores only.
+fn shown(text: &str) -> String {
+    if std::env::var("ORTTAAI_SOUND_LAB_SHOW_TEXT").is_ok_and(|v| v == "1") {
+        format!("«{text}»")
+    } else {
+        format!("({} words)", text.split_whitespace().count())
+    }
 }
 
 fn scores(decisions: &[crate::sound::Decision]) -> String {
@@ -122,7 +136,7 @@ fn own_voice(guesses: bool) {
         let raw = t.transcribe(&clip(id), &opts).unwrap();
         plain_ms += started.elapsed().as_millis();
         if guesses {
-            eprintln!("{tag} without anchors {id} «{raw}»");
+            eprintln!("{tag} without anchors {id} {}", shown(&raw));
         }
     }
     let memory = crate::sound::SoundMemory::new();
@@ -176,8 +190,9 @@ fn own_voice(guesses: bool) {
             let text = written(&raw);
             let has = text.contains(TERM);
             eprintln!(
-                "{tag} {stage} {id} [{}] «{text}» {}",
+                "{tag} {stage} {id} [{}] {} {}",
                 if *is_term { "term" } else { "word" },
+                shown(&text),
                 scores(&t.sound_decisions(&raw))
             );
             if *is_term {
@@ -227,12 +242,11 @@ fn own_voice(guesses: bool) {
                         edits.as_ref(),
                     );
                     eprintln!(
-                        "{tag} fixed {id} («{wrong}» to {TERM}): {learned:?}; anchors now {:?}",
-                        stored
-                            .anchors
-                            .iter()
-                            .map(|a| (a.heard.as_str(), a.sounds.clone(), a.said.clone()))
-                            .collect::<Vec<_>>()
+                        "{tag} fixed {id}: {} said, {} fixed back, {} kept; {} anchor(s) stored",
+                        learned.said,
+                        learned.fixed_back,
+                        learned.kept,
+                        stored.anchors.len()
                     );
                     if learned.said > 0 {
                         fixed = Some(id);
@@ -282,7 +296,7 @@ fn taught_book(t: &Arc<dyn Transcriber>) -> SoundAnchorBook {
             kept.as_ref(),
             edits.as_ref(),
         );
-        eprintln!("REAL taught from {id}: {learned:?}");
+        eprintln!("REAL taught from {id}: {} said", learned.said);
         if learned.said > 0 {
             break;
         }
@@ -305,10 +319,8 @@ fn taught_book(t: &Arc<dyn Transcriber>) -> SoundAnchorBook {
     let book = stored.adding(&guessed);
     for a in &book.anchors {
         eprintln!(
-            "REAL taught anchor {} -> {}: sounds {:?}, said {:?}, kept {:?}, line {:.2}",
-            a.heard,
-            a.term,
-            a.sounds,
+            "REAL taught anchor: {} sound(s), said {:?}, kept {:?}, line {:.2}",
+            a.sounds.len(),
             a.said,
             a.not_said,
             a.line()
@@ -369,8 +381,10 @@ fn sound_lab_real_corpus() {
             if written(&anchored) != written(&plain) {
                 changed_plain += 1;
                 eprintln!(
-                    "REAL [{name}] changed {}: «{plain}» -> «{anchored}»",
-                    item["id"]
+                    "REAL [{name}] changed {}: {} -> {}",
+                    item["id"],
+                    shown(&plain),
+                    shown(&anchored)
                 );
             }
             if anchored != boosted {
@@ -378,8 +392,9 @@ fn sound_lab_real_corpus() {
             }
             if !decisions.is_empty() {
                 eprintln!(
-                    "REAL [{name}] {} «{anchored}» {}",
+                    "REAL [{name}] {} {} {}",
                     item["id"],
+                    shown(&anchored),
                     scores(&decisions)
                 );
             }
@@ -453,7 +468,11 @@ fn sound_lab_synthetic() {
                         .filter(|d| !d.applied)
                         .filter_map(|d| d.sound_margin),
                 );
-                eprintln!("SYNTH missed {name} «{text}» {}", scores(&decisions));
+                eprintln!(
+                    "SYNTH missed {name} {} {}",
+                    shown(&text),
+                    scores(&decisions)
+                );
             }
         } else {
             row[5] += 1;
@@ -462,7 +481,11 @@ fn sound_lab_synthetic() {
                 if slow {
                     row[7] += 1;
                 }
-                eprintln!("SYNTH changed {name} «{text}» {}", scores(&decisions));
+                eprintln!(
+                    "SYNTH changed {name} {} {}",
+                    shown(&text),
+                    scores(&decisions)
+                );
             } else {
                 kept_plain.extend(
                     decisions

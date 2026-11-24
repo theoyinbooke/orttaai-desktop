@@ -92,7 +92,7 @@ The two sentences with plain "email" scored −9.3 and −5.7 (iPhone: −5.5 an
 | One fix and 3 kept "email"s, in your voice (the fix scored +3.9, the kept ones about −11.5) | 0 | **0/50** |
 | The same with a weakly backed fix (−3.0) | −4.5 | **0/50** |
 
-The third book found a fault in the line rule and is why it differs here (see below). With the rule as ported, that line was −7.2 and "no email until the evening" (−5.7) became Eimailar.
+The third book found a fault in the line rule and is why it differs here (see below). With the rule as ported, that line was −7.2 and the plain "email" that scored −5.7 became Eimailar.
 
 ### Synthetic voices (the iPhone lab's 720 clips)
 
