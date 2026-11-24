@@ -120,7 +120,7 @@ The slow listen's catches had margins from −14.9 to −0.4, the same range as 
 
 - **Whisper.** There is no CTC model beside Whisper, so the sound can't be scored. A fix there still becomes a dictionary suggestion, as before.
 - **Apps whose text can't be read.** Without the field's text Orttaai can't see your fix, so it learns nothing. The starting guess and the spelling rule still work.
-- **Recordings over 2 minutes** aren't kept, so a fix in one is learned only from the sound check's own margin.
+- **Recordings over 2 minutes** aren't kept, so a fix in one isn't learned by sound. It becomes a dictionary suggestion as before; if you accept it, the pair is still decided by the sound when the word has an anchor.
 - **Not run on a real Windows or Linux PC.** The Linux gate and the Windows build pass in Docker. The numbers above are from the Mac build of the same Rust code and the same ONNX models.
 
 ## Needs checking on a PC, with your voice

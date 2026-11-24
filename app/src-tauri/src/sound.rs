@@ -94,7 +94,10 @@ pub fn learn_from_watch(
     settings: &Settings,
     observation: &EditObservation,
 ) -> Learned {
-    if !active(settings) {
+    // Only a dictation the engine judged by sound has kept sound: without
+    // one (Whisper, or Express that fell back to it), fixes go to the text
+    // learner as they always did.
+    if !active(settings) || observation.recording.is_none() {
         return Learned::default();
     }
     let Some(path) = path() else {
@@ -114,9 +117,6 @@ pub fn learn_from_watch(
     let recording = observation
         .recording
         .and_then(|id| memory.as_ref().and_then(|m| m.get(id)));
-    if recording.is_none() && edits.replacements.is_empty() {
-        return Learned::default();
-    }
     let dictionary = dictionary_words(settings);
     let guessed = SoundAnchorBook::new(guesses::anchors(&dictionary));
     let learned = learn::update_stored(&path, |book| {

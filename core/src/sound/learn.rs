@@ -197,9 +197,10 @@ fn fixed_back(
     learned: &mut Learned,
 ) -> bool {
     let Some(index) = decisions.iter().position(|d| {
+        // By letters, so "E-mailer" put back as "emailer" still counts.
         d.applied
             && d.term.to_lowercase() == fix.heard.to_lowercase()
-            && contrast::key(&d.heard) == contrast::key(&fix.corrected)
+            && contrast::letters(&d.heard) == contrast::letters(&fix.corrected)
     }) else {
         return false;
     };
@@ -236,7 +237,6 @@ fn fixed_back(
 
 /// A heard word changed to one of your words, or to itself plus the ending
 /// it lost: you said your word there.
-#[allow(clippy::too_many_arguments)]
 fn said(
     book: &mut SoundAnchorBook,
     guesses: &SoundAnchorBook,
@@ -294,7 +294,7 @@ fn said(
     let new_anchor = book.anchor(&fix.heard, &term).is_none();
     // The sound's own verdict where it kept the heard word, if it judged it.
     let judged = decisions.iter().find(|d| {
-        !d.applied && d.term == term && contrast::key(&d.heard) == contrast::key(&fix.heard)
+        !d.applied && d.term == term && contrast::letters(&d.heard) == contrast::letters(&fix.heard)
     });
     let from_sound = recording.and_then(|r| {
         r.transcriber
@@ -569,6 +569,17 @@ mod tests {
         let active = active_book(&book, &dictionary());
         assert!(!judge::sound_spellings(&active).contains_key("emailer"));
         assert!(judge::sound_spellings(&active).contains_key("emaila"));
+    }
+
+    #[test]
+    fn a_hyphenated_spelling_put_back_plainly_still_counts() {
+        let t = sounding(None);
+        let rec = recording(&t, vec![decision("E-mailer", judge::SPELLED_MARGIN, true)]);
+        let mut book = SoundAnchorBook::default();
+        let e = edits(&[("Eimailar", "emailer", 0)], &["eimailar"]);
+        let learned = learn(&mut book, &guesses(), &dictionary(), Some(&rec), Some(&e));
+        assert_eq!(learned.fixed_back, 1);
+        assert!(book.anchors[0].forgotten.contains(&"emailer".to_string()));
     }
 
     #[test]
