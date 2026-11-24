@@ -521,9 +521,30 @@ impl EditOptions {
     }
 }
 
-/// Stateful edit processor with the shared circuit-breaker contract.
+/// Shown when the model answered but the edit couldn't be used (Mac).
+pub const REASON_NOT_APPLIED: &str = "Couldn't apply the edit";
+/// Shown when no local model answered at all (Mac).
+pub const REASON_UNREACHABLE: &str = "Couldn't reach the edit model";
+/// Shown while the model is being left alone after a failure (Mac).
+pub const REASON_COOLDOWN: &str = "Edit model unavailable. Try again shortly.";
+
+/// Why an edit didn't happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EditFailure {
+    reason: &'static str,
+    /// No local model answered at all, as opposed to a slow or bad answer.
+    unavailable: bool,
+}
+
+/// Stateful edit processor with the shared circuit-breaker contract (Mac
+/// `EditCommandProcessor.performEdit`): after a failure the model is left
+/// alone for a while, so a model that is off or stuck doesn't make every
+/// edit wait for it again.
 pub struct EditCommandProcessor {
     breaker: CircuitBreaker,
+    /// Whether the breaker last tripped because no model answered at all, as
+    /// opposed to a slow or bad answer. Only the first means "unavailable".
+    last_trip_was_unreachable: std::sync::atomic::AtomicBool,
 }
 
 impl Default for EditCommandProcessor {
@@ -536,35 +557,41 @@ impl EditCommandProcessor {
     pub fn new() -> Self {
         Self {
             breaker: CircuitBreaker::new(),
+            last_trip_was_unreachable: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
-    pub fn perform(
+    fn attempt(
         &self,
         client: &dyn LlmClient,
         opts: &EditOptions,
         selection: &str,
         instruction: &str,
-    ) -> EditOutcome {
+    ) -> std::result::Result<String, EditFailure> {
+        use std::sync::atomic::Ordering;
         let sel = selection.trim();
         let ins = instruction.trim();
-        let failed = |r: &str| EditOutcome::Failed {
-            reason: r.to_string(),
+        let failed = |reason: &'static str| EditFailure {
+            reason,
+            unavailable: false,
         };
         if sel.is_empty() {
-            return failed("Select text first");
+            return Err(failed("Select text first"));
         }
         if ins.is_empty() {
-            return failed("Didn't catch an instruction");
+            return Err(failed("Didn't catch an instruction"));
         }
         if sel.chars().count() > opts.max_chars {
-            return failed("Selection too long to edit");
+            return Err(failed("Selection too long to edit"));
         }
         if opts.model.trim().is_empty() {
-            return failed("No edit model configured");
+            return Err(failed("No edit model configured"));
         }
         if !self.breaker.can_attempt(Instant::now()) {
-            return failed("Edit model unavailable. Try again shortly.");
+            return Err(EditFailure {
+                reason: REASON_COOLDOWN,
+                unavailable: self.last_trip_was_unreachable.load(Ordering::SeqCst),
+            });
         }
         match rewrite_selection(
             client,
@@ -575,24 +602,90 @@ impl EditCommandProcessor {
             opts.max_chars,
         ) {
             Ok(text) => {
+                self.last_trip_was_unreachable
+                    .store(false, Ordering::SeqCst);
                 self.breaker.record_success();
-                if text == sel {
-                    EditOutcome::Unchanged
-                } else {
-                    EditOutcome::Edited { text }
-                }
+                Ok(text)
             }
             Err(e) => {
-                if crate::llm::error_text(&e) == "Couldn't apply the edit" {
-                    self.breaker.record_failure(Instant::now());
-                } else {
-                    self.breaker
-                        .record_error(classify_error(&e), Instant::now());
+                let now = Instant::now();
+                if crate::llm::error_text(&e) == REASON_NOT_APPLIED {
+                    // The sanitizer turned the answer down.
+                    self.last_trip_was_unreachable
+                        .store(false, Ordering::SeqCst);
+                    self.breaker.record_failure(now);
+                    return Err(failed(REASON_NOT_APPLIED));
                 }
-                failed("Couldn't apply the edit")
+                let kind = classify_error(&e);
+                let unreachable = matches!(
+                    kind,
+                    crate::llm::LlmFailure::Unreachable | crate::llm::LlmFailure::ModelMissing
+                );
+                self.last_trip_was_unreachable
+                    .store(unreachable, Ordering::SeqCst);
+                self.breaker.record_error(kind, now);
+                tracing::warn!("edit request failed: {}", crate::llm::error_text(&e));
+                Err(if unreachable {
+                    EditFailure {
+                        reason: REASON_UNREACHABLE,
+                        unavailable: true,
+                    }
+                } else {
+                    failed(REASON_NOT_APPLIED)
+                })
             }
         }
     }
+
+    pub fn perform(
+        &self,
+        client: &dyn LlmClient,
+        opts: &EditOptions,
+        selection: &str,
+        instruction: &str,
+    ) -> EditOutcome {
+        match self.attempt(client, opts, selection, instruction) {
+            Ok(text) if text == selection.trim() => EditOutcome::Unchanged,
+            Ok(text) => EditOutcome::Edited { text },
+            Err(failure) => EditOutcome::Failed {
+                reason: failure.reason.to_string(),
+            },
+        }
+    }
+
+    /// The rewritten selection, or why there is none, worded for the person
+    /// reading it: [`CoreError::LlmUnavailable`] when no local model answered
+    /// at all (the caller may then type the words instead), otherwise
+    /// [`CoreError::Llm`]. An answer equal to the selection comes back as is.
+    pub fn rewrite(
+        &self,
+        client: &dyn LlmClient,
+        opts: &EditOptions,
+        selection: &str,
+        instruction: &str,
+    ) -> Result<String> {
+        self.attempt(client, opts, selection, instruction)
+            .map_err(|failure| {
+                if failure.unavailable {
+                    CoreError::LlmUnavailable(failure.reason.to_string())
+                } else {
+                    CoreError::Llm(failure.reason.to_string())
+                }
+            })
+    }
+}
+
+/// `edit` with the white space the selection had around it: a selection that
+/// took the space or line break after it along (double-click and
+/// triple-click do) keeps it, so the words that follow aren't joined on.
+pub fn keeping_surrounding_space(selection: &str, edit: &str) -> String {
+    let core = selection.trim();
+    if core.is_empty() {
+        return edit.to_string();
+    }
+    let leading = &selection[..selection.len() - selection.trim_start().len()];
+    let trailing = &selection[selection.trim_end().len()..];
+    format!("{leading}{}{trailing}", edit.trim())
 }
 
 #[cfg(test)]
@@ -789,9 +882,110 @@ mod tests {
         );
         assert_eq!(offline.call_count(), 1);
         assert_eq!(num_predict_tokens(10), 133);
+        // Unchanged is judged against the selection without its outer space.
+        let fresh = EditCommandProcessor::new();
+        assert_eq!(
+            fresh.perform(
+                &MockLlm::fixed("hello there"),
+                &opts,
+                " hello there\n",
+                "fix"
+            ),
+            EditOutcome::Unchanged
+        );
         assert_eq!(num_predict_tokens(5_000), 512);
         assert_eq!(recommended_minimum_timeout_ms("gemma4:e4b"), 5_000);
         let s = Settings::default();
         assert_eq!(EditOptions::from_settings(&s).timeout_ms, s.edit_timeout_ms);
+    }
+
+    fn options() -> EditOptions {
+        EditOptions {
+            model: "gemma4:e2b".into(),
+            timeout_ms: 6_000,
+            max_chars: 1_500,
+        }
+    }
+
+    #[test]
+    fn a_model_that_is_off_is_unavailable_and_left_alone_for_a_while() {
+        let p = EditCommandProcessor::new();
+        let offline = MockLlm::offline();
+        // No model answered: say so in plain words, as "unavailable".
+        let first = p
+            .rewrite(&offline, &options(), "hello there", "fix")
+            .unwrap_err();
+        assert!(matches!(&first, CoreError::LlmUnavailable(m) if m == REASON_UNREACHABLE));
+        // During the cooldown it isn't asked again, and is still "unavailable":
+        // the dictation shortcut types the words instead of waiting.
+        let second = p
+            .rewrite(&offline, &options(), "hello there", "fix")
+            .unwrap_err();
+        assert!(matches!(&second, CoreError::LlmUnavailable(m) if m == REASON_COOLDOWN));
+        assert_eq!(offline.call_count(), 1);
+    }
+
+    #[test]
+    fn a_slow_or_bad_answer_is_an_error_not_a_missing_model() {
+        // A timeout: an error now, and an error during the cooldown.
+        let p = EditCommandProcessor::new();
+        let slow = MockLlm::with(|_, _| Err(CoreError::Llm("request timed out".into())));
+        let first = p
+            .rewrite(&slow, &options(), "hello there", "fix")
+            .unwrap_err();
+        assert!(matches!(&first, CoreError::Llm(m) if m == REASON_NOT_APPLIED));
+        let second = p
+            .rewrite(&slow, &options(), "hello there", "fix")
+            .unwrap_err();
+        assert!(matches!(&second, CoreError::Llm(m) if m == REASON_COOLDOWN));
+        assert_eq!(slow.call_count(), 1);
+        // A refusal the sanitizer turns down: the same, never raw model text.
+        let p = EditCommandProcessor::new();
+        let refusing = MockLlm::fixed("I can't help with that request.");
+        let err = p
+            .rewrite(&refusing, &options(), "hello there", "fix")
+            .unwrap_err();
+        assert!(matches!(&err, CoreError::Llm(m) if m == REASON_NOT_APPLIED));
+        // Bad input never reaches the model or trips the breaker.
+        let p = EditCommandProcessor::new();
+        let fine = MockLlm::fixed("Hello there.");
+        assert!(p.rewrite(&fine, &options(), "  ", "fix").is_err());
+        assert_eq!(fine.call_count(), 0);
+        assert_eq!(
+            p.rewrite(&fine, &options(), "hello there", "fix").unwrap(),
+            "Hello there."
+        );
+    }
+
+    #[test]
+    fn a_working_model_clears_the_unavailable_mark() {
+        let p = EditCommandProcessor::new();
+        let _ = p.rewrite(&MockLlm::offline(), &options(), "hello there", "fix");
+        // Once the wait is over and the model answers, a later slow answer
+        // is an error again, not "no model".
+        p.breaker.record_success();
+        let fine = MockLlm::fixed("Hello there.");
+        assert!(p.rewrite(&fine, &options(), "hello there", "fix").is_ok());
+        let slow = MockLlm::with(|_, _| Err(CoreError::Llm("request timed out".into())));
+        let _ = p.rewrite(&slow, &options(), "hello there", "fix");
+        let cooling = p
+            .rewrite(&slow, &options(), "hello there", "fix")
+            .unwrap_err();
+        assert!(matches!(cooling, CoreError::Llm(_)));
+    }
+
+    #[test]
+    fn the_selections_surrounding_space_is_kept() {
+        assert_eq!(
+            keeping_surrounding_space("hello there ", "Hello there."),
+            "Hello there. "
+        );
+        assert_eq!(
+            keeping_surrounding_space("  First line.\r\n", " First line!\n"),
+            "  First line!\r\n"
+        );
+        assert_eq!(keeping_surrounding_space("plain", "Plain."), "Plain.");
+        assert_eq!(keeping_surrounding_space("   ", "x"), "x");
+        assert_eq!(keeping_surrounding_space("a\u{a0}", "b"), "b\u{a0}");
     }
 }

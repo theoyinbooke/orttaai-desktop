@@ -32,6 +32,12 @@ pub enum CoreError {
     #[error("llm error: {0}")]
     Llm(String),
 
+    /// No local model answered at all (the server is off, or the model isn't
+    /// installed), as opposed to a slow or bad answer. Worded for the person
+    /// reading it.
+    #[error("{0}")]
+    LlmUnavailable(String),
+
     #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
 

@@ -50,6 +50,11 @@ impl GestureInterpreter {
         self.press_start = Some(at);
     }
 
+    /// Whether the key is down: pressed and not yet released.
+    pub fn is_pressed(&self) -> bool {
+        self.press_start.is_some()
+    }
+
     /// Forgets any in-flight press, e.g. when recording failed to start or a
     /// key-down was consumed as a hands-free stop.
     pub fn reset(&mut self) {

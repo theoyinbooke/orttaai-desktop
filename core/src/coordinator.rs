@@ -1023,11 +1023,6 @@ impl DictationCoordinator {
         }
         self.mode = RecordingMode::PushToTalk;
         self.kind = kind;
-        if kind == SessionKind::Dictation {
-            // A new dictation: the edit key must never reach past it to an
-            // older one, even if this one doesn't get typed.
-            self.last_insertion = None;
-        }
         // Capture the target app NOW, before any overlay appears.
         let app = (self.focused_app)();
         let window = self.windows.current();
@@ -1313,6 +1308,23 @@ impl DictationCoordinator {
         if self.state == RecordingState::Recording {
             let _ = self.audio.stop();
         }
+        // An edit of the last dictation selected it: put the caret back, or
+        // the next key typed replaces it.
+        let selected = self
+            .session
+            .as_ref()
+            .map(|s| (s.selection_source, s.selection.clone()))
+            .into_iter()
+            .chain(
+                self.pending
+                    .as_ref()
+                    .map(|p| (p.selection_source, p.selection.clone())),
+            );
+        for (source, selection) in selected {
+            if let (SelectionSource::LastInsertion, Some(text)) = (source, selection) {
+                self.selector.deselect(&text);
+            }
+        }
         self.pending = None;
         self.end_session();
         self.error = None;
@@ -1348,6 +1360,20 @@ impl DictationCoordinator {
     /// End the recording and queue it for [`finish_pending`](Self::finish_pending).
     pub fn stop_recording(&mut self, reason: StopReason) {
         if self.state != RecordingState::Recording {
+            return;
+        }
+        // An edit stopped while its shortcut is still held down (the cap, the
+        // stop button) has no selection yet, and reading one now would press
+        // Ctrl+C under the held keys: with Shift down that is Ctrl+Shift+C,
+        // another command in most apps. Nothing is read and nothing edited.
+        if self.kind == SessionKind::Edit
+            && self.mode == RecordingMode::PushToTalk
+            && reason != StopReason::HoldRelease
+            && self.edit_gesture.is_pressed()
+            && self.session.as_ref().is_some_and(|s| s.selection.is_none())
+        {
+            tracing::info!("edit stopped ({reason:?}) with its shortcut still held");
+            self.abort_session("Edit instruction too long. Try again.");
             return;
         }
         // An edit stopped before its key was released (stop button, cap,
@@ -1493,6 +1519,28 @@ impl DictationCoordinator {
         out.transcription_ms = t0.elapsed().as_millis() as i64;
         let cleaned = strip_nonspeech_markers(raw.trim());
         out.raw_text = (!cleaned.is_empty()).then(|| cleaned.clone());
+        if p.kind == SessionKind::Dictation && !cleaned.is_empty() {
+            // A new dictation: the edit key must never reach past it to an
+            // older one, even if this one doesn't get typed. A recording
+            // that held no words (the key brushed by accident) changes
+            // nothing: the dictation before it is still the last one.
+            self.last_insertion = None;
+        }
+        // An instruction that lost part of its audio may say something else
+        // than was meant ("make this shorter [and keep the names]"): nothing
+        // is edited on half an instruction.
+        if p.kind == SessionKind::Edit && p.lost_audio {
+            if p.selection_source == SelectionSource::LastInsertion {
+                if let Some(text) = p.selection.as_deref() {
+                    self.selector.deselect(text);
+                }
+            }
+            out.edit_instruction = (!cleaned.is_empty()).then(|| cleaned.clone());
+            self.fail(&mut out, "Some audio was lost. Say the edit again.");
+            out.processing_ms = started.elapsed().as_millis() as i64;
+            self.end_session();
+            return Ok(out);
+        }
 
         let outcome = match p.kind {
             SessionKind::Edit => {
@@ -1732,13 +1780,16 @@ impl DictationCoordinator {
                 if unavailable && quiet_when_unavailable {
                     return (out, EditStatus::ModelUnavailable);
                 }
+                // The rewriter's own words (Mac: the reason, as it is).
                 let reason = match e {
-                    CoreError::Llm(m) | CoreError::Transcription(m) => m,
+                    CoreError::Llm(m)
+                    | CoreError::LlmUnavailable(m)
+                    | CoreError::Transcription(m) => m,
                     other => other.to_string(),
                 };
                 tracing::warn!("edit failed: {reason}");
                 release(self);
-                self.fail(&mut out, &format!("Couldn't edit: {reason}"));
+                self.fail(&mut out, &reason);
                 return (out, EditStatus::NotApplied);
             }
         };
@@ -1762,7 +1813,11 @@ impl DictationCoordinator {
             self.fail(&mut out, "The selection changed, so nothing was replaced");
             return (out, EditStatus::NotApplied);
         }
-        let delivery = self.deliver_to_target(&edited, out.app.as_deref());
+        // What replaces the selection keeps the space or line break the
+        // selection took along, so the words after it aren't joined on.
+        let pasted = crate::edit::keeping_surrounding_space(&selected, &edited);
+        let edited = edited.trim().to_string();
+        let delivery = self.deliver_to_target(&pasted, out.app.as_deref());
         out.injection_ms = delivery.ms;
         out.injection_method = Some(delivery.method);
         out.result = delivery.result;

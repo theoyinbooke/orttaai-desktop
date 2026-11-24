@@ -812,7 +812,7 @@ fn edit_failure_leaves_selection_untouched() {
     assert!(r.log.all().is_empty(), "never invent text");
     assert_eq!(
         r.coord.status().error.as_deref(),
-        Some("Couldn't edit: The local model is not running")
+        Some("The local model is not running")
     );
 }
 
@@ -1143,6 +1143,333 @@ fn right_shift_tap_with_nothing_to_edit_never_records() {
     assert_eq!(r.coord.state(), RecordingState::Error);
     assert_eq!(r.coord.status().error.as_deref(), Some("Select text first"));
     assert!(!r.coord.has_pending());
+}
+
+// ---- Voice edit: what must never go wrong ------------------------------------------
+
+/// A rewriter like the real one: it works on the selection without its outer
+/// white space and answers without any.
+struct Tidy;
+impl EditRewriter for Tidy {
+    fn rewrite(&self, selection: &str, _i: &str) -> orttaai_core::Result<String> {
+        Ok(selection.trim().to_uppercase())
+    }
+}
+
+#[test]
+fn the_space_or_line_break_selected_with_the_words_survives_the_edit() {
+    // A double-click takes the space after the word along, a triple-click
+    // the line break: the edit must not join the next words on.
+    let mut r = edit_rig(Some("hello there \n"), Some(Box::new(Tidy)));
+    r.coord.handle_edit_hotkey_down();
+    r.run(1500, &[]);
+    r.coord.handle_edit_hotkey_up();
+    let out = r.coord.finish_pending().unwrap();
+    assert_eq!(r.log.last().as_deref(), Some("HELLO THERE \n"));
+    assert_eq!(
+        out.transcript.as_deref(),
+        Some("HELLO THERE"),
+        "History keeps the words"
+    );
+
+    let (mut r, sel) = selection_rig("Make this shorter.", Some(Box::new(Tidy)), &settings());
+    sel.set_peek(selected("  hello there\r\n"));
+    dictate(&mut r);
+    assert_eq!(r.log.all(), vec!["  HELLO THERE\r\n"]);
+}
+
+#[test]
+fn stopping_the_engine_mid_edit_puts_the_caret_back() {
+    let (mut r, sel) = selection_rig("see you on monday", Some(Box::new(Shout)), &settings());
+    dictate(&mut r);
+    sel.set_selectable(true);
+    // While the instruction is being spoken.
+    r.coord.handle_right_shift_tap();
+    assert_eq!(sel.selected(), vec!["see you on monday"]);
+    r.coord.cancel();
+    assert_eq!(sel.deselected(), vec!["see you on monday"]);
+    assert_eq!(r.coord.state(), RecordingState::Idle);
+    // And once it is queued for processing.
+    r.coord.handle_right_shift_tap();
+    r.run(1000, &[]);
+    r.coord.handle_right_shift_tap();
+    assert!(r.coord.has_pending());
+    r.coord.cancel();
+    assert_eq!(sel.deselected().len(), 2);
+    assert!(r.log.all().len() == 1, "only the dictation was ever typed");
+}
+
+#[test]
+fn an_instruction_that_lost_audio_edits_nothing() {
+    let mut s = settings();
+    s.edit_commands_enabled = true;
+    let mut r = rig_with(
+        "make it shout",
+        MockTextInjector::new().with_selection("keep this"),
+        MockAudioCapture::new(0.0),
+        MemoryService::new(),
+        &s,
+    );
+    r.coord.set_rewriter(Some(Box::new(Shout)));
+    r.coord.handle_right_shift_tap();
+    r.feed.push(&tone(3.5, 0.2));
+    r.run(5000, &[]);
+    r.coord.handle_right_shift_tap();
+    let out = r.coord.finish_pending().unwrap();
+    assert!(out.lost_audio);
+    assert!(
+        r.log.all().is_empty(),
+        "half an instruction is never applied"
+    );
+    assert!(out.transcript.is_none());
+    assert_eq!(
+        r.coord.status().error.as_deref(),
+        Some("Some audio was lost. Say the edit again.")
+    );
+}
+
+#[test]
+fn an_edit_cut_off_with_its_shortcut_held_never_presses_ctrl_c() {
+    // Ctrl+Shift+E still down when the recording limit ends the session: a
+    // Ctrl+C now would arrive as Ctrl+Shift+C.
+    let mut s = settings();
+    s.edit_commands_enabled = true;
+    s.max_recording_secs = 10;
+    let injector = MockTextInjector::new().with_selection("keep this");
+    let chords = injector.chords();
+    let mut r = rig_with(
+        "make it shout",
+        injector,
+        MockAudioCapture::new(0.0),
+        MemoryService::new(),
+        &s,
+    );
+    r.coord.set_rewriter(Some(Box::new(Shout)));
+    r.coord.handle_edit_hotkey_down();
+    r.run(10_500, &tone(0.05, 0.2));
+    assert_eq!(r.coord.state(), RecordingState::Error);
+    assert_eq!(
+        r.coord.status().error.as_deref(),
+        Some("Edit instruction too long. Try again.")
+    );
+    assert!(chords.lock().unwrap().is_empty(), "no key was pressed");
+    assert!(!r.coord.has_pending());
+    // The late release changes nothing.
+    r.coord.handle_edit_hotkey_up();
+    assert!(r.log.all().is_empty());
+
+    // Hands-free (the key is up): the limit ends the instruction and the
+    // edit goes ahead, as before.
+    s.hands_free_max_secs = 120;
+    let mut r = rig_with(
+        "make it shout",
+        MockTextInjector::new().with_selection("keep this"),
+        MockAudioCapture::new(0.0),
+        MemoryService::new(),
+        &s,
+    );
+    r.coord.set_rewriter(Some(Box::new(Shout)));
+    r.coord.handle_right_shift_tap();
+    r.run(121_000, &tone(0.05, 0.2));
+    assert_eq!(r.coord.state(), RecordingState::Processing);
+    r.coord.finish_pending().unwrap();
+    assert_eq!(r.log.last().as_deref(), Some("KEEP THIS"));
+}
+
+struct Unavailable;
+impl EditRewriter for Unavailable {
+    fn rewrite(&self, _s: &str, _i: &str) -> orttaai_core::Result<String> {
+        Err(CoreError::LlmUnavailable(
+            "Edit model unavailable. Try again shortly.".into(),
+        ))
+    }
+}
+
+struct Cooling;
+impl EditRewriter for Cooling {
+    fn rewrite(&self, _s: &str, _i: &str) -> orttaai_core::Result<String> {
+        Err(CoreError::Llm(
+            "Edit model unavailable. Try again shortly.".into(),
+        ))
+    }
+}
+
+#[test]
+fn no_model_types_the_words_but_a_slow_models_cooldown_is_an_error() {
+    // No model answered at all: exactly as before voice editing existed.
+    let (mut r, sel) = selection_rig(
+        "Make this shorter.",
+        Some(Box::new(Unavailable)),
+        &settings(),
+    );
+    sel.set_peek(selected("old sentence"));
+    let out = dictate(&mut r);
+    assert_eq!(out.kind, SessionKind::Dictation);
+    assert_eq!(r.log.last().as_deref(), Some("Make this shorter."));
+    assert_eq!(r.coord.state(), RecordingState::Idle);
+
+    // The model is there but resting after a slow answer: the selection
+    // stays, the words go to History, and the pill says why.
+    let (mut r, sel) = selection_rig("Make this shorter.", Some(Box::new(Cooling)), &settings());
+    sel.set_peek(selected("old sentence"));
+    let out = dictate(&mut r);
+    assert!(r.log.all().is_empty());
+    assert_eq!(
+        r.coord.status().error.as_deref(),
+        Some("Edit model unavailable. Try again shortly.")
+    );
+    assert_eq!(out.to_record(1).unwrap().text, "Make this shorter.");
+
+    // On the edit key both are said plainly, and nothing is typed.
+    let mut r = edit_rig(Some("keep this"), Some(Box::new(Unavailable)));
+    r.coord.handle_edit_hotkey_down();
+    r.run(1000, &[]);
+    r.coord.handle_edit_hotkey_up();
+    r.coord.finish_pending().unwrap();
+    assert!(r.log.all().is_empty());
+    assert_eq!(
+        r.coord.status().error.as_deref(),
+        Some("Edit model unavailable. Try again shortly.")
+    );
+}
+
+#[test]
+fn a_brushed_dictation_key_doesnt_forget_the_last_dictation() {
+    let mut s = settings();
+    s.hands_free_enabled = false;
+    let mut r = rig_with(
+        "see you on monday",
+        MockTextInjector::new(),
+        MockAudioCapture::new(0.0),
+        MemoryService::new(),
+        &s,
+    );
+    r.coord.set_rewriter(Some(Box::new(Shout)));
+    let sel = MockFieldSelector::new();
+    r.coord.set_field_selector(Arc::new(sel.clone()));
+    r.coord.handle_hotkey_down();
+    r.run(1000, &tone(0.05, 0.2));
+    r.coord.handle_hotkey_up();
+    r.coord.finish_pending().unwrap();
+    assert_eq!(r.log.all(), vec!["see you on monday"]);
+    sel.set_selectable(true);
+
+    // The dictation key touched for a moment: too short to be a recording.
+    r.coord.handle_hotkey_down();
+    r.run(100, &tone(0.05, 0.2));
+    r.coord.handle_hotkey_up();
+    assert_eq!(r.coord.state(), RecordingState::Idle);
+    // And a recording that held no words at all.
+    r.coord
+        .replace_transcriber(Box::new(MockTranscriber::new("[BLANK_AUDIO]")));
+    r.coord.handle_hotkey_down();
+    r.run(1000, &tone(0.05, 0.2));
+    r.coord.handle_hotkey_up();
+    r.coord.finish_pending().unwrap();
+    assert_eq!(r.log.all().len(), 1, "nothing more was typed");
+
+    // The edit key still reaches the dictation before them.
+    r.coord
+        .replace_transcriber(Box::new(MockTranscriber::new("make it shout")));
+    r.coord.handle_right_shift_tap();
+    assert_eq!(sel.selected(), vec!["see you on monday"]);
+    r.run(1000, &tone(0.05, 0.2));
+    r.coord.handle_right_shift_tap();
+    r.coord.finish_pending().unwrap();
+    assert_eq!(r.log.last().as_deref(), Some("SEE YOU ON MONDAY"));
+}
+
+#[test]
+fn a_new_dictation_that_isnt_typed_still_replaces_the_last_one() {
+    // Words were said, but they couldn't be typed: the edit key must not
+    // reach past them to the older dictation.
+    let (mut r, sel) = selection_rig("see you on monday", Some(Box::new(Shout)), &settings());
+    let mut windows = orttaai_core::focus::ScriptedWindowFocus::new(Some(1));
+    windows.activation_works = false;
+    let windows = Arc::new(windows);
+    r.coord.set_window_focus(Box::new(windows.clone()));
+    dictate(&mut r);
+    assert_eq!(r.log.all().len(), 1);
+    sel.set_selectable(true);
+    r.coord.handle_hotkey_down();
+    r.run(1000, &[]);
+    r.coord.handle_hotkey_up();
+    // Focus moved to another window that won't give it back.
+    *windows.front.lock().unwrap() = Some(2);
+    let out = r.coord.finish_pending().unwrap();
+    assert_ne!(out.result, InjectionResult::Success);
+    r.advance(2100);
+    *windows.front.lock().unwrap() = Some(1);
+    r.coord.handle_right_shift_tap();
+    assert_eq!(r.coord.status().error.as_deref(), Some("Select text first"));
+    assert!(sel.selected().is_empty());
+}
+
+// ---- Sound kept for learning from fixes ----------------------------------------------
+
+/// A transcriber that can judge by sound: it reports one kept heard word.
+struct Sounding;
+impl orttaai_core::transcription::Transcriber for Sounding {
+    fn load_model(&mut self, _id: &str) -> orttaai_core::Result<()> {
+        Ok(())
+    }
+    fn loaded_model(&self) -> Option<&str> {
+        Some("sounding")
+    }
+    fn transcribe(&self, _s: &[f32], _o: &DecodeOptions) -> orttaai_core::Result<String> {
+        Ok("open email now".into())
+    }
+    fn sound_ready(&self) -> bool {
+        true
+    }
+    fn sound_decisions(&self, text: &str) -> Vec<orttaai_core::sound::Decision> {
+        assert_eq!(text, "open email now");
+        vec![orttaai_core::sound::Decision {
+            heard: "email".into(),
+            term: "Eimailar".into(),
+            margin: -9.0,
+            applied: false,
+            margin_with_next_word: None,
+            sound_margin: Some(-9.0),
+            word_range: None,
+        }]
+    }
+}
+
+#[test]
+fn a_typed_dictations_sound_is_kept_in_memory_for_learning() {
+    let (mut r, _sel) = selection_rig("unused", Some(Box::new(Shout)), &settings());
+    // Without an engine that judges by sound, nothing is kept.
+    let plain = dictate(&mut r);
+    assert_eq!(plain.recording_id, None);
+    assert!(r.coord.sound_memory().is_empty());
+
+    r.coord.replace_transcriber(Box::new(Sounding));
+    let out = dictate(&mut r);
+    let id = out.recording_id.expect("kept");
+    let kept = r.coord.sound_memory().get(id).unwrap();
+    assert!(!kept.samples.is_empty());
+    assert_eq!(kept.decisions.len(), 1);
+    assert_eq!(kept.decisions[0].heard, "email");
+
+    // An edit instruction's sound is never kept.
+    r.coord
+        .set_field_selector(Arc::new(MockFieldSelector::new()));
+    let before = r.coord.sound_memory().len();
+    let mut e = edit_rig(Some("hello"), Some(Box::new(Shout)));
+    e.coord.replace_transcriber(Box::new(Sounding));
+    e.coord.handle_edit_hotkey_down();
+    e.run(1000, &[]);
+    e.coord.handle_edit_hotkey_up();
+    let edited = e.coord.finish_pending().unwrap();
+    assert_eq!(edited.recording_id, None);
+    assert!(e.coord.sound_memory().is_empty());
+    assert_eq!(r.coord.sound_memory().len(), before);
+    // At most three recordings stay.
+    for _ in 0..4 {
+        dictate(&mut r);
+    }
+    assert_eq!(r.coord.sound_memory().len(), 3);
 }
 
 // ---- Records + status ---------------------------------------------------------------
