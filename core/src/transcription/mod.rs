@@ -19,6 +19,21 @@ pub trait Transcriber: Send + Sync {
     /// Transcribe 16 kHz mono `f32` samples to text.
     fn transcribe(&self, samples: &[f32], opts: &DecodeOptions) -> Result<String>;
 
+    /// The recognizer's own output for `samples`, with each token's start
+    /// time: no Word Boost, sound anchors or clean-up yet. Express decodes
+    /// live segments this way and joins them (see [`crate::stitch`]).
+    fn decode_raw(&self, _samples: &[f32]) -> Result<RawDecode> {
+        Err(crate::error::CoreError::NotImplemented("raw decodes"))
+    }
+
+    /// The transcript of the whole recording `samples` from its joined raw
+    /// decode, finished as [`Transcriber::transcribe`] would finish one
+    /// decode of it (Word Boost and the sound anchors run here, over the
+    /// whole recording).
+    fn finish_raw(&self, _samples: &[f32], raw: RawDecode) -> Result<String> {
+        Ok(raw.text)
+    }
+
     /// How this engine decodes while the speaker is still talking.
     fn live_mode(&self) -> crate::live::LiveMode {
         crate::live::LiveMode::Off
@@ -180,6 +195,16 @@ pub fn bias_prompt_for(terms: &[String], samples: &[f32]) -> Option<String> {
         return None;
     }
     bias_prompt(terms)
+}
+
+/// A recognizer's raw output: its text and tokens, with each token's start
+/// and duration in seconds.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RawDecode {
+    pub text: String,
+    pub tokens: Vec<String>,
+    pub starts: Vec<f32>,
+    pub durations: Vec<f32>,
 }
 
 /// Deterministic transcriber for tests and the `demo` CLI on any OS.

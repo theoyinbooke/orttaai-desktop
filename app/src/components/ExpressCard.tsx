@@ -593,9 +593,6 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
           ? "Boosting 1 dictionary word."
           : `Boosting ${boosted} dictionary words.`;
 
-  // Word Boost rescoring needs the whole recording, so live segments are skipped
-  // while it has dictionary words to boost (unknown count: assume it does).
-  const liveSegmentsBlocked = usingExpress && settings.express_word_boost && boosted !== 0;
 
   const polishModel =
     settings.polish_engine === "s1_mini" ? `S1-mini on ${providerName}` : `${settings.polish_model} on ${providerName}`;
@@ -673,10 +670,10 @@ export default function ExpressCard({ onShowPolishSettings }: { onShowPolishSett
       <MDivider />
       <DetailRow
         title="Decode while I speak"
-        info="Each stretch of speech is decoded at your pauses while you're still talking, so a long dictation finishes about as fast as a short one. Off by default while it's being tested."
-        detail={liveSegmentsBlocked ? "Off while Word Boost is on: Word Boost needs the whole recording." : "Long dictations finish sooner."}
+        info="Each stretch of speech is decoded at your pauses while you're still talking, with a few seconds either side, and the stretches are joined where they agree. A long dictation then finishes about as fast as a short one. Word Boost still checks the whole recording. Off by default while it's being tested."
+        detail="Long dictations finish sooner."
       >
-        <MSwitch k="express_live_segments" title="Decode while I speak" disabled={!usingExpress || liveSegmentsBlocked} />
+        <MSwitch k="express_live_segments" title="Decode while I speak" disabled={!usingExpress} />
       </DetailRow>
       <MDivider />
       <DetailRow

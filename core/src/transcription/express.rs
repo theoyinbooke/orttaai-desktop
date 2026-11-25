@@ -893,64 +893,54 @@ impl Transcriber for ExpressTranscriber {
         let Some(result) = result? else {
             return Ok(String::new());
         };
-        let mut text = result.text.clone();
-        let mut decisions = Vec::new();
-        if let (Some(w), Some(log_probs), Some(starts)) =
-            (boost.as_ref(), log_probs, result.starts.as_ref())
-        {
-            let timings = crate::wordboost::rescore::TokenTiming::from_starts_and_durations(
-                &result.tokens,
-                starts,
-                &result.durations,
-            );
-            let mut replacements = Vec::new();
-            // A word with a sound anchor is never decided by Word Boost's
-            // spelling rules.
-            if let Some(out) = w.boost(&text, &timings, &log_probs, &|term| {
-                anchors.decides_by_sound(term)
-            }) {
-                let applied = out.proposals.iter().filter(|p| p.applied).count();
-                // Scores only: the log never holds what was said or the
-                // dictionary words themselves.
-                for p in &out.proposals {
-                    tracing::info!(
-                        "Word Boost {} a proposal [margin {:.2}, spelling {:.2}]",
-                        if p.applied { "applied" } else { "rejected" },
-                        p.margin,
-                        p.similarity
-                    );
-                }
-                tracing::info!(
-                    "Word Boost: {applied} of {} proposals applied",
-                    out.proposals.len()
-                );
-                replacements = out.replacements;
-            }
-            if !anchors.is_empty() {
-                let judged =
-                    self.judged_by_sound(&anchors, w, &text, &timings, &log_probs, &padded);
-                if !judged.decisions.is_empty() {
-                    tracing::info!(
-                        "sound anchors: {} of {} heard words written your way",
-                        judged.decisions.iter().filter(|d| d.applied).count(),
-                        judged.decisions.len()
-                    );
-                }
-                // The sound's decision wins where both touch the same words.
-                replacements.retain(|kept| {
-                    !judged
-                        .replacements
-                        .iter()
-                        .any(|sound| sound.0.start < kept.0.end && kept.0.start < sound.0.end)
-                });
-                replacements.extend(judged.replacements);
-                decisions = judged.decisions;
-            }
-            text = crate::wordboost::rescore::apply_replacements(&replacements, &text);
+        Ok(self.finish(&padded, result, &anchors, boost.as_deref(), log_probs))
+    }
+
+    fn decode_raw(&self, samples: &[f32]) -> Result<crate::transcription::RawDecode> {
+        if samples.is_empty() {
+            return Ok(Default::default());
         }
-        let text = normalize_spacing(&text);
-        self.remember_decisions(&text, decisions);
-        Ok(text)
+        let Some(r) = self.recognize(&conditioned(samples))? else {
+            return Ok(Default::default());
+        };
+        let Some(starts) = r.starts else {
+            return Err(CoreError::Transcription(
+                "Express gave no token times to join live segments by".into(),
+            ));
+        };
+        Ok(crate::transcription::RawDecode {
+            text: r.text,
+            tokens: r.tokens,
+            starts,
+            durations: r.durations,
+        })
+    }
+
+    fn finish_raw(&self, samples: &[f32], raw: crate::transcription::RawDecode) -> Result<String> {
+        let padded = conditioned(samples);
+        let anchors = self.sound_anchors.lock().unwrap().clone();
+        let boost = self
+            .word_boost
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|w| w.active() || !anchors.is_empty());
+        // The whole recording's scores: the 15 s chunks scored while it was
+        // recorded are reused, so only the last ones are scored now.
+        let log_probs = boost.as_ref().and_then(|w| match w.log_probs(&padded) {
+            Ok(lp) => Some(lp),
+            Err(e) => {
+                tracing::warn!("Word Boost skipped: {e}");
+                None
+            }
+        });
+        let result = Recognized {
+            text: raw.text,
+            tokens: raw.tokens,
+            starts: Some(raw.starts),
+            durations: raw.durations,
+        };
+        Ok(self.finish(&padded, result, &anchors, boost.as_deref(), log_probs))
     }
 
     fn set_word_boost_terms(&self, terms: &[crate::text::WordBoostTerm]) {
@@ -1141,6 +1131,75 @@ impl ExpressTranscriber {
             }
         }
         slot.clone()
+    }
+
+    /// The transcript from one recognized recording (`padded`, conditioned):
+    /// Word Boost's replacements and the sound anchors' decisions applied,
+    /// spacing tidied.
+    fn finish(
+        &self,
+        padded: &[f32],
+        result: Recognized,
+        anchors: &SoundAnchorBook,
+        boost: Option<&crate::wordboost::WordBoost>,
+        log_probs: Option<Vec<Vec<f32>>>,
+    ) -> String {
+        let mut text = result.text.clone();
+        let mut decisions = Vec::new();
+        if let (Some(w), Some(log_probs), Some(starts)) = (boost, log_probs, result.starts.as_ref())
+        {
+            let timings = crate::wordboost::rescore::TokenTiming::from_starts_and_durations(
+                &result.tokens,
+                starts,
+                &result.durations,
+            );
+            let mut replacements = Vec::new();
+            // A word with a sound anchor is never decided by Word Boost's
+            // spelling rules.
+            if let Some(out) = w.boost(&text, &timings, &log_probs, &|term| {
+                anchors.decides_by_sound(term)
+            }) {
+                let applied = out.proposals.iter().filter(|p| p.applied).count();
+                // Scores only: the log never holds what was said or the
+                // dictionary words themselves.
+                for p in &out.proposals {
+                    tracing::info!(
+                        "Word Boost {} a proposal [margin {:.2}, spelling {:.2}]",
+                        if p.applied { "applied" } else { "rejected" },
+                        p.margin,
+                        p.similarity
+                    );
+                }
+                tracing::info!(
+                    "Word Boost: {applied} of {} proposals applied",
+                    out.proposals.len()
+                );
+                replacements = out.replacements;
+            }
+            if !anchors.is_empty() {
+                let judged = self.judged_by_sound(anchors, w, &text, &timings, &log_probs, padded);
+                if !judged.decisions.is_empty() {
+                    tracing::info!(
+                        "sound anchors: {} of {} heard words written your way",
+                        judged.decisions.iter().filter(|d| d.applied).count(),
+                        judged.decisions.len()
+                    );
+                }
+                // The sound's decision wins where both touch the same words.
+                replacements.retain(|kept| {
+                    !judged
+                        .replacements
+                        .iter()
+                        .any(|sound| sound.0.start < kept.0.end && kept.0.start < sound.0.end)
+                });
+                replacements.extend(judged.replacements);
+                decisions = judged.decisions;
+            }
+            text = crate::wordboost::rescore::apply_replacements(&replacements, &text);
+        }
+        let text = normalize_spacing(&text);
+        self.remember_decisions(&text, decisions);
+        text
     }
 
     fn remember_decisions(&self, text: &str, decisions: Vec<crate::sound::Decision>) {

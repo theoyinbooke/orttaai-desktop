@@ -1855,13 +1855,10 @@ impl DictationCoordinator {
         }
         match self.transcriber.live_mode() {
             LiveMode::Clips => Some(LiveMode::Clips),
-            // While Word Boost has words to check, Express decodes the whole
-            // recording at the end so no dictionary word is missed (Mac).
-            LiveMode::Segments
-                if self.config.express_live_segments && !self.transcriber.word_boost_active() =>
-            {
-                Some(LiveMode::Segments)
-            }
+            // Word Boost runs once over the whole recording after the
+            // segments are joined, so it no longer turns segments off (the
+            // Mac ran it inside each segment and lost names at the seams).
+            LiveMode::Segments if self.config.express_live_segments => Some(LiveMode::Segments),
             _ => None,
         }
     }
@@ -1878,11 +1875,12 @@ impl DictationCoordinator {
             return;
         }
         let (_, covered) = live.committed();
-        if self.audio.captured_samples() < covered + live.min_pending() {
+        if self.audio.captured_samples() < covered.saturating_add(live.min_pending()) {
             return;
         }
-        let pending = self.audio.samples_from(covered);
-        live.start_next(&pending, &self.transcriber, &self.options);
+        let from = live.context_start();
+        let audio = self.audio.samples_from(from);
+        live.start_next(from, &audio, &self.transcriber, &self.options);
     }
 
     fn poll_word_boost(&mut self) {
@@ -1927,10 +1925,19 @@ impl DictationCoordinator {
         mut early: Option<crate::live::EarlyDecode>,
         opts: &DecodeOptions,
     ) -> Result<String> {
+        use crate::live::Early;
         if let Some(live) = live {
+            if live.mode() == crate::live::LiveMode::Segments {
+                let segments = live.finish_segments();
+                if let Some(text) = self.join_segments(samples, segments, early.take())? {
+                    return Ok(text);
+                }
+                tracing::info!("live segments didn't join; decoding the whole recording");
+                return self.transcriber.transcribe(samples, opts);
+            }
             let (mut texts, covered) = live.finish();
             // The rest was decoded at the last pause and only silence followed.
-            if let Some(text) = early
+            if let Some(Early::Text(text)) = early
                 .take()
                 .and_then(|e| e.take_if_current(covered, samples))
             {
@@ -1964,11 +1971,88 @@ impl DictationCoordinator {
                 return Ok(texts.join(" "));
             }
         }
-        if let Some(text) = early.and_then(|e| e.take_if_current(0, samples)) {
+        if let Some(Early::Text(text)) = early.and_then(|e| e.take_if_current(0, samples)) {
             tracing::info!("used the decode started at the last pause");
             return Ok(text);
         }
         self.transcriber.transcribe(samples, opts)
+    }
+
+    /// Express live segments at release: the tail after the last segment
+    /// (decoded at the last pause when only quiet followed, otherwise now,
+    /// with the segments' context before it) joined to them, then Word Boost
+    /// and the sound anchors over the whole recording. `None` when the
+    /// pieces can't be trusted and the whole recording should be decoded.
+    fn join_segments(
+        &self,
+        samples: &[f32],
+        segments: crate::live::Segments,
+        early: Option<crate::live::EarlyDecode>,
+    ) -> Result<Option<String>> {
+        use crate::live::{Early, FAINT_ENERGY_FLOOR};
+        if segments.failed || segments.covered > samples.len() {
+            return Ok(None);
+        }
+        let covered = segments.covered;
+        let tail = &samples[covered..];
+        let joined = segments.joined;
+        let decode = |start: usize| -> Option<crate::transcription::RawDecode> {
+            let offset = start as f32 / TARGET_SAMPLE_RATE as f32;
+            match self.transcriber.decode_raw(&samples[start..]) {
+                Ok(raw) => Some(crate::stitch::shifted(raw, offset)),
+                Err(e) => {
+                    tracing::warn!("the tail after the live segments didn't decode: {e}");
+                    None
+                }
+            }
+        };
+        // The tail joined to the segments, or `None` when it can't be.
+        let join =
+            |raw: crate::transcription::RawDecode| -> Option<crate::transcription::RawDecode> {
+                if raw.text.trim().is_empty() {
+                    // A faint tail (breath, room noise) may rightly decode to
+                    // nothing; real speech that didn't decode may not.
+                    return (!crate::live::has_speech(tail, crate::vad::SPEECH_ENERGY_THRESHOLD))
+                        .then(|| joined.clone());
+                }
+                if !crate::stitch::stitchable(&raw) {
+                    return None;
+                }
+                crate::stitch::stitch(&joined, &raw)
+            };
+        let early = early.and_then(|e| e.take_if_current(covered, samples));
+        let first = match early {
+            Some(Early::Raw(raw)) => {
+                tracing::info!("used the decode started at the last pause");
+                Some(raw)
+            }
+            _ if crate::live::has_speech(tail, FAINT_ENERGY_FLOOR) => {
+                decode(crate::live::window_start(0, covered))
+            }
+            _ => None,
+        };
+        let joined = match first {
+            None if !crate::live::has_speech(tail, FAINT_ENERGY_FLOOR) => joined.clone(),
+            first => match first.and_then(join) {
+                Some(j) => j,
+                // Once more, from a pause before the last cut.
+                None => {
+                    let Some(retry) = crate::live::retry_start(0, samples, covered) else {
+                        return Ok(None);
+                    };
+                    let Some(j) = decode(retry).and_then(join) else {
+                        return Ok(None);
+                    };
+                    j
+                }
+            },
+        };
+        tracing::info!(
+            "joined live segments covering {:.1}s; {:.1}s tail",
+            covered as f32 / TARGET_SAMPLE_RATE as f32,
+            tail.len() as f32 / TARGET_SAMPLE_RATE as f32
+        );
+        self.transcriber.finish_raw(samples, joined).map(Some)
     }
 
     /// At a pause after new speech, decode what the live pieces won't cover
@@ -2021,6 +2105,30 @@ impl DictationCoordinator {
         {
             return;
         }
+        let pause = crate::live::Pause {
+            end: speech_end,
+            quiet: pause.quiet,
+        };
+        if self
+            .live
+            .as_ref()
+            .is_some_and(|l| l.mode() == crate::live::LiveMode::Segments)
+        {
+            // Express segments: the tail with the segments' context before
+            // it, joined to them at release.
+            let from = base.saturating_sub(crate::live::SEGMENT_CONTEXT);
+            let audio = self.audio.samples_from(from);
+            let window_start = crate::live::window_start(from, base);
+            let window = audio[window_start - from..].to_vec();
+            self.early = crate::live::EarlyDecode::start_raw(
+                base,
+                window_start,
+                window,
+                pause,
+                &self.transcriber,
+            );
+            return;
+        }
         let audio = self.audio.samples_from(base);
         let mut opts = self.options.clone();
         // As at release: live pieces run unprompted; a whole-recording decode
@@ -2029,10 +2137,6 @@ impl DictationCoordinator {
             bias_prompt_for(&self.vocabulary, &audio)
         } else {
             None
-        };
-        let pause = crate::live::Pause {
-            end: speech_end,
-            quiet: pause.quiet,
         };
         self.early = crate::live::EarlyDecode::start(base, audio, pause, &self.transcriber, opts);
     }

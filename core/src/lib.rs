@@ -35,6 +35,7 @@ pub mod semantic;
 pub mod settings;
 pub mod sound;
 pub mod speedtest;
+pub mod stitch;
 pub mod store;
 #[cfg(feature = "link")]
 pub mod sync;
