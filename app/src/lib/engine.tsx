@@ -24,7 +24,6 @@ export type CoordinatorStatus = {
   kind: "dictation" | "edit";
   elapsed_secs: number;
   countdown: number | null;
-  estimate_secs: number | null;
   error: string | null;
   recovering: boolean;
   target_app: string | null;

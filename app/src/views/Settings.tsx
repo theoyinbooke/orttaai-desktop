@@ -35,14 +35,14 @@ export default function Settings({ info }: { info: AppInfo | null; onRunSetup: (
         {pane === "text" && <TextSettings />}
         {pane === "audio" && <AudioSettings />}
         {pane === "coach" && <CoachSettings />}
-        {pane === "general" && <General linux={info?.platform === "linux"} windows={info?.platform === "windows"} />}
+        {pane === "general" && <General windows={info?.platform === "windows"} />}
       </div>
     </div>
   );
 }
 
 /** App-level behaviour and the destructive resets (Mac GeneralSettingsView). */
-function General({ linux, windows }: { linux: boolean; windows: boolean }) {
+function General({ windows }: { windows: boolean }) {
   const { settings } = useSettings();
   const save = usePatch();
   const toast = useToast();
@@ -72,14 +72,6 @@ function General({ linux, windows }: { linux: boolean; windows: boolean }) {
           label="Start Dictation on Launch"
           hint="Loads the speech model as soon as Orttaai opens, so the shortcut works right away."
         />
-        {/* Linux hides the pill while it processes, so the estimate would never show. */}
-        {!linux && (
-          <ToggleRow
-            k="show_processing_estimate"
-            label="Show Processing Estimate"
-            hint="Shows roughly how long transcription will take in the pill while it finishes a recording."
-          />
-        )}
         {/* Windows: the tray icon is the click-to-dictate handle. */}
         {windows && (
           <Row

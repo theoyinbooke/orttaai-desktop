@@ -165,7 +165,6 @@ pub struct CoordinatorConfig {
     pub edit_with_dictation_key: bool,
     /// Dictation is in English: the instruction rules are English only.
     pub english: bool,
-    pub show_processing_estimate: bool,
     pub vocabulary_bias: bool,
     /// Decode while the speaker talks (Whisper always; Express when
     /// `express_live_segments`).
@@ -197,7 +196,6 @@ impl CoordinatorConfig {
             edit_max_chars: s.edit_max_chars,
             edit_with_dictation_key: s.edit_with_dictation_key,
             english: s.dictation_language.trim().eq_ignore_ascii_case("en"),
-            show_processing_estimate: s.show_processing_estimate,
             vocabulary_bias: s.vocabulary_bias,
             live_decoding: true,
             express_live_segments: s.express_live_segments,
@@ -305,30 +303,6 @@ pub fn start_failure_message(err: &CoreError) -> &'static str {
     }
 }
 
-/// Initial processing-time factor (× recording length) by model size; refined
-/// from measured dictations.
-fn initial_processing_factor(model_id: &str) -> f32 {
-    let l = model_id.to_ascii_lowercase();
-    let cpu = if l.contains("tiny") {
-        0.1
-    } else if l.contains("base") {
-        0.15
-    } else if l.contains("small") {
-        0.3
-    } else if l.contains("medium") {
-        0.6
-    } else if l.contains("large") {
-        0.8
-    } else {
-        0.3
-    };
-    if cfg!(feature = "cuda") {
-        cpu * 0.3
-    } else {
-        cpu
-    }
-}
-
 // ---- Status + outcome -------------------------------------------------------------
 
 /// Snapshot for the UI (`engine-status` event) — diffed by the host to drive
@@ -342,8 +316,6 @@ pub struct CoordinatorStatus {
     pub elapsed_secs: u64,
     /// Seconds left in the final 20 s of the recording window.
     pub countdown: Option<u32>,
-    /// "~Ns to process" while processing (when enabled).
-    pub estimate_secs: Option<u32>,
     /// The error pill's message.
     pub error: Option<String>,
     /// Audio capture is reconnecting mid-recording.
@@ -549,10 +521,8 @@ pub struct DictationCoordinator {
     pending: Option<Pending>,
     error: Option<(String, Duration)>,
     countdown: Option<u32>,
-    estimate_secs: Option<u32>,
     policy: AutoStopPolicy,
     last_silence_check: Duration,
-    processing_factor: f32,
 }
 
 impl DictationCoordinator {
@@ -564,8 +534,6 @@ impl DictationCoordinator {
         options: DecodeOptions,
     ) -> Self {
         let config = CoordinatorConfig::default();
-        let processing_factor =
-            initial_processing_factor(transcriber.loaded_model().unwrap_or(&config.model_id));
         let mut injection = injection;
         injection.set_config(config.injection.clone());
         Self {
@@ -599,10 +567,8 @@ impl DictationCoordinator {
             pending: None,
             error: None,
             countdown: None,
-            estimate_secs: None,
             policy: AutoStopPolicy::new(),
             last_silence_check: Duration::ZERO,
-            processing_factor,
         }
     }
 
@@ -714,9 +680,6 @@ impl DictationCoordinator {
     }
 
     pub fn replace_transcriber(&mut self, transcriber: Box<dyn Transcriber>) {
-        if let Some(id) = transcriber.loaded_model() {
-            self.processing_factor = initial_processing_factor(id);
-        }
         self.transcriber = Arc::from(transcriber);
     }
 
@@ -782,11 +745,6 @@ impl DictationCoordinator {
                 _ => 0,
             },
             countdown: if recording { self.countdown } else { None },
-            estimate_secs: if self.state == RecordingState::Processing {
-                self.estimate_secs
-            } else {
-                None
-            },
             error: self.error.as_ref().map(|(m, _)| m.clone()),
             recovering: recording && self.audio.is_recovering(),
             target_app: self.session.as_ref().and_then(|s| s.app.clone()),
@@ -1051,6 +1009,9 @@ impl DictationCoordinator {
                 if let Some(v) = self.voice.as_mut() {
                     v.reset();
                 }
+                // The paste's password-field check is slow on Electron apps
+                // the first time they're asked; ask while the speaker talks.
+                self.injection.prepare();
                 self.state = RecordingState::Recording;
                 tracing::debug!("recording started ({kind:?})");
                 // A model idle long enough to be unloaded loads while you talk.
@@ -1444,11 +1405,6 @@ impl DictationCoordinator {
             duration.as_secs_f32()
         );
         let duration_ms = duration.as_millis() as i64;
-        self.estimate_secs = self.config.show_processing_estimate.then(|| {
-            (duration.as_secs_f32() * self.processing_factor)
-                .max(1.0)
-                .round() as u32
-        });
         self.pending = Some(Pending {
             samples,
             duration_ms,
@@ -1568,11 +1524,6 @@ impl DictationCoordinator {
             );
         }
         outcome.processing_ms = started.elapsed().as_millis() as i64;
-        if outcome.transcript.is_some() && p.duration_ms > 0 {
-            let measured = outcome.processing_ms as f32 / p.duration_ms as f32;
-            self.processing_factor =
-                (0.7 * self.processing_factor + 0.3 * measured).clamp(0.05, 3.0);
-        }
         self.end_session();
         Ok(outcome)
     }
