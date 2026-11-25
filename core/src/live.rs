@@ -189,12 +189,21 @@ pub const EARLY_DECODE_PROBE: usize = 3 * SAMPLE_RATE;
 /// Where the speaker's last speech ended in `recent` (the latest audio), when
 /// they have been quiet for at least [`EARLY_DECODE_SILENCE`] since; `None`
 /// while they're talking or when there's no speech in it.
-pub fn paused_after_speech(recent: &[f32]) -> Option<usize> {
+pub fn paused_after_speech(recent: &[f32]) -> Option<Pause> {
     if !has_speech(recent, SPEECH_ENERGY_THRESHOLD) {
         return None;
     }
-    let end = last_speech_end(recent, pause_threshold(recent))?;
-    (recent.len() - end >= EARLY_DECODE_SILENCE).then_some(end)
+    let quiet = pause_threshold(recent);
+    let end = last_speech_end(recent, quiet)?;
+    (recent.len() - end >= EARLY_DECODE_SILENCE).then_some(Pause { end, quiet })
+}
+
+/// A pause after speech: where the speech ended and the level below which
+/// the audio counted as quiet (the room's noise, see [`pause_threshold`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pause {
+    pub end: usize,
+    pub quiet: f32,
 }
 
 /// A decode of the rest of the recording, started at a pause while the key is
@@ -209,7 +218,11 @@ pub struct EarlyDecode {
     /// Where the speech it saw ended, so a later pause after new speech
     /// starts a fresh one.
     speech_end: usize,
-    handle: JoinHandle<crate::error::Result<String>>,
+    /// The level the pause was judged quiet by. Audio after it at this level
+    /// is the same quiet, so the decode still stands for the recording.
+    quiet: f32,
+    stop: Arc<crate::cancel::Token>,
+    handle: Option<JoinHandle<crate::error::Result<String>>>,
 }
 
 impl EarlyDecode {
@@ -217,26 +230,32 @@ impl EarlyDecode {
     pub fn start(
         base: usize,
         audio: Vec<f32>,
-        speech_end: usize,
+        pause: Pause,
         transcriber: &Arc<dyn Transcriber>,
         options: DecodeOptions,
     ) -> Option<Self> {
         let covered = base + audio.len();
         let transcriber = Arc::clone(transcriber);
+        let stop = crate::cancel::Token::new();
+        let token = Arc::clone(&stop);
         let handle = std::thread::Builder::new()
             .name("orttaai-early-decode".into())
-            .spawn(move || transcriber.transcribe(&audio, &options))
+            .spawn(move || {
+                crate::cancel::scope(Some(token), || transcriber.transcribe(&audio, &options))
+            })
             .ok()?;
         Some(Self {
             base,
             covered,
-            speech_end,
-            handle,
+            speech_end: pause.end,
+            quiet: pause.quiet.max(FAINT_ENERGY_FLOOR),
+            stop,
+            handle: Some(handle),
         })
     }
 
     pub fn is_finished(&self) -> bool {
-        self.handle.is_finished()
+        self.handle.as_ref().is_none_or(|h| h.is_finished())
     }
 
     /// Whether it already covers speech up to `speech_end` from `base`.
@@ -244,17 +263,40 @@ impl EarlyDecode {
         self.base == base && self.speech_end >= speech_end
     }
 
+    /// Samples from the recording's start that it decodes.
+    pub fn covered(&self) -> usize {
+        self.covered
+    }
+
+    /// Whether it no longer stands for the recording: something was
+    /// committed since it started (`base` moved), or the speaker talked
+    /// again in `after`, the audio recorded after what it covers.
+    pub fn is_stale(&self, base: usize, after: &[f32]) -> bool {
+        self.base != base || has_speech(after, self.quiet)
+    }
+
     /// Its text when it still stands for the rest of `samples` (the whole
     /// recording) after `base` committed samples, waiting for it if it's
-    /// still running; `None` when the recording moved on since.
-    pub fn take_if_current(self, base: usize, samples: &[f32]) -> Option<String> {
+    /// still running; `None` when the recording moved on since (it is then
+    /// stopped, so the decode at release doesn't wait behind it).
+    pub fn take_if_current(mut self, base: usize, samples: &[f32]) -> Option<String> {
         if self.base != base || self.covered > samples.len() {
             return None;
         }
-        if has_speech(&samples[self.covered..], FAINT_ENERGY_FLOOR) {
+        if has_speech(&samples[self.covered..], self.quiet) {
             return None;
         }
-        self.handle.join().ok()?.ok()
+        self.handle.take()?.join().ok()?.ok()
+    }
+}
+
+impl Drop for EarlyDecode {
+    /// A decode nobody will use is stopped: it would keep the speech model
+    /// busy for the next one.
+    fn drop(&mut self) {
+        if self.handle.as_ref().is_some_and(|h| !h.is_finished()) {
+            self.stop.cancel();
+        }
     }
 }
 
@@ -383,6 +425,122 @@ mod tests {
 
     fn quiet(secs: f32) -> Vec<f32> {
         vec![0.0; (secs * SAMPLE_RATE as f32) as usize]
+    }
+
+    /// Decodes slowly, a step at a time, stopping when cancelled, like
+    /// Express's model calls.
+    struct SlowTranscriber {
+        stopped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Transcriber for SlowTranscriber {
+        fn load_model(&mut self, _: &str) -> crate::error::Result<()> {
+            Ok(())
+        }
+        fn loaded_model(&self) -> Option<&str> {
+            Some("slow")
+        }
+        fn transcribe(&self, _: &[f32], _: &DecodeOptions) -> crate::error::Result<String> {
+            for _ in 0..100 {
+                if crate::cancel::cancelled() {
+                    self.stopped
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    return Err(crate::cancel::error());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok("slow".into())
+        }
+    }
+
+    /// Low noise (a fan, a room) at `rms`.
+    fn noise(secs: f32, rms: f32) -> Vec<f32> {
+        let n = (secs * SAMPLE_RATE as f32) as usize;
+        let amp = rms * std::f32::consts::SQRT_2;
+        (0..n).map(|i| amp * (i as f32 * 1.3).sin()).collect()
+    }
+
+    #[test]
+    fn a_pause_in_room_noise_is_still_a_pause_at_release() {
+        // Speech, then the room's noise: the pause is judged by that noise,
+        // so more of the same noise after the decode doesn't make it stale.
+        let mut recording = noise(1.0, 0.007);
+        recording.extend(tone(1.5, 0.2));
+        recording.extend(noise(0.7, 0.007));
+        let pause = paused_after_speech(&recording).expect("a pause after speech");
+        assert!(
+            pause.quiet > 0.007,
+            "quiet level {} is above the noise",
+            pause.quiet
+        );
+        let t: Arc<dyn Transcriber> = Arc::new(MockTranscriber::new("hello"));
+        let early =
+            EarlyDecode::start(0, recording.clone(), pause, &t, DecodeOptions::default()).unwrap();
+        recording.extend(noise(0.6, 0.007));
+        assert_eq!(
+            early.take_if_current(0, &recording).as_deref(),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn speech_after_the_pause_makes_it_stale() {
+        let mut recording = tone(1.5, 0.2);
+        recording.extend(quiet(0.7));
+        let pause = paused_after_speech(&recording).unwrap();
+        let t: Arc<dyn Transcriber> = Arc::new(MockTranscriber::new("hello"));
+        let early =
+            EarlyDecode::start(0, recording.clone(), pause, &t, DecodeOptions::default()).unwrap();
+        let covered = early.covered();
+        recording.extend(tone(0.5, 0.2));
+        assert!(early.is_stale(0, &recording[covered..]));
+        assert!(
+            early.is_stale(16_000, &[]),
+            "a committed piece moved the base"
+        );
+        assert_eq!(early.take_if_current(0, &recording), None);
+    }
+
+    #[test]
+    fn a_stale_decode_is_stopped_not_waited_for() {
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let t: Arc<dyn Transcriber> = Arc::new(SlowTranscriber {
+            stopped: stopped.clone(),
+        });
+        let mut recording = tone(1.5, 0.2);
+        recording.extend(quiet(0.7));
+        let pause = paused_after_speech(&recording).unwrap();
+        let early =
+            EarlyDecode::start(0, recording.clone(), pause, &t, DecodeOptions::default()).unwrap();
+        recording.extend(tone(0.5, 0.2));
+        let started = std::time::Instant::now();
+        assert_eq!(early.take_if_current(0, &recording), None);
+        while !stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(2),
+                "the stale decode kept running"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_current_decode_is_waited_for_not_stopped() {
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let t: Arc<dyn Transcriber> = Arc::new(SlowTranscriber {
+            stopped: stopped.clone(),
+        });
+        let mut recording = tone(1.5, 0.2);
+        recording.extend(quiet(0.7));
+        let pause = paused_after_speech(&recording).unwrap();
+        let early =
+            EarlyDecode::start(0, recording.clone(), pause, &t, DecodeOptions::default()).unwrap();
+        recording.extend(quiet(0.3));
+        assert_eq!(
+            early.take_if_current(0, &recording).as_deref(),
+            Some("slow")
+        );
+        assert!(!stopped.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

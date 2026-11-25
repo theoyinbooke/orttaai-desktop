@@ -282,6 +282,9 @@ impl FluidModel {
 
     fn transcribe_pass(&self, wav: &[f32], offset: f32) -> Result<Decoded> {
         let (feats, mask, frames) = self.log_mel(wav);
+        if crate::cancel::cancelled() {
+            return Err(crate::cancel::error());
+        }
         let (enc, enc_frames, valid) = self.encode(&feats, &mask, frames)?;
         drop(feats);
         let steps = self.greedy_tdt(&enc, enc_frames, valid)?;
@@ -615,5 +618,41 @@ mod tests {
                 .last()
                 .is_some_and(|&s| s <= samples.len() as f32 / 16_000.0));
         }
+    }
+
+    /// A cancelled decode stops inside the encoder's run (ONNX Runtime's
+    /// terminate flag) instead of finishing it. Needs the model:
+    /// `ORTTAAI_FLUID_DIR=<fluid-speech-mini-onnx> cargo test -p orttaai-core
+    /// --features express -- --ignored fluid_stops`
+    #[test]
+    #[ignore]
+    fn fluid_stops_when_cancelled() {
+        let dir = std::env::var("ORTTAAI_FLUID_DIR").expect("ORTTAAI_FLUID_DIR");
+        let model = FluidModel::load(Path::new(&dir), 4).unwrap();
+        // 25 s of a voice-like tone: one pass, a long encoder run. Run it
+        // with --release: unoptimized, the features alone take a second.
+        let audio: Vec<f32> = (0..16_000 * 25)
+            .map(|i| 0.1 * (i as f32 * 0.03).sin() * (1.0 + (i as f32 * 0.0007).sin()))
+            .collect();
+        model.transcribe(&audio).unwrap();
+        let started = std::time::Instant::now();
+        model.transcribe(&audio).unwrap();
+        let whole = started.elapsed();
+        let token = crate::cancel::Token::new();
+        let stopper = {
+            let token = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(whole / 4);
+                token.cancel();
+                std::time::Instant::now()
+            })
+        };
+        let out = crate::cancel::scope(Some(token), || model.transcribe(&audio));
+        let returned = std::time::Instant::now();
+        let cancelled_at = stopper.join().unwrap();
+        let after = returned.saturating_duration_since(cancelled_at);
+        eprintln!("whole decode {whole:?}; returned {after:?} after the cancel");
+        assert!(out.is_err());
+        assert!(after < whole / 4, "{after:?} of {whole:?}");
     }
 }

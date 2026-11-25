@@ -10,6 +10,7 @@
 pub mod analytics;
 pub mod apps;
 pub mod audio;
+pub mod cancel;
 pub mod chat;
 pub mod clipboard;
 pub mod coach;

@@ -1337,8 +1337,9 @@ impl DictationCoordinator {
         self.early = None;
         if let Some(handle) = self.preparing.take() {
             let _ = handle.join();
-            self.transcriber.discard_prepared_word_boost();
         }
+        // Word Boost keeps a dictation's scores until it ends.
+        self.transcriber.discard_prepared_word_boost();
         self.countdown = None;
         self.mode = RecordingMode::PushToTalk;
         self.kind = SessionKind::Dictation;
@@ -1891,6 +1892,12 @@ impl DictationCoordinator {
         if self.preparing.as_ref().is_some_and(|h| !h.is_finished()) {
             return;
         }
+        // A decode started at a pause scores the same chunks with Word Boost
+        // and keeps them; scoring them here as well would only compete with it
+        // for the cores.
+        if self.early.as_ref().is_some_and(|e| !e.is_finished()) {
+            return;
+        }
         self.preparing = None;
         // A new chunk is complete every 13 s after the first 15 s.
         let captured = self.audio.captured_samples();
@@ -1973,6 +1980,16 @@ impl DictationCoordinator {
         if self.kind != SessionKind::Dictation {
             return;
         }
+        // A decode the speaker has talked past is stopped now rather than at
+        // release: it would hold the speech model, and its result can't be
+        // used.
+        let committed = self.live.as_ref().map_or(0, |l| l.committed().1);
+        if let Some(e) = &self.early {
+            if e.is_stale(committed, &self.audio.samples_from(e.covered())) {
+                tracing::debug!("stopped a decode started at an earlier pause");
+                self.early = None;
+            }
+        }
         if self.early.as_ref().is_some_and(|e| !e.is_finished()) {
             return;
         }
@@ -1993,10 +2010,10 @@ impl DictationCoordinator {
             .saturating_sub(crate::live::EARLY_DECODE_PROBE)
             .max(base);
         let recent = self.audio.samples_from(probe_start);
-        let Some(end) = crate::live::paused_after_speech(&recent) else {
+        let Some(pause) = crate::live::paused_after_speech(&recent) else {
             return;
         };
-        let speech_end = probe_start + end;
+        let speech_end = probe_start + pause.end;
         if self
             .early
             .as_ref()
@@ -2013,8 +2030,11 @@ impl DictationCoordinator {
         } else {
             None
         };
-        self.early =
-            crate::live::EarlyDecode::start(base, audio, speech_end, &self.transcriber, opts);
+        let pause = crate::live::Pause {
+            end: speech_end,
+            quiet: pause.quiet,
+        };
+        self.early = crate::live::EarlyDecode::start(base, audio, pause, &self.transcriber, opts);
     }
 
     /// Type `text` into the window the session started in. If focus moved while

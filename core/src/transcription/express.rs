@@ -726,6 +726,11 @@ impl Recognizer {
                 }))
             }
             Self::Sherpa(recognizer) => {
+                // sherpa-onnx can't be stopped mid-decode; a stopped one is
+                // at least not started.
+                if crate::cancel::cancelled() {
+                    return Err(crate::cancel::error());
+                }
                 let stream = recognizer.create_stream();
                 stream.accept_waveform(TARGET_SAMPLE_RATE as i32, samples);
                 recognizer.decode(&stream);
@@ -855,7 +860,9 @@ impl Transcriber for ExpressTranscriber {
         let (result, log_probs) = std::thread::scope(|scope| {
             let scorer = boost.as_ref().map(|w| {
                 let audio = &padded;
-                scope.spawn(move || w.log_probs(audio))
+                // A decode that's stopped stops its scorer too.
+                let token = crate::cancel::current();
+                scope.spawn(move || crate::cancel::scope(token, || w.log_probs(audio)))
             });
             let result = self.recognize(&padded);
             let log_probs = scorer.and_then(|h| match h.join() {
@@ -868,10 +875,10 @@ impl Transcriber for ExpressTranscriber {
             });
             (result, log_probs)
         });
-        // A finished recording's scores are used once.
-        if let Some(w) = boost.as_ref() {
-            w.clear();
-        }
+        // Word Boost's scores stay until the dictation ends (the coordinator
+        // discards them then): a decode started at a pause scores the same
+        // 15 s chunks the decode at release needs, so those aren't scored
+        // twice.
         let Some(result) = result? else {
             return Ok(String::new());
         };

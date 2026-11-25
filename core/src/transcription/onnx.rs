@@ -42,6 +42,68 @@ fn check(api: &ort::OrtApi, status: ort::OrtStatusPtr) -> Result<()> {
     )))
 }
 
+/// Run options that end a run early when this thread's decode is cancelled
+/// (see [`crate::cancel`]); null options when the decode can't be cancelled.
+pub(crate) struct StopOnCancel {
+    api: &'static ort::OrtApi,
+    options: *mut ort::OrtRunOptions,
+    hook: Option<crate::cancel::HookGuard>,
+}
+
+impl StopOnCancel {
+    /// `Err` when the decode was already cancelled: the run is skipped.
+    pub(crate) fn new(api: &'static ort::OrtApi) -> Result<Self> {
+        if crate::cancel::cancelled() {
+            return Err(crate::cancel::error());
+        }
+        let mut stop = Self {
+            api,
+            options: ptr::null_mut(),
+            hook: None,
+        };
+        if crate::cancel::current().is_none() {
+            return Ok(stop);
+        }
+        // SAFETY: an out-pointer for a new OrtRunOptions, released in Drop.
+        check(api, unsafe { (api.CreateRunOptions)(&mut stop.options) })?;
+        let address = stop.options as usize;
+        stop.hook = Some(crate::cancel::on_cancel(move || {
+            // SAFETY: the options live until Drop, which removes this hook
+            // first (under the lock `cancel` calls hooks with).
+            unsafe {
+                let status = (api.RunOptionsSetTerminate)(address as *mut ort::OrtRunOptions);
+                if !status.0.is_null() {
+                    (api.ReleaseStatus)(status.0);
+                }
+            }
+        }));
+        Ok(stop)
+    }
+
+    pub(crate) fn as_ptr(&self) -> *const ort::OrtRunOptions {
+        self.options
+    }
+
+    /// A failed run's error, or the cancel error when the run was stopped.
+    pub(crate) fn explain(&self, error: CoreError) -> CoreError {
+        if crate::cancel::cancelled() {
+            crate::cancel::error()
+        } else {
+            error
+        }
+    }
+}
+
+impl Drop for StopOnCancel {
+    fn drop(&mut self) {
+        self.hook = None;
+        if !self.options.is_null() {
+            // SAFETY: created in `new` and released once; its hook is gone.
+            unsafe { (self.api.ReleaseRunOptions)(self.options) };
+        }
+    }
+}
+
 /// How a session runs.
 #[derive(Debug, Clone, Copy)]
 pub struct SessionConfig {
@@ -193,11 +255,12 @@ impl Session {
                         ),
                     )?;
                 }
+                let stop = StopOnCancel::new(api)?;
                 check(
                     api,
                     (api.Run)(
                         self.session,
-                        ptr::null(),
+                        stop.as_ptr(),
                         names_in.as_ptr(),
                         values.as_ptr() as *const *const ort::OrtValue,
                         values.len(),
@@ -205,7 +268,8 @@ impl Session {
                         names_out.len(),
                         results.as_mut_ptr(),
                     ),
-                )?;
+                )
+                .map_err(|e| stop.explain(e))?;
                 results.iter().map(|&value| read_f32(api, value)).collect()
             })();
             for v in values.iter().chain(results.iter()) {
