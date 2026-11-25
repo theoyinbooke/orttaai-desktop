@@ -48,6 +48,29 @@ pub const MAX_DETAIL_LENGTH: usize = 140;
 /// at most three highlights, the ones people will notice, in plain words.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.8.0",
+        items: &[
+            Item {
+                id: "0.8-live-segments-word-boost",
+                title: "Long dictations finish sooner",
+                detail: "Decode while I speak now works with Word Boost: your words are decoded at each pause, so only the last few seconds are left.",
+                art: Art::Symbol("bolt"),
+            },
+            Item {
+                id: "0.8-intel-speed",
+                title: "Quicker on Intel laptops",
+                detail: "Dictation no longer waits behind an outdated decode, and the speed test now checks Word Boost and faster integer maths too.",
+                art: Art::Symbol("speedometer"),
+            },
+            Item {
+                id: "0.8-sound-anchors",
+                title: "Fixes learn how words sound",
+                detail: "Correct a name once and Orttaai learns its sound: say the name and you get it, say the everyday word and it stays.",
+                art: Art::Symbol("mic"),
+            },
+        ],
+    },
+    Release {
         version: "0.7.1",
         items: &[
             Item {
