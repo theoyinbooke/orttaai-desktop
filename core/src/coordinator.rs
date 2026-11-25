@@ -385,6 +385,10 @@ pub struct DictationOutcome {
     pub lost_audio: bool,
     /// The error pill message for this session, if any.
     pub error: Option<String>,
+    /// The dictation's sound is kept in memory for a few minutes under this
+    /// id, so a fix by hand can teach how a word sounds
+    /// ([`crate::sound::SoundMemory`]).
+    pub recording_id: Option<u64>,
 }
 
 impl DictationOutcome {
@@ -412,6 +416,7 @@ impl DictationOutcome {
             snippet_hits: Vec::new(),
             lost_audio: false,
             error: None,
+            recording_id: None,
         }
     }
 
@@ -514,6 +519,8 @@ pub struct DictationCoordinator {
     rewriter: Option<Box<dyn EditRewriter>>,
     selector: Arc<dyn FieldSelector>,
     last_insertion: Option<LastInsertion>,
+    /// The last few dictations' sound, for learning how a fixed word sounds.
+    sound_memory: Arc<crate::sound::SoundMemory>,
     voice: Option<Box<dyn VoiceDetector>>,
     clock: Arc<dyn Clock>,
     focused_app: FocusedAppProvider,
@@ -569,6 +576,7 @@ impl DictationCoordinator {
             rewriter: None,
             selector: Arc::new(SystemFieldSelector),
             last_insertion: None,
+            sound_memory: Arc::new(crate::sound::SoundMemory::new()),
             voice: None,
             clock: Arc::new(SystemClock::new()),
             focused_app: Box::new(crate::focus::focused_app),
@@ -665,6 +673,18 @@ impl DictationCoordinator {
     /// Word Boost's dictionary words (Express).
     pub fn set_word_boost_terms(&mut self, terms: &[crate::text::WordBoostTerm]) {
         self.transcriber.set_word_boost_terms(terms);
+    }
+
+    /// Sound anchors (Express): what fixes taught about how the dictionary's
+    /// words sound, with the starting guesses.
+    pub fn set_sound_anchors(&mut self, book: Arc<crate::sound::SoundAnchorBook>) {
+        self.transcriber.set_sound_anchors(book);
+    }
+
+    /// The sound of the last few dictations, kept in memory for learning
+    /// from fixes. Shared with whoever watches the dictation afterwards.
+    pub fn sound_memory(&self) -> Arc<crate::sound::SoundMemory> {
+        Arc::clone(&self.sound_memory)
     }
 
     /// Use this pipeline from the next dictation, and warm its models (at
@@ -1003,11 +1023,6 @@ impl DictationCoordinator {
         }
         self.mode = RecordingMode::PushToTalk;
         self.kind = kind;
-        if kind == SessionKind::Dictation {
-            // A new dictation: the edit key must never reach past it to an
-            // older one, even if this one doesn't get typed.
-            self.last_insertion = None;
-        }
         // Capture the target app NOW, before any overlay appears.
         let app = (self.focused_app)();
         let window = self.windows.current();
@@ -1165,7 +1180,9 @@ impl DictationCoordinator {
                     }
                 }
             }
-            _ => {}
+            // Sound kept for learning from fixes goes after ten minutes.
+            RecordingState::Idle => self.sound_memory.purge(),
+            RecordingState::Processing => {}
         }
     }
 
@@ -1291,6 +1308,23 @@ impl DictationCoordinator {
         if self.state == RecordingState::Recording {
             let _ = self.audio.stop();
         }
+        // An edit of the last dictation selected it: put the caret back, or
+        // the next key typed replaces it.
+        let selected = self
+            .session
+            .as_ref()
+            .map(|s| (s.selection_source, s.selection.clone()))
+            .into_iter()
+            .chain(
+                self.pending
+                    .as_ref()
+                    .map(|p| (p.selection_source, p.selection.clone())),
+            );
+        for (source, selection) in selected {
+            if let (SelectionSource::LastInsertion, Some(text)) = (source, selection) {
+                self.selector.deselect(&text);
+            }
+        }
         self.pending = None;
         self.end_session();
         self.error = None;
@@ -1303,8 +1337,9 @@ impl DictationCoordinator {
         self.early = None;
         if let Some(handle) = self.preparing.take() {
             let _ = handle.join();
-            self.transcriber.discard_prepared_word_boost();
         }
+        // Word Boost keeps a dictation's scores until it ends.
+        self.transcriber.discard_prepared_word_boost();
         self.countdown = None;
         self.mode = RecordingMode::PushToTalk;
         self.kind = SessionKind::Dictation;
@@ -1326,6 +1361,20 @@ impl DictationCoordinator {
     /// End the recording and queue it for [`finish_pending`](Self::finish_pending).
     pub fn stop_recording(&mut self, reason: StopReason) {
         if self.state != RecordingState::Recording {
+            return;
+        }
+        // An edit stopped while its shortcut is still held down (the cap, the
+        // stop button) has no selection yet, and reading one now would press
+        // Ctrl+C under the held keys: with Shift down that is Ctrl+Shift+C,
+        // another command in most apps. Nothing is read and nothing edited.
+        if self.kind == SessionKind::Edit
+            && self.mode == RecordingMode::PushToTalk
+            && reason != StopReason::HoldRelease
+            && self.edit_gesture.is_pressed()
+            && self.session.as_ref().is_some_and(|s| s.selection.is_none())
+        {
+            tracing::info!("edit stopped ({reason:?}) with its shortcut still held");
+            self.abort_session("Edit instruction too long. Try again.");
             return;
         }
         // An edit stopped before its key was released (stop button, cap,
@@ -1471,6 +1520,28 @@ impl DictationCoordinator {
         out.transcription_ms = t0.elapsed().as_millis() as i64;
         let cleaned = strip_nonspeech_markers(raw.trim());
         out.raw_text = (!cleaned.is_empty()).then(|| cleaned.clone());
+        if p.kind == SessionKind::Dictation && !cleaned.is_empty() {
+            // A new dictation: the edit key must never reach past it to an
+            // older one, even if this one doesn't get typed. A recording
+            // that held no words (the key brushed by accident) changes
+            // nothing: the dictation before it is still the last one.
+            self.last_insertion = None;
+        }
+        // An instruction that lost part of its audio may say something else
+        // than was meant ("make this shorter [and keep the names]"): nothing
+        // is edited on half an instruction.
+        if p.kind == SessionKind::Edit && p.lost_audio {
+            if p.selection_source == SelectionSource::LastInsertion {
+                if let Some(text) = p.selection.as_deref() {
+                    self.selector.deselect(text);
+                }
+            }
+            out.edit_instruction = (!cleaned.is_empty()).then(|| cleaned.clone());
+            self.fail(&mut out, "Some audio was lost. Say the edit again.");
+            out.processing_ms = started.elapsed().as_millis() as i64;
+            self.end_session();
+            return Ok(out);
+        }
 
         let outcome = match p.kind {
             SessionKind::Edit => {
@@ -1483,6 +1554,19 @@ impl DictationCoordinator {
             },
         };
         let mut outcome = outcome;
+        // A typed dictation's sound is kept for a while, in memory only, so
+        // that fixing a word by hand can teach how it sounds.
+        if outcome.kind == SessionKind::Dictation
+            && outcome.result == InjectionResult::Success
+            && !outcome.practice
+            && self.transcriber.sound_ready()
+        {
+            outcome.recording_id = self.sound_memory.keep(
+                p.samples,
+                self.transcriber.sound_decisions(&raw),
+                Arc::clone(&self.transcriber),
+            );
+        }
         outcome.processing_ms = started.elapsed().as_millis() as i64;
         if outcome.transcript.is_some() && p.duration_ms > 0 {
             let measured = outcome.processing_ms as f32 / p.duration_ms as f32;
@@ -1697,13 +1781,16 @@ impl DictationCoordinator {
                 if unavailable && quiet_when_unavailable {
                     return (out, EditStatus::ModelUnavailable);
                 }
+                // The rewriter's own words (Mac: the reason, as it is).
                 let reason = match e {
-                    CoreError::Llm(m) | CoreError::Transcription(m) => m,
+                    CoreError::Llm(m)
+                    | CoreError::LlmUnavailable(m)
+                    | CoreError::Transcription(m) => m,
                     other => other.to_string(),
                 };
                 tracing::warn!("edit failed: {reason}");
                 release(self);
-                self.fail(&mut out, &format!("Couldn't edit: {reason}"));
+                self.fail(&mut out, &reason);
                 return (out, EditStatus::NotApplied);
             }
         };
@@ -1727,7 +1814,11 @@ impl DictationCoordinator {
             self.fail(&mut out, "The selection changed, so nothing was replaced");
             return (out, EditStatus::NotApplied);
         }
-        let delivery = self.deliver_to_target(&edited, out.app.as_deref());
+        // What replaces the selection keeps the space or line break the
+        // selection took along, so the words after it aren't joined on.
+        let pasted = crate::edit::keeping_surrounding_space(&selected, &edited);
+        let edited = edited.trim().to_string();
+        let delivery = self.deliver_to_target(&pasted, out.app.as_deref());
         out.injection_ms = delivery.ms;
         out.injection_method = Some(delivery.method);
         out.result = delivery.result;
@@ -1764,13 +1855,10 @@ impl DictationCoordinator {
         }
         match self.transcriber.live_mode() {
             LiveMode::Clips => Some(LiveMode::Clips),
-            // While Word Boost has words to check, Express decodes the whole
-            // recording at the end so no dictionary word is missed (Mac).
-            LiveMode::Segments
-                if self.config.express_live_segments && !self.transcriber.word_boost_active() =>
-            {
-                Some(LiveMode::Segments)
-            }
+            // Word Boost runs once over the whole recording after the
+            // segments are joined, so it no longer turns segments off (the
+            // Mac ran it inside each segment and lost names at the seams).
+            LiveMode::Segments if self.config.express_live_segments => Some(LiveMode::Segments),
             _ => None,
         }
     }
@@ -1787,11 +1875,12 @@ impl DictationCoordinator {
             return;
         }
         let (_, covered) = live.committed();
-        if self.audio.captured_samples() < covered + live.min_pending() {
+        if self.audio.captured_samples() < covered.saturating_add(live.min_pending()) {
             return;
         }
-        let pending = self.audio.samples_from(covered);
-        live.start_next(&pending, &self.transcriber, &self.options);
+        let from = live.context_start();
+        let audio = self.audio.samples_from(from);
+        live.start_next(from, &audio, &self.transcriber, &self.options);
     }
 
     fn poll_word_boost(&mut self) {
@@ -1799,6 +1888,12 @@ impl DictationCoordinator {
             return;
         }
         if self.preparing.as_ref().is_some_and(|h| !h.is_finished()) {
+            return;
+        }
+        // A decode started at a pause scores the same chunks with Word Boost
+        // and keeps them; scoring them here as well would only compete with it
+        // for the cores.
+        if self.early.as_ref().is_some_and(|e| !e.is_finished()) {
             return;
         }
         self.preparing = None;
@@ -1830,10 +1925,19 @@ impl DictationCoordinator {
         mut early: Option<crate::live::EarlyDecode>,
         opts: &DecodeOptions,
     ) -> Result<String> {
+        use crate::live::Early;
         if let Some(live) = live {
+            if live.mode() == crate::live::LiveMode::Segments {
+                let segments = live.finish_segments();
+                if let Some(text) = self.join_segments(samples, segments, early.take())? {
+                    return Ok(text);
+                }
+                tracing::info!("live segments didn't join; decoding the whole recording");
+                return self.transcriber.transcribe(samples, opts);
+            }
             let (mut texts, covered) = live.finish();
             // The rest was decoded at the last pause and only silence followed.
-            if let Some(text) = early
+            if let Some(Early::Text(text)) = early
                 .take()
                 .and_then(|e| e.take_if_current(covered, samples))
             {
@@ -1867,11 +1971,88 @@ impl DictationCoordinator {
                 return Ok(texts.join(" "));
             }
         }
-        if let Some(text) = early.and_then(|e| e.take_if_current(0, samples)) {
+        if let Some(Early::Text(text)) = early.and_then(|e| e.take_if_current(0, samples)) {
             tracing::info!("used the decode started at the last pause");
             return Ok(text);
         }
         self.transcriber.transcribe(samples, opts)
+    }
+
+    /// Express live segments at release: the tail after the last segment
+    /// (decoded at the last pause when only quiet followed, otherwise now,
+    /// with the segments' context before it) joined to them, then Word Boost
+    /// and the sound anchors over the whole recording. `None` when the
+    /// pieces can't be trusted and the whole recording should be decoded.
+    fn join_segments(
+        &self,
+        samples: &[f32],
+        segments: crate::live::Segments,
+        early: Option<crate::live::EarlyDecode>,
+    ) -> Result<Option<String>> {
+        use crate::live::{Early, FAINT_ENERGY_FLOOR};
+        if segments.failed || segments.covered > samples.len() {
+            return Ok(None);
+        }
+        let covered = segments.covered;
+        let tail = &samples[covered..];
+        let joined = segments.joined;
+        let decode = |start: usize| -> Option<crate::transcription::RawDecode> {
+            let offset = start as f32 / TARGET_SAMPLE_RATE as f32;
+            match self.transcriber.decode_raw(&samples[start..]) {
+                Ok(raw) => Some(crate::stitch::shifted(raw, offset)),
+                Err(e) => {
+                    tracing::warn!("the tail after the live segments didn't decode: {e}");
+                    None
+                }
+            }
+        };
+        // The tail joined to the segments, or `None` when it can't be.
+        let join =
+            |raw: crate::transcription::RawDecode| -> Option<crate::transcription::RawDecode> {
+                if raw.text.trim().is_empty() {
+                    // A faint tail (breath, room noise) may rightly decode to
+                    // nothing; real speech that didn't decode may not.
+                    return (!crate::live::has_speech(tail, crate::vad::SPEECH_ENERGY_THRESHOLD))
+                        .then(|| joined.clone());
+                }
+                if !crate::stitch::stitchable(&raw) {
+                    return None;
+                }
+                crate::stitch::stitch(&joined, &raw)
+            };
+        let early = early.and_then(|e| e.take_if_current(covered, samples));
+        let first = match early {
+            Some(Early::Raw(raw)) => {
+                tracing::info!("used the decode started at the last pause");
+                Some(raw)
+            }
+            _ if crate::live::has_speech(tail, FAINT_ENERGY_FLOOR) => {
+                decode(crate::live::window_start(0, covered))
+            }
+            _ => None,
+        };
+        let joined = match first {
+            None if !crate::live::has_speech(tail, FAINT_ENERGY_FLOOR) => joined.clone(),
+            first => match first.and_then(join) {
+                Some(j) => j,
+                // Once more, from a pause before the last cut.
+                None => {
+                    let Some(retry) = crate::live::retry_start(0, samples, covered) else {
+                        return Ok(None);
+                    };
+                    let Some(j) = decode(retry).and_then(join) else {
+                        return Ok(None);
+                    };
+                    j
+                }
+            },
+        };
+        tracing::info!(
+            "joined live segments covering {:.1}s; {:.1}s tail",
+            covered as f32 / TARGET_SAMPLE_RATE as f32,
+            tail.len() as f32 / TARGET_SAMPLE_RATE as f32
+        );
+        self.transcriber.finish_raw(samples, joined).map(Some)
     }
 
     /// At a pause after new speech, decode what the live pieces won't cover
@@ -1882,6 +2063,16 @@ impl DictationCoordinator {
     fn poll_early_decode(&mut self) {
         if self.kind != SessionKind::Dictation {
             return;
+        }
+        // A decode the speaker has talked past is stopped now rather than at
+        // release: it would hold the speech model, and its result can't be
+        // used.
+        let committed = self.live.as_ref().map_or(0, |l| l.committed().1);
+        if let Some(e) = &self.early {
+            if e.is_stale(committed, &self.audio.samples_from(e.covered())) {
+                tracing::debug!("stopped a decode started at an earlier pause");
+                self.early = None;
+            }
         }
         if self.early.as_ref().is_some_and(|e| !e.is_finished()) {
             return;
@@ -1903,15 +2094,39 @@ impl DictationCoordinator {
             .saturating_sub(crate::live::EARLY_DECODE_PROBE)
             .max(base);
         let recent = self.audio.samples_from(probe_start);
-        let Some(end) = crate::live::paused_after_speech(&recent) else {
+        let Some(pause) = crate::live::paused_after_speech(&recent) else {
             return;
         };
-        let speech_end = probe_start + end;
+        let speech_end = probe_start + pause.end;
         if self
             .early
             .as_ref()
             .is_some_and(|e| e.covers(base, speech_end))
         {
+            return;
+        }
+        let pause = crate::live::Pause {
+            end: speech_end,
+            quiet: pause.quiet,
+        };
+        if self
+            .live
+            .as_ref()
+            .is_some_and(|l| l.mode() == crate::live::LiveMode::Segments)
+        {
+            // Express segments: the tail with the segments' context before
+            // it, joined to them at release.
+            let from = base.saturating_sub(crate::live::SEGMENT_CONTEXT);
+            let audio = self.audio.samples_from(from);
+            let window_start = crate::live::window_start(from, base);
+            let window = audio[window_start - from..].to_vec();
+            self.early = crate::live::EarlyDecode::start_raw(
+                base,
+                window_start,
+                window,
+                pause,
+                &self.transcriber,
+            );
             return;
         }
         let audio = self.audio.samples_from(base);
@@ -1923,8 +2138,7 @@ impl DictationCoordinator {
         } else {
             None
         };
-        self.early =
-            crate::live::EarlyDecode::start(base, audio, speech_end, &self.transcriber, opts);
+        self.early = crate::live::EarlyDecode::start(base, audio, pause, &self.transcriber, opts);
     }
 
     /// Type `text` into the window the session started in. If focus moved while

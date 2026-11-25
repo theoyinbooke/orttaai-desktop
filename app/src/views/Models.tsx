@@ -607,6 +607,13 @@ function SpeechSection({ onShowPolishSettings }: { onShowPolishSettings: () => v
           format={(v) => (v === 0 ? "Auto" : String(v))}
           onChange={(v) => save({ decode: { n_threads: v } })}
         />
+        {hw?.performance_cores != null && settings.decode.n_threads > hw.performance_cores && (
+          <MFootnote>
+            This computer has {hw.performance_cores} fast cores. More threads than that usually make
+            dictation slower: they wait on slower cores. Auto uses {hw.auto_threads}, or run the speed
+            test below.
+          </MFootnote>
+        )}
         <MDivider />
         <SpeedTestRow />
         <MDivider />

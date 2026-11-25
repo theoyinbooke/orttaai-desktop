@@ -22,6 +22,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use super::fluid;
+use crate::sound::{contrast, judge, slow_listen, LearnedSound, SoundAnchorBook, SoundWord};
+use crate::wordboost::ctc::FRAME_SECONDS;
 
 const RELEASE_BASE: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models";
 
@@ -724,6 +726,11 @@ impl Recognizer {
                 }))
             }
             Self::Sherpa(recognizer) => {
+                // sherpa-onnx can't be stopped mid-decode; a stopped one is
+                // at least not started.
+                if crate::cancel::cancelled() {
+                    return Err(crate::cancel::error());
+                }
                 let stream = recognizer.create_stream();
                 stream.accept_waveform(TARGET_SAMPLE_RATE as i32, samples);
                 recognizer.decode(&stream);
@@ -743,8 +750,15 @@ pub struct ExpressTranscriber {
     recognizer: Mutex<Option<Recognizer>>,
     model: Option<String>,
     threads: i32,
+    /// Fluid Speech Mini with integer maths (see [`super::int8_math`]).
+    int8_math: bool,
     /// Word Boost, loaded when its model is on disk and there are words to boost.
     word_boost: Mutex<Option<std::sync::Arc<crate::wordboost::WordBoost>>>,
+    /// What your fixes taught about how your words sound, and the starting
+    /// guesses (the sound is scored by Word Boost's model).
+    sound_anchors: Mutex<std::sync::Arc<SoundAnchorBook>>,
+    /// The last few decodes' sound decisions, by the text each returned.
+    sound_log: Mutex<std::collections::VecDeque<(String, Vec<crate::sound::Decision>)>>,
 }
 
 // SAFETY: the sherpa-onnx recognizer is only touched behind the Mutex, one
@@ -758,7 +772,10 @@ impl ExpressTranscriber {
             recognizer: Mutex::new(None),
             model: None,
             threads: default_threads(),
+            int8_math: false,
             word_boost: Mutex::new(None),
+            sound_anchors: Mutex::new(Default::default()),
+            sound_log: Mutex::new(Default::default()),
         }
     }
 
@@ -766,10 +783,17 @@ impl ExpressTranscriber {
     /// transducer's (Fluid Speech Pro's or Parakeet's encoder, decoder, joiner
     /// and tokens).
     pub fn from_dir(dir: &Path, threads: i32) -> Result<Self> {
+        Self::from_dir_with(dir, threads, false)
+    }
+
+    /// [`ExpressTranscriber::from_dir`], with Fluid Speech Mini's integer
+    /// maths when `int8_math` (other models ignore it).
+    pub fn from_dir_with(dir: &Path, threads: i32, int8_math: bool) -> Result<Self> {
         let mut t = Self::new();
         if threads > 0 {
             t.threads = threads;
         }
+        t.int8_math = int8_math;
         t.load_dir(dir)?;
         t.model = dir
             .file_name()
@@ -779,7 +803,7 @@ impl ExpressTranscriber {
 
     fn load_dir(&mut self, dir: &Path) -> Result<()> {
         if dir.join("joint.onnx").is_file() {
-            let model = fluid::FluidModel::load(dir, self.threads)?;
+            let model = fluid::FluidModel::load_with(dir, self.threads, self.int8_math)?;
             *self.recognizer.lock().unwrap() = Some(Recognizer::Fluid(Box::new(model)));
             return Ok(());
         }
@@ -833,59 +857,318 @@ impl Transcriber for ExpressTranscriber {
         if samples.is_empty() {
             return Ok(String::new());
         }
-        // A soft last word is lifted, then Parakeet gets 0.4 s of trailing
-        // silence, since it clips the last word when audio ends abruptly
-        // (both from the Mac's ExpressAudioConditioner).
-        let lifted = lift_quiet_tail(samples);
-        let mut padded = Vec::with_capacity(lifted.len() + 6400);
-        padded.extend_from_slice(&lifted);
-        padded.extend(std::iter::repeat_n(
-            0.0f32,
-            (TARGET_SAMPLE_RATE as usize * 2) / 5,
-        ));
+        let padded = conditioned(samples);
+        let anchors = self.sound_anchors.lock().unwrap().clone();
         let boost = self
             .word_boost
             .lock()
             .unwrap()
             .clone()
-            .filter(|w| w.active());
-        // Word Boost scores the same audio while Express decodes it, so both
-        // share one clock and the boost costs little extra time.
-        let (result, log_probs) = std::thread::scope(|scope| {
-            let scorer = boost.as_ref().map(|w| {
-                let audio = &padded;
-                scope.spawn(move || w.log_probs(audio))
-            });
-            let result = {
-                let guard = self.recognizer.lock().unwrap();
-                guard
-                    .as_ref()
-                    .ok_or(CoreError::ModelNotLoaded)
-                    .and_then(|recognizer| recognizer.recognize(&padded))
+            .filter(|w| w.active() || !anchors.is_empty());
+        let scored = |lp: Result<Vec<Vec<f32>>>| match lp {
+            Ok(lp) => Some(lp),
+            Err(e) => {
+                tracing::warn!("Word Boost skipped: {e}");
+                None
+            }
+        };
+        let (result, log_probs) = if crate::cpu::word_boost_plan(self.threads).alongside {
+            // Word Boost scores the same audio while Express decodes it, on
+            // cores the decode leaves free, so the boost costs little time.
+            std::thread::scope(|scope| {
+                let scorer = boost.as_ref().map(|w| {
+                    let audio = &padded;
+                    // A decode that's stopped stops its scorer too.
+                    let token = crate::cancel::current();
+                    scope.spawn(move || crate::cancel::scope(token, || w.log_probs(audio)))
+                });
+                let result = self.recognize(&padded);
+                let log_probs = scorer.and_then(|h| h.join().ok().and_then(scored));
+                (result, log_probs)
+            })
+        } else {
+            // No spare cores: scoring at the same time would slow the decode
+            // more than scoring after it costs.
+            let result = self.recognize(&padded);
+            let log_probs = match (&result, boost.as_ref()) {
+                (Ok(Some(_)), Some(w)) => scored(w.log_probs(&padded)),
+                _ => None,
             };
-            let log_probs = scorer.and_then(|h| match h.join() {
-                Ok(Ok(lp)) => Some(lp),
-                Ok(Err(e)) => {
-                    tracing::warn!("Word Boost skipped: {e}");
-                    None
-                }
-                Err(_) => None,
-            });
             (result, log_probs)
-        });
+        };
+        // Word Boost's scores stay until the dictation ends (the coordinator
+        // discards them then): a decode started at a pause scores the same
+        // 15 s chunks the decode at release needs, so those aren't scored
+        // twice.
         let Some(result) = result? else {
             return Ok(String::new());
         };
+        Ok(self.finish(&padded, result, &anchors, boost.as_deref(), log_probs))
+    }
+
+    fn decode_raw(&self, samples: &[f32]) -> Result<crate::transcription::RawDecode> {
+        if samples.is_empty() {
+            return Ok(Default::default());
+        }
+        let Some(r) = self.recognize(&conditioned(samples))? else {
+            return Ok(Default::default());
+        };
+        let Some(starts) = r.starts else {
+            return Err(CoreError::Transcription(
+                "Express gave no token times to join live segments by".into(),
+            ));
+        };
+        Ok(crate::transcription::RawDecode {
+            text: r.text,
+            tokens: r.tokens,
+            starts,
+            durations: r.durations,
+        })
+    }
+
+    fn finish_raw(&self, samples: &[f32], raw: crate::transcription::RawDecode) -> Result<String> {
+        let padded = conditioned(samples);
+        let anchors = self.sound_anchors.lock().unwrap().clone();
+        let boost = self
+            .word_boost
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|w| w.active() || !anchors.is_empty());
+        // The whole recording's scores: the 15 s chunks scored while it was
+        // recorded are reused, so only the last ones are scored now.
+        let log_probs = boost.as_ref().and_then(|w| match w.log_probs(&padded) {
+            Ok(lp) => Some(lp),
+            Err(e) => {
+                tracing::warn!("Word Boost skipped: {e}");
+                None
+            }
+        });
+        let result = Recognized {
+            text: raw.text,
+            tokens: raw.tokens,
+            starts: Some(raw.starts),
+            durations: raw.durations,
+        };
+        Ok(self.finish(&padded, result, &anchors, boost.as_deref(), log_probs))
+    }
+
+    fn set_word_boost_terms(&self, terms: &[crate::text::WordBoostTerm]) {
+        if terms.is_empty() {
+            if let Some(w) = self.word_boost.lock().unwrap().as_ref() {
+                w.set_terms(&[]);
+            }
+            return;
+        }
+        if let Some(w) = self.loaded_word_boost() {
+            let n = w.set_terms(terms);
+            tracing::info!("Word Boost listening for {n} dictionary words");
+        }
+    }
+
+    fn word_boost_active(&self) -> bool {
+        let anchored = !self.sound_anchors.lock().unwrap().is_empty();
+        self.word_boost
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|w| w.active() || anchored)
+    }
+
+    fn prepare_word_boost(&self, prefix: &[f32]) {
+        let anchored = !self.sound_anchors.lock().unwrap().is_empty();
+        let boost = self.word_boost.lock().unwrap().clone();
+        if let Some(w) = boost.filter(|w| w.active() || anchored) {
+            w.prepare(prefix);
+        }
+    }
+
+    fn discard_prepared_word_boost(&self) {
+        if let Some(w) = self.word_boost.lock().unwrap().as_ref() {
+            w.clear();
+        }
+    }
+
+    fn set_sound_anchors(&self, book: std::sync::Arc<SoundAnchorBook>) {
+        let anchored = !book.is_empty();
+        *self.sound_anchors.lock().unwrap() = book;
+        if anchored {
+            // The sound is scored by Word Boost's model.
+            let _ = self.loaded_word_boost();
+        }
+    }
+
+    fn sound_ready(&self) -> bool {
+        self.word_boost.lock().unwrap().is_some()
+    }
+
+    fn sound_decisions(&self, text: &str) -> Vec<crate::sound::Decision> {
+        self.sound_log
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(written, _)| written == text)
+            .map(|(_, decisions)| decisions.clone())
+            .unwrap_or_default()
+    }
+
+    fn learn_sound(
+        &self,
+        samples: &[f32],
+        heard: &str,
+        term: &str,
+        occurrence: usize,
+    ) -> Result<Option<LearnedSound>> {
+        let Some(w) = self.word_boost.lock().unwrap().clone() else {
+            return Ok(None);
+        };
+        if samples.is_empty() {
+            return Ok(None);
+        }
+        let padded = conditioned(samples);
+        let Some(result) = self.recognize(&padded)? else {
+            return Ok(None);
+        };
+        let Some(starts) = result.starts.as_ref() else {
+            return Ok(None);
+        };
+        let words = SoundWord::from_tokens(result.tokens.iter().zip(starts).enumerate().map(
+            |(i, (token, &start))| {
+                let start = f64::from(start);
+                let duration = result.durations.get(i).map_or(0.0, |&d| f64::from(d));
+                (token.as_str(), start, start + duration)
+            },
+        ));
+        let found = contrast::occurrences(heard, &words);
+        if found.is_empty() {
+            return Ok(None);
+        }
+        let range = found[occurrence.min(found.len() - 1)].clone();
+        // Scored apart from any recording still in progress.
+        let log_probs = w.log_probs_uncached(&padded)?;
+        let mut options = judge::sound_options(heard, term);
+        if let Some(spelled) = contrast::spelling(&range, &words, &w.spelled_words(&log_probs)) {
+            if judge::is_plausible_sound(&spelled, heard, term) {
+                options.push(spelled);
+            }
+        }
+        let heard_text = words[range.clone()]
+            .iter()
+            .map(|w| w.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let Some(window) = contrast::window(&range, &words, FRAME_SECONDS, log_probs.len()) else {
+            return Ok(None);
+        };
+        let blank = w.blank_id();
+        let mut scored: Vec<(String, f32)> = Vec::new();
+        for option in options {
+            let option = option.to_lowercase();
+            if scored.iter().any(|(known, _)| *known == option) {
+                continue;
+            }
+            if let Some(margin) =
+                contrast::margin(&log_probs, &window, &heard_text, &option, blank, &|t| {
+                    w.encode(t)
+                })
+            {
+                scored.push((option, margin));
+            }
+        }
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let Some(best) = scored.first().map(|s| s.1) else {
+            return Ok(None);
+        };
+        Ok(Some(LearnedSound {
+            sounds: scored
+                .into_iter()
+                .take(judge::SOUNDS_LEARNED_PER_FIX)
+                .map(|s| s.0)
+                .collect(),
+            margin: best,
+        }))
+    }
+}
+
+/// What Express decodes: a soft last word is lifted, then the model gets
+/// 0.4 s of trailing silence, since it clips the last word when audio ends
+/// abruptly (both from the Mac's ExpressAudioConditioner).
+fn conditioned(samples: &[f32]) -> Vec<f32> {
+    let lifted = lift_quiet_tail(samples);
+    let mut padded = Vec::with_capacity(lifted.len() + 6400);
+    padded.extend_from_slice(&lifted);
+    padded.extend(std::iter::repeat_n(
+        0.0f32,
+        (TARGET_SAMPLE_RATE as usize * 2) / 5,
+    ));
+    padded
+}
+
+/// Decisions kept per recent decode, for learning from what was left alone.
+const SOUND_LOG_KEPT: usize = 4;
+/// A slowed clip is at least this long (the model wants a second of sound).
+const SLOW_LISTEN_MIN_SAMPLES: usize = TARGET_SAMPLE_RATE as usize;
+
+impl ExpressTranscriber {
+    fn recognize(&self, samples: &[f32]) -> Result<Option<Recognized>> {
+        let guard = self.recognizer.lock().unwrap();
+        guard
+            .as_ref()
+            .ok_or(CoreError::ModelNotLoaded)
+            .and_then(|recognizer| recognizer.recognize(samples))
+    }
+
+    /// Word Boost's model, loaded on first need when it's on disk.
+    fn loaded_word_boost(&self) -> Option<std::sync::Arc<crate::wordboost::WordBoost>> {
+        let mut slot = self.word_boost.lock().unwrap();
+        if slot.is_none() {
+            // Word Boost scores while Express decodes on cores the decode
+            // leaves free, or after it with the decode's threads.
+            let threads = crate::cpu::word_boost_plan(self.threads).threads;
+            if let Some(dir) = std::env::var_os("ORTTAAI_WORD_BOOST_DIR") {
+                // Tests point at a model folder outside the data dir.
+                if let Ok(w) = crate::wordboost::WordBoost::load(Path::new(&dir), threads) {
+                    *slot = Some(std::sync::Arc::new(w));
+                }
+            }
+            if slot.is_none() && word_boost_installed() {
+                match word_boost_dir().and_then(|d| crate::wordboost::WordBoost::load(&d, threads))
+                {
+                    Ok(w) => *slot = Some(std::sync::Arc::new(w)),
+                    Err(e) => tracing::warn!("Word Boost model failed to load: {e}"),
+                }
+            }
+        }
+        slot.clone()
+    }
+
+    /// The transcript from one recognized recording (`padded`, conditioned):
+    /// Word Boost's replacements and the sound anchors' decisions applied,
+    /// spacing tidied.
+    fn finish(
+        &self,
+        padded: &[f32],
+        result: Recognized,
+        anchors: &SoundAnchorBook,
+        boost: Option<&crate::wordboost::WordBoost>,
+        log_probs: Option<Vec<Vec<f32>>>,
+    ) -> String {
         let mut text = result.text.clone();
-        if let (Some(w), Some(log_probs), Some(starts)) =
-            (boost.as_ref(), log_probs, result.starts.as_ref())
+        let mut decisions = Vec::new();
+        if let (Some(w), Some(log_probs), Some(starts)) = (boost, log_probs, result.starts.as_ref())
         {
             let timings = crate::wordboost::rescore::TokenTiming::from_starts_and_durations(
                 &result.tokens,
                 starts,
                 &result.durations,
             );
-            if let Some(out) = w.boost(&text, &timings, &log_probs) {
+            let mut replacements = Vec::new();
+            // A word with a sound anchor is never decided by Word Boost's
+            // spelling rules.
+            if let Some(out) = w.boost(&text, &timings, &log_probs, &|term| {
+                anchors.decides_by_sound(term)
+            }) {
                 let applied = out.proposals.iter().filter(|p| p.applied).count();
                 // Scores only: the log never holds what was said or the
                 // dictionary words themselves.
@@ -901,67 +1184,148 @@ impl Transcriber for ExpressTranscriber {
                     "Word Boost: {applied} of {} proposals applied",
                     out.proposals.len()
                 );
-                text = out.text;
+                replacements = out.replacements;
             }
+            if !anchors.is_empty() {
+                let judged = self.judged_by_sound(anchors, w, &text, &timings, &log_probs, padded);
+                if !judged.decisions.is_empty() {
+                    tracing::info!(
+                        "sound anchors: {} of {} heard words written your way",
+                        judged.decisions.iter().filter(|d| d.applied).count(),
+                        judged.decisions.len()
+                    );
+                }
+                // The sound's decision wins where both touch the same words.
+                replacements.retain(|kept| {
+                    !judged
+                        .replacements
+                        .iter()
+                        .any(|sound| sound.0.start < kept.0.end && kept.0.start < sound.0.end)
+                });
+                replacements.extend(judged.replacements);
+                decisions = judged.decisions;
+            }
+            text = crate::wordboost::rescore::apply_replacements(&replacements, &text);
         }
-        // A finished recording's scores are used once.
-        if let Some(w) = boost.as_ref() {
-            w.clear();
-        }
-        Ok(normalize_spacing(&text))
+        let text = normalize_spacing(&text);
+        self.remember_decisions(&text, decisions);
+        text
     }
 
-    fn set_word_boost_terms(&self, terms: &[crate::text::WordBoostTerm]) {
-        let mut slot = self.word_boost.lock().unwrap();
-        if slot.is_none() && !terms.is_empty() {
-            if let Some(dir) = std::env::var_os("ORTTAAI_WORD_BOOST_DIR") {
-                // Tests point at a model folder outside the data dir.
-                let threads = crate::cpu::word_boost_threads(self.threads);
-                if let Ok(w) = crate::wordboost::WordBoost::load(Path::new(&dir), threads) {
-                    *slot = Some(std::sync::Arc::new(w));
-                }
-            }
-        }
-        if terms.is_empty() {
-            if let Some(w) = slot.as_ref() {
-                w.set_terms(&[]);
-            }
+    fn remember_decisions(&self, text: &str, decisions: Vec<crate::sound::Decision>) {
+        if decisions.is_empty() {
             return;
         }
-        if slot.is_none() && word_boost_installed() {
-            // Word Boost scores while Express decodes, so it gets a share of
-            // the threads rather than all of them again.
-            let threads = crate::cpu::word_boost_threads(self.threads);
-            match word_boost_dir().and_then(|d| crate::wordboost::WordBoost::load(&d, threads)) {
-                Ok(w) => *slot = Some(std::sync::Arc::new(w)),
-                Err(e) => tracing::warn!("Word Boost model failed to load: {e}"),
+        let mut log = self.sound_log.lock().unwrap();
+        log.push_back((text.to_string(), decisions));
+        while log.len() > SOUND_LOG_KEPT {
+            log.pop_front();
+        }
+    }
+
+    /// Lets your sound anchors decide their heard words by sound, then
+    /// listens again, slowed down, where the sound check kept one: a fast
+    /// "emailer" whose ending was swallowed is often heard then, a plain
+    /// "email" never was in the lab.
+    fn judged_by_sound(
+        &self,
+        anchors: &SoundAnchorBook,
+        boost: &crate::wordboost::WordBoost,
+        text: &str,
+        timings: &[crate::wordboost::rescore::TokenTiming],
+        log_probs: &[Vec<f32>],
+        samples: &[f32],
+    ) -> judge::Judged {
+        let words =
+            SoundWord::from_tokens(timings.iter().map(|t| (t.token.as_str(), t.start, t.end)));
+        let blank = boost.blank_id();
+        let mut judged = judge::judge(anchors, text, &words, &|range, heard, sound| {
+            let window = contrast::window(range, &words, FRAME_SECONDS, log_probs.len())?;
+            contrast::margin(log_probs, &window, heard, sound, blank, &|t| {
+                boost.encode(t)
+            })
+        });
+        let spellings = judge::sound_spellings(anchors);
+        let ranges = judge::utf8_ranges(&words, text);
+        for index in 0..judged.decisions.len() {
+            let decision = &judged.decisions[index];
+            if decision.applied {
+                continue;
+            }
+            let Some(range) = decision.word_range.clone().filter(|r| r.len() == 1) else {
+                continue;
+            };
+            let Some(utf8) = ranges[range.start].clone() else {
+                continue;
+            };
+            if judged
+                .replacements
+                .iter()
+                .any(|r| r.0.start < utf8.end && utf8.start < r.0.end)
+            {
+                continue;
+            }
+            // Fixed back once where the slow listen wrote it: not tried again.
+            if anchors
+                .anchor(&decision.heard, &decision.term)
+                .is_some_and(|a| a.slow_listen_off)
+            {
+                continue;
+            }
+            if !self.heard_when_slowed(
+                &range,
+                &words,
+                samples,
+                &decision.heard,
+                &decision.term,
+                &spellings,
+            ) {
+                continue;
+            }
+            let term = decision.term.clone();
+            judged.replacements.push((utf8, term));
+            judged.decisions[index].applied = true;
+            judged.decisions[index].margin = judge::SLOW_LISTEN_MARGIN;
+        }
+        judged
+    }
+
+    /// The heard word and two words either side, slowed to each of
+    /// [`judge::SLOW_LISTEN_RATES`] with the pitch kept, transcribed again:
+    /// whether your word was heard.
+    fn heard_when_slowed(
+        &self,
+        range: &std::ops::Range<usize>,
+        words: &[SoundWord],
+        samples: &[f32],
+        heard: &str,
+        term: &str,
+        spellings: &std::collections::HashMap<String, String>,
+    ) -> bool {
+        let rate = f64::from(TARGET_SAMPLE_RATE);
+        let lower = range.start.saturating_sub(2);
+        let upper = (range.end + 1).min(words.len() - 1);
+        let start = ((words[lower].start - 0.3).max(0.0) * rate) as usize;
+        let end = (((words[upper].end + 0.3).max(0.0) * rate) as usize).min(samples.len());
+        if start >= end {
+            return false;
+        }
+        let window = &samples[start..end];
+        for speed in judge::SLOW_LISTEN_RATES {
+            let Some(mut slowed) = slow_listen::stretched(window, speed) else {
+                return false;
+            };
+            if slowed.len() < SLOW_LISTEN_MIN_SAMPLES {
+                slowed.resize(SLOW_LISTEN_MIN_SAMPLES, 0.0);
+            }
+            let Ok(Some(result)) = self.recognize(&slowed) else {
+                return false;
+            };
+            if judge::slow_listen_heard(&contrast::key(&result.text), heard, term, spellings) {
+                return true;
             }
         }
-        if let Some(w) = slot.as_ref() {
-            let n = w.set_terms(terms);
-            tracing::info!("Word Boost listening for {n} dictionary words");
-        }
-    }
-
-    fn word_boost_active(&self) -> bool {
-        self.word_boost
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|w| w.active())
-    }
-
-    fn prepare_word_boost(&self, prefix: &[f32]) {
-        let boost = self.word_boost.lock().unwrap().clone();
-        if let Some(w) = boost.filter(|w| w.active()) {
-            w.prepare(prefix);
-        }
-    }
-
-    fn discard_prepared_word_boost(&self) {
-        if let Some(w) = self.word_boost.lock().unwrap().as_ref() {
-            w.clear();
-        }
+        false
     }
 }
 

@@ -196,6 +196,14 @@ pub struct FluidModel {
 
 impl FluidModel {
     pub fn load(dir: &Path, threads: i32) -> Result<Self> {
+        Self::load_with(dir, threads, false)
+    }
+
+    /// [`FluidModel::load`], with the integer-maths encoder when `int8_math`
+    /// (written next to the model the first time; see
+    /// [`super::int8_math`]). If it can't be written, the usual encoder is
+    /// used.
+    pub fn load_with(dir: &Path, threads: i32, int8_math: bool) -> Result<Self> {
         for f in files(dir).iter().filter(|f| !f.ends_with("frontend.onnx")) {
             if !f.is_file() {
                 return Err(CoreError::Transcription(format!(
@@ -227,6 +235,22 @@ impl FluidModel {
             threads: 1,
             spin: false,
         };
+        let usual = dir.join("encoder.onnx");
+        let int8 = int8_math
+            .then(|| super::int8_math::ensure(dir))
+            .and_then(|r| {
+                r.map_err(|e| tracing::warn!("integer maths unavailable: {e}"))
+                    .ok()
+            })
+            .and_then(|path| {
+                Session::load(&path, big)
+                    .map_err(|e| tracing::warn!("integer-maths encoder didn't load: {e}"))
+                    .ok()
+            });
+        let encoder = match int8 {
+            Some(session) => session,
+            None => Session::load(&usual, big)?,
+        };
         let front = dir.join("frontend.onnx");
         let frontend = if front.is_file() {
             Some(Session::load(&front, big)?)
@@ -235,7 +259,7 @@ impl FluidModel {
         };
         Ok(Self {
             fft: FftPlanner::<f64>::new().plan_fft_forward(cfg.n_fft),
-            encoder: Session::load(&dir.join("encoder.onnx"), big)?,
+            encoder,
             decoder: Session::load(&dir.join("decoder.onnx"), small)?,
             joint: Session::load(&dir.join("joint.onnx"), small)?,
             frontend,
@@ -282,6 +306,9 @@ impl FluidModel {
 
     fn transcribe_pass(&self, wav: &[f32], offset: f32) -> Result<Decoded> {
         let (feats, mask, frames) = self.log_mel(wav);
+        if crate::cancel::cancelled() {
+            return Err(crate::cancel::error());
+        }
         let (enc, enc_frames, valid) = self.encode(&feats, &mask, frames)?;
         drop(feats);
         let steps = self.greedy_tdt(&enc, enc_frames, valid)?;
@@ -615,5 +642,41 @@ mod tests {
                 .last()
                 .is_some_and(|&s| s <= samples.len() as f32 / 16_000.0));
         }
+    }
+
+    /// A cancelled decode stops inside the encoder's run (ONNX Runtime's
+    /// terminate flag) instead of finishing it. Needs the model:
+    /// `ORTTAAI_FLUID_DIR=<fluid-speech-mini-onnx> cargo test -p orttaai-core
+    /// --features express -- --ignored fluid_stops`
+    #[test]
+    #[ignore]
+    fn fluid_stops_when_cancelled() {
+        let dir = std::env::var("ORTTAAI_FLUID_DIR").expect("ORTTAAI_FLUID_DIR");
+        let model = FluidModel::load(Path::new(&dir), 4).unwrap();
+        // 25 s of a voice-like tone: one pass, a long encoder run. Run it
+        // with --release: unoptimized, the features alone take a second.
+        let audio: Vec<f32> = (0..16_000 * 25)
+            .map(|i| 0.1 * (i as f32 * 0.03).sin() * (1.0 + (i as f32 * 0.0007).sin()))
+            .collect();
+        model.transcribe(&audio).unwrap();
+        let started = std::time::Instant::now();
+        model.transcribe(&audio).unwrap();
+        let whole = started.elapsed();
+        let token = crate::cancel::Token::new();
+        let stopper = {
+            let token = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(whole / 4);
+                token.cancel();
+                std::time::Instant::now()
+            })
+        };
+        let out = crate::cancel::scope(Some(token), || model.transcribe(&audio));
+        let returned = std::time::Instant::now();
+        let cancelled_at = stopper.join().unwrap();
+        let after = returned.saturating_duration_since(cancelled_at);
+        eprintln!("whole decode {whole:?}; returned {after:?} after the cancel");
+        assert!(out.is_err());
+        assert!(after < whole / 4, "{after:?} of {whole:?}");
     }
 }

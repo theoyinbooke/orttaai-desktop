@@ -171,11 +171,12 @@ impl CtcModel {
                         &mut values[1],
                     ),
                 )?;
+                let stop = crate::transcription::onnx::StopOnCancel::new(api)?;
                 check(
                     api,
                     (api.Run)(
                         self.session,
-                        ptr::null(),
+                        stop.as_ptr(),
                         names_in.as_ptr(),
                         values.as_ptr() as *const *const ort::OrtValue,
                         2,
@@ -183,7 +184,8 @@ impl CtcModel {
                         1,
                         &mut output,
                     ),
-                )?;
+                )
+                .map_err(|e| stop.explain(e))?;
                 let mut info = ptr::null_mut();
                 check(api, (api.GetTensorTypeAndShape)(output, &mut info))?;
                 let mut dims = [0i64; 3];

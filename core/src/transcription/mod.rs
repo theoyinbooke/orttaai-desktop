@@ -19,6 +19,21 @@ pub trait Transcriber: Send + Sync {
     /// Transcribe 16 kHz mono `f32` samples to text.
     fn transcribe(&self, samples: &[f32], opts: &DecodeOptions) -> Result<String>;
 
+    /// The recognizer's own output for `samples`, with each token's start
+    /// time: no Word Boost, sound anchors or clean-up yet. Express decodes
+    /// live segments this way and joins them (see [`crate::stitch`]).
+    fn decode_raw(&self, _samples: &[f32]) -> Result<RawDecode> {
+        Err(crate::error::CoreError::NotImplemented("raw decodes"))
+    }
+
+    /// The transcript of the whole recording `samples` from its joined raw
+    /// decode, finished as [`Transcriber::transcribe`] would finish one
+    /// decode of it (Word Boost and the sound anchors run here, over the
+    /// whole recording).
+    fn finish_raw(&self, _samples: &[f32], raw: RawDecode) -> Result<String> {
+        Ok(raw.text)
+    }
+
     /// How this engine decodes while the speaker is still talking.
     fn live_mode(&self) -> crate::live::LiveMode {
         crate::live::LiveMode::Off
@@ -39,6 +54,35 @@ pub trait Transcriber: Send + Sync {
 
     /// Forget chunks scored for a recording that won't be transcribed.
     fn discard_prepared_word_boost(&self) {}
+
+    /// Sound anchors (Express): what your fixes taught about how your words
+    /// sound, plus the starting guesses. Takes effect from the next
+    /// dictation. Engines that can't score sound ignore them.
+    fn set_sound_anchors(&self, _book: std::sync::Arc<crate::sound::SoundAnchorBook>) {}
+
+    /// Whether this engine can judge and learn words by sound right now.
+    fn sound_ready(&self) -> bool {
+        false
+    }
+
+    /// What the sound anchors decided in the recent decode that returned
+    /// exactly `text`: each heard word kept or written your way.
+    fn sound_decisions(&self, _text: &str) -> Vec<crate::sound::Decision> {
+        Vec::new()
+    }
+
+    /// Learn from a fix: in this recording you said `term` where the speech
+    /// model wrote `heard` (its `occurrence`-th time, counting from 0).
+    /// `None` when sound can't be scored or the heard words aren't found.
+    fn learn_sound(
+        &self,
+        _samples: &[f32],
+        _heard: &str,
+        _term: &str,
+        _occurrence: usize,
+    ) -> Result<Option<crate::sound::LearnedSound>> {
+        Ok(None)
+    }
 }
 
 /// Run a silent warm-up decode so the first real dictation doesn't pay the
@@ -153,6 +197,16 @@ pub fn bias_prompt_for(terms: &[String], samples: &[f32]) -> Option<String> {
     bias_prompt(terms)
 }
 
+/// A recognizer's raw output: its text and tokens, with each token's start
+/// and duration in seconds.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RawDecode {
+    pub text: String,
+    pub tokens: Vec<String>,
+    pub starts: Vec<f32>,
+    pub durations: Vec<f32>,
+}
+
 /// Deterministic transcriber for tests and the `demo` CLI on any OS.
 pub struct MockTranscriber {
     canned: String,
@@ -259,6 +313,10 @@ pub mod express;
 #[cfg(feature = "express")]
 pub mod fluid;
 #[cfg(feature = "express")]
+pub mod int8_math;
+#[cfg(feature = "express")]
 pub(crate) mod onnx;
 #[cfg(feature = "express")]
 pub use express::ExpressTranscriber;
+#[cfg(all(test, feature = "express"))]
+mod sound_lab;

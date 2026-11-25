@@ -86,7 +86,18 @@ pub fn set_dictionary_active(app: AppHandle, id: i64, active: bool) -> Result<()
 
 #[tauri::command]
 pub fn delete_dictionary(app: AppHandle, id: i64) -> Result<(), String> {
-    store()?.delete_dictionary(id).map_err(err)?;
+    let store = store()?;
+    let target = store
+        .list_dictionary()
+        .map_err(err)?
+        .into_iter()
+        .find(|d| d.id == id)
+        .map(|d| d.target);
+    store.delete_dictionary(id).map_err(err)?;
+    // A word that left the dictionary takes its sound anchors with it.
+    if let Some(target) = target {
+        crate::sound::forget_unless_listed(&target);
+    }
     changed(&app);
     Ok(())
 }

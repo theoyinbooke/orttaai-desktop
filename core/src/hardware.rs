@@ -44,6 +44,10 @@ pub struct HardwareInfo {
     pub cpu_model: String,
     pub logical_cores: u32,
     pub physical_cores: Option<u32>,
+    /// Physical performance cores (all of them on a CPU with one kind).
+    pub performance_cores: Option<u32>,
+    /// What Decode Threads' Auto uses here.
+    pub auto_threads: u32,
     pub ram_gb: u32,
     /// NVIDIA GPUs found via `nvidia-smi`.
     pub gpus: Vec<GpuInfo>,
@@ -134,6 +138,8 @@ pub fn detect(storage: &Path, language: &str) -> HardwareInfo {
         cpu_model,
         logical_cores,
         physical_cores,
+        performance_cores: crate::cpu::core_counts().map(|c| c.performance as u32),
+        auto_threads: crate::cpu::speech_threads().max(1) as u32,
         ram_gb,
         gpus,
         gpu_backend: backend,

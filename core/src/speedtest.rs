@@ -22,19 +22,36 @@ pub struct SpeedTestRecord {
     /// What Auto would use, and how long it took.
     pub recommended: usize,
     pub recommended_ms: Option<u64>,
+    /// Fluid Speech Mini with integer maths at the best thread count, when
+    /// timed, and whether it was kept (see [`int8_math_wins`]).
+    #[serde(default)]
+    pub int8_math_ms: Option<u64>,
+    #[serde(default)]
+    pub int8_math: bool,
     /// Unix seconds.
     pub at: i64,
 }
 
+/// Integer maths is kept only when it saves at least a tenth of the time:
+/// a closer result is within a run's noise, and the usual encoder is the
+/// one every other test was made with.
+pub fn int8_math_wins(usual: Duration, int8: Duration) -> bool {
+    int8.as_secs_f64() <= usual.as_secs_f64() * 0.9
+}
+
 /// Whether to offer the speed test on a card: after setup, with a speech
-/// model ready to time, once. Not after a test, "Not now", or a Decode
-/// Threads count someone already chose (by hand or with the 0.7.0 test).
-pub fn should_offer(settings: &Settings, model_ready: bool) -> bool {
+/// model ready to time, once. Not after a test or "Not now". A Decode
+/// Threads count chosen by hand is left alone unless it's more than the
+/// computer's `fast_cores`: past them the extra threads land on slow or
+/// shared cores, and decoding usually gets slower, not faster.
+pub fn should_offer(settings: &Settings, model_ready: bool, fast_cores: Option<usize>) -> bool {
+    let threads = settings.decode.n_threads;
+    let auto_or_too_many = threads <= 0 || fast_cores.is_some_and(|fast| threads as usize > fast);
     settings.has_completed_setup
         && model_ready
         && !settings.speed_test_offer_dismissed
         && settings.last_speed_test.is_none()
-        && settings.decode.n_threads == 0
+        && auto_or_too_many
 }
 
 /// Seconds of sample audio each trial decodes: long enough that the encoder
@@ -134,16 +151,23 @@ mod tests {
             has_completed_setup: true,
             ..Default::default()
         };
-        assert!(should_offer(&s, true));
-        assert!(!should_offer(&s, false), "no model to time yet");
+        let fast = Some(4);
+        assert!(should_offer(&s, true, fast));
+        assert!(!should_offer(&s, false, fast), "no model to time yet");
         s.has_completed_setup = false;
-        assert!(!should_offer(&s, true), "setup still running");
+        assert!(!should_offer(&s, true, fast), "setup still running");
         s.has_completed_setup = true;
-        s.decode.n_threads = 6;
-        assert!(!should_offer(&s, true), "threads already chosen");
+        s.decode.n_threads = 4;
+        assert!(!should_offer(&s, true, fast), "threads already chosen");
+        s.decode.n_threads = 8;
+        assert!(
+            should_offer(&s, true, fast),
+            "8 threads on 4 fast cores: worth testing"
+        );
+        assert!(!should_offer(&s, true, None), "unknown cores: left alone");
         s.decode.n_threads = 0;
         s.speed_test_offer_dismissed = true;
-        assert!(!should_offer(&s, true), "Not now");
+        assert!(!should_offer(&s, true, fast), "Not now");
         s.speed_test_offer_dismissed = false;
         s.last_speed_test = Some(SpeedTestRecord {
             model: "Express".into(),
@@ -151,9 +175,11 @@ mod tests {
             best_ms: 900,
             recommended: 4,
             recommended_ms: Some(900),
+            int8_math_ms: None,
+            int8_math: false,
             at: 0,
         });
-        assert!(!should_offer(&s, true), "already ran");
+        assert!(!should_offer(&s, true, fast), "already ran");
     }
 
     #[test]
@@ -208,5 +234,14 @@ mod tests {
         assert_eq!(runs, 3, "one warm-up and two timed runs");
         assert!(took < Duration::from_secs(1));
         assert!(time_decode(|_| Err::<(), _>("broken"), &[0.0]).is_err());
+    }
+
+    #[test]
+    fn integer_maths_must_save_a_tenth() {
+        let ms = Duration::from_millis;
+        assert!(int8_math_wins(ms(1000), ms(900)));
+        assert!(int8_math_wins(ms(1000), ms(500)));
+        assert!(!int8_math_wins(ms(1000), ms(950)), "within noise");
+        assert!(!int8_math_wins(ms(1000), ms(1100)));
     }
 }

@@ -10,6 +10,7 @@
 pub mod analytics;
 pub mod apps;
 pub mod audio;
+pub mod cancel;
 pub mod chat;
 pub mod clipboard;
 pub mod coach;
@@ -32,7 +33,9 @@ pub mod polish;
 pub mod selection;
 pub mod semantic;
 pub mod settings;
+pub mod sound;
 pub mod speedtest;
+pub mod stitch;
 pub mod store;
 #[cfg(feature = "link")]
 pub mod sync;

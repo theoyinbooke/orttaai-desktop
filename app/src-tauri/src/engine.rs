@@ -173,6 +173,9 @@ pub struct EngineState {
     /// Learn-from-edits observer, wired by the text area via
     /// [`set_edit_observer`].
     edit_observer: Mutex<Option<EditObserver>>,
+    /// The running engine's kept dictation sound, for learning how a fixed
+    /// word sounds (in memory only; gone when the engine stops).
+    sound_memory: Mutex<Option<Arc<orttaai_core::sound::SoundMemory>>>,
     /// Whether the floating panel is on screen, so it is shown only when it
     /// was hidden (showing again could pull focus on Windows).
     panel_shown: AtomicBool,
@@ -198,6 +201,15 @@ impl EngineState {
 /// `Settings::learn_from_edits` is on.
 pub fn set_edit_observer(app: &AppHandle, observer: EditObserver) {
     *app.state::<EngineState>().edit_observer.lock().unwrap() = Some(observer);
+}
+
+/// The running engine's kept dictation sound, if it is running.
+pub fn sound_memory(app: &AppHandle) -> Option<Arc<orttaai_core::sound::SoundMemory>> {
+    app.state::<EngineState>()
+        .sound_memory
+        .lock()
+        .unwrap()
+        .clone()
 }
 
 fn is_wayland() -> bool {
@@ -328,7 +340,7 @@ fn vocabulary_terms(settings: &Settings) -> Vec<String> {
 /// Word Boost's words: the Memory dictionary's targets with the spellings
 /// mapped to them, while Express and Word Boost are on and dictation is in
 /// English, the language Word Boost's model knows (Mac `sessionWordBoostTerms`).
-fn word_boost_terms(settings: &Settings) -> Vec<orttaai_core::text::WordBoostTerm> {
+pub(crate) fn word_boost_terms(settings: &Settings) -> Vec<orttaai_core::text::WordBoostTerm> {
     if !settings.express_english() || !settings.express_word_boost {
         return Vec::new();
     }
@@ -423,6 +435,8 @@ fn start_engine(app: &AppHandle, model_path: Option<String>) -> Result<(), Strin
     coord.set_rewriter(pipeline::build_rewriter(&settings));
     coord.set_vocabulary(vocabulary_terms(&settings));
     coord.set_word_boost_terms(&word_boost_terms(&settings));
+    coord.set_sound_anchors(crate::sound::book(&settings));
+    *state.sound_memory.lock().unwrap() = Some(coord.sound_memory());
     let voice = load_voice_detector();
     let has_voice = voice.is_some();
     coord.set_voice_detector(voice.map(|v| Box::new(v) as _));
@@ -511,9 +525,12 @@ fn load_express(settings: &Settings) -> Result<LoadedTranscriber, String> {
         ));
     }
     let dir = express::model_dir(id).map_err(|e| e.to_string())?;
-    let t =
-        orttaai_core::transcription::ExpressTranscriber::from_dir(&dir, settings.decode.n_threads)
-            .map_err(|e| e.to_string())?;
+    let t = orttaai_core::transcription::ExpressTranscriber::from_dir_with(
+        &dir,
+        settings.decode.n_threads,
+        settings.express_int8_math,
+    )
+    .map_err(|e| e.to_string())?;
     Ok((Box::new(t), express::recorded_model_id(id).to_string()))
 }
 
@@ -861,8 +878,9 @@ pub fn validate_shortcut(combo: HotkeyCombo, other: Option<HotkeyCombo>) -> Resu
 // ---- Worker ------------------------------------------------------------------
 
 /// What decides which speech model is loaded. Express fixes its thread count
-/// when it loads, so for Express that counts too; the last field is whether
-/// English dictation swaps in an English-only Small.
+/// and Fluid Speech Mini's integer maths when it loads, so for Express those
+/// count too; the last field is whether English dictation swaps in an
+/// English-only Small.
 type ModelKey = (
     String,
     Option<String>,
@@ -870,6 +888,7 @@ type ModelKey = (
     String,
     bool,
     i32,
+    bool,
     bool,
 );
 
@@ -882,6 +901,7 @@ fn model_key(s: &Settings) -> ModelKey {
         s.express_model.clone(),
         express,
         if express { s.decode.n_threads } else { 0 },
+        express && s.express_int8_math,
         // Whisper's English variant; Express doesn't use it, so a language
         // change between Express languages doesn't reload Express.
         !express && models::english_variant(&s.model_id, &s.effective_language()).is_some(),
@@ -960,6 +980,16 @@ impl Worker {
         }
         self.coord.cancel();
         self.watcher.finish_current();
+        // The kept sound goes with the engine.
+        self.coord.sound_memory().clear();
+        let state = self.app.state::<EngineState>();
+        let mut shared = state.sound_memory.lock().unwrap();
+        if shared
+            .as_ref()
+            .is_some_and(|m| Arc::ptr_eq(m, &self.coord.sound_memory()))
+        {
+            *shared = None;
+        }
     }
 
     /// `false` = shut down.
@@ -982,6 +1012,8 @@ impl Worker {
                 self.coord.set_vocabulary(vocabulary_terms(&self.settings));
                 self.coord
                     .set_word_boost_terms(&word_boost_terms(&self.settings));
+                self.coord
+                    .set_sound_anchors(crate::sound::book(&self.settings));
             }
             Cmd::ResetAudio(reply) => {
                 let r = self
@@ -1027,6 +1059,7 @@ impl Worker {
         self.coord.set_rewriter(pipeline::build_rewriter(next));
         self.coord.set_vocabulary(vocabulary_terms(next));
         self.coord.set_word_boost_terms(&word_boost_terms(next));
+        self.coord.set_sound_anchors(crate::sound::book(next));
     }
 
     /// Load the model the settings ask for, once the engine is idle: a change
@@ -1041,7 +1074,7 @@ impl Worker {
         // Switching from one Express model to another keeps the current one
         // when the new one can't load, rather than falling back to Whisper
         // (Mac `ExpressController.switchModel`).
-        let (_, _, loaded_engine, loaded_express_model, loaded_express, _, _) = &self.loaded;
+        let (_, _, loaded_engine, loaded_express_model, loaded_express, _, _, _) = &self.loaded;
         if *loaded_express
             && *loaded_engine == SpeechEngine::Express
             && self.settings.express_active()
@@ -1191,7 +1224,8 @@ impl Worker {
                 .unwrap()
                 .is_some()
         {
-            self.watcher.watch(&text, outcome.app.clone());
+            self.watcher
+                .watch_recording(&text, outcome.app.clone(), outcome.recording_id);
         }
         if let Some(err) = &outcome.inject_error {
             let _ = self.app.emit(

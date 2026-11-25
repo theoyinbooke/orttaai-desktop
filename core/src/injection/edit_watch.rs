@@ -79,6 +79,9 @@ pub struct EditObservation {
     /// Field text at the end of the watch (when readable).
     pub after: Option<String>,
     pub app: Option<String>,
+    /// The dictation's kept sound ([`crate::sound::SoundMemory`]), when the
+    /// watch was started with one.
+    pub recording: Option<u64>,
 }
 
 pub type EditObserver = Arc<dyn Fn(EditObservation) + Send + Sync>;
@@ -88,6 +91,7 @@ struct Watch {
     baseline: String,
     latest: String,
     app: Option<String>,
+    recording: Option<u64>,
 }
 
 impl Watch {
@@ -102,6 +106,7 @@ impl Watch {
             before: Some(self.baseline),
             after: Some(self.latest),
             app: self.app,
+            recording: self.recording,
         }
     }
 }
@@ -174,6 +179,12 @@ impl EditWatcher {
     /// Start watching `inserted`, just delivered into `app`. Runs on its own
     /// thread; returns immediately.
     pub fn watch(&self, inserted: &str, app: Option<String>) {
+        self.watch_recording(inserted, app, None);
+    }
+
+    /// [`watch`](Self::watch), naming the dictation's kept sound so the
+    /// observer can learn how a fixed word sounds.
+    pub fn watch_recording(&self, inserted: &str, app: Option<String>, recording: Option<u64>) {
         self.finish_current();
         let generation = self.generation.load(Ordering::SeqCst);
         let gen = self.generation.clone();
@@ -221,6 +232,7 @@ impl EditWatcher {
                             before: None,
                             after: None,
                             app,
+                            recording,
                         });
                     }
                     return;
@@ -230,6 +242,7 @@ impl EditWatcher {
                     latest: baseline.clone(),
                     baseline,
                     app,
+                    recording,
                 });
                 for delay in delays {
                     sleep(delay);

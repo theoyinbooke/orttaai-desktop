@@ -22,6 +22,7 @@ export type Settings = {
   vocabulary_bias: boolean;
   express_word_boost: boolean;
   express_live_segments: boolean;
+  express_int8_math: boolean;
   /** Express model id (Fluid Speech Mini, or Parakeet v3), used when `engine` is "express". */
   express_model: string;
   warm_models: boolean;
@@ -124,6 +125,9 @@ export type SpeedTestRecord = {
   best_ms: number;
   recommended: number;
   recommended_ms: number | null;
+  /** Fluid Speech Mini with integer maths, when timed, and whether it was kept. */
+  int8_math_ms?: number | null;
+  int8_math?: boolean;
   at: number;
 };
 

@@ -121,6 +121,18 @@ impl CtcTokenizer {
         self.vocab.len()
     }
 
+    /// Each id's piece, for spelling out what the CTC model heard. Ids with no
+    /// piece are empty.
+    pub fn pieces(&self) -> Vec<String> {
+        let mut pieces = vec![String::new(); self.vocab.len()];
+        for (piece, &id) in &self.vocab {
+            if let Some(slot) = pieces.get_mut(id as usize) {
+                *slot = piece.clone();
+            }
+        }
+        pieces
+    }
+
     /// Token ids for `text`, starting at a word boundary.
     pub fn encode(&self, text: &str) -> Vec<u32> {
         self.encode_with(text, true)

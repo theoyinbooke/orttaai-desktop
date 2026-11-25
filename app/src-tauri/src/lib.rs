@@ -21,6 +21,7 @@ mod persist;
 mod pipeline;
 mod semantic;
 mod settings_cmds;
+mod sound;
 mod speedtest;
 
 use engine::{EngineState, TRAY_ID};
@@ -92,12 +93,16 @@ fn wire_learn_from_edits(app: &AppHandle) {
                 return;
             };
             let at = orttaai_core::store::now_unix();
+            let settings = Settings::load_or_default();
+            // Fixes about how a dictionary word sounds are learned by sound,
+            // from the recording, before any pair is suggested for them.
+            let by_sound = sound::learn_from_watch(engine::sound_memory(&handle), &settings, &obs);
+            let sound_words = by_sound.said + by_sound.fixed_back;
             let logged = match (obs.outcome, obs.before, obs.after) {
                 (Watched::Edited, Some(before), Some(after)) => {
-                    let settings = Settings::load_or_default();
                     let english = settings.effective_language() == "en";
                     store
-                        .learn_from_edit(
+                        .learn_from_edit_beside_sound(
                             &Learn {
                                 inserted: obs.inserted,
                                 before,
@@ -106,6 +111,8 @@ fn wire_learn_from_edits(app: &AppHandle) {
                                 app_name: obs.app.clone(),
                             },
                             english,
+                            &by_sound.handled,
+                            sound_words,
                         )
                         .map(|(_, learned)| learned > 0)
                         .unwrap_or(false)
@@ -121,6 +128,8 @@ fn wire_learn_from_edits(app: &AppHandle) {
                     false
                 }
             };
+            // The engine reloads memory, and with it the anchors.
+            let logged = logged || by_sound.anything();
             if logged {
                 let _ = handle.emit("memory-changed", ());
             }

@@ -63,6 +63,10 @@ pub struct DictionaryPass {
 pub struct MemoryService {
     dictionary: Vec<DictionaryRule>,
     snippets: Vec<SnippetRule>,
+    /// Pairs the sound decides instead of the text, as `(source, target)`:
+    /// "email" becomes Eimailar only where the recording says so.
+    #[serde(skip)]
+    left_to_sound: Vec<(String, String)>,
 }
 
 /// Commands that may precede a spoken snippet trigger.
@@ -137,9 +141,35 @@ impl MemoryService {
         &self.snippets
     }
 
+    /// Leave every pair `decided(source, target)` names to the sound check:
+    /// it stays in the dictionary (its word is still known), but its text
+    /// rule no longer rewrites every time the source is written.
+    pub fn leave_to_sound(&mut self, decided: impl Fn(&str, &str) -> bool) {
+        self.left_to_sound = self
+            .dictionary
+            .iter()
+            .filter(|r| decided(&r.source, &r.target))
+            .map(|r| (r.source.clone(), r.target.clone()))
+            .collect();
+    }
+
     /// Compile the dictionary for repeated use (the text pipeline keeps one).
     pub fn compile_dictionary(&self) -> CompiledDictionary {
-        CompiledDictionary::new(&self.dictionary)
+        if self.left_to_sound.is_empty() {
+            return CompiledDictionary::new(&self.dictionary);
+        }
+        let by_text: Vec<DictionaryRule> = self
+            .dictionary
+            .iter()
+            .filter(|r| {
+                !self
+                    .left_to_sound
+                    .iter()
+                    .any(|(s, t)| *s == r.source && *t == r.target)
+            })
+            .cloned()
+            .collect();
+        CompiledDictionary::new(&by_text)
     }
 
     /// Run the dictionary pass once.

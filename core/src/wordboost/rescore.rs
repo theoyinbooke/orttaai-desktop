@@ -93,6 +93,8 @@ pub struct BoostOutcome {
     pub text: String,
     /// Every proposal, kept or not, so a wrong swap can be traced.
     pub proposals: Vec<Proposal>,
+    /// The kept replacements, as UTF-8 ranges of the transcript given.
+    pub replacements: Vec<(Range<usize>, String)>,
 }
 
 /// The dictionary, spelled in the CTC model's tokens, with the thresholds
@@ -200,9 +202,30 @@ pub fn boost(
     frame_duration: f64,
     vocab: &PreparedVocabulary,
 ) -> BoostOutcome {
+    boost_leaving(
+        transcript,
+        timings,
+        log_probs,
+        frame_duration,
+        vocab,
+        &|_| false,
+    )
+}
+
+/// [`boost`], leaving every term `leave` names to someone else: a word with
+/// a sound anchor is decided by the sound check, never by these rules.
+pub fn boost_leaving(
+    transcript: &str,
+    timings: &[TokenTiming],
+    log_probs: &[Vec<f32>],
+    frame_duration: f64,
+    vocab: &PreparedVocabulary,
+    leave: &dyn Fn(&str) -> bool,
+) -> BoostOutcome {
     let mut outcome = BoostOutcome {
         text: transcript.to_string(),
         proposals: Vec::new(),
+        replacements: Vec::new(),
     };
     if vocab.is_empty()
         || timings.is_empty()
@@ -224,6 +247,9 @@ pub fn boost(
         ) else {
             continue;
         };
+        if leave(&candidate.canonical_term) {
+            continue;
+        }
         let margin = vocabulary_score - original_score;
         let applied = guard::accepts(&guard::Candidate {
             heard: &candidate.base_phrase,
@@ -246,6 +272,7 @@ pub fn boost(
         });
     }
     outcome.text = apply_replacements(&replacements, transcript);
+    outcome.replacements = replacements;
     outcome
 }
 
@@ -2230,7 +2257,8 @@ mod tests {
             outcome,
             BoostOutcome {
                 text: "Ship it.".into(),
-                proposals: vec![]
+                proposals: vec![],
+                replacements: vec![]
             }
         );
         let empty = vocabulary(&[]);

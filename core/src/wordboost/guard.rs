@@ -6,6 +6,7 @@
 //! on 134 applied proposals: they keep 103 of 104 correct ones and none of the
 //! 27 wrong ones.
 
+use crate::sound::judge::SOUNDS_LIKE_AN_ENDING;
 use crate::text::lexicon;
 
 /// One proposal from the rescorer.
@@ -23,6 +24,9 @@ pub const MARGIN_FLOOR: f32 = -4.0;
 /// Replacing ordinary English words needs the term to sound nearly as likely
 /// as the words themselves.
 pub const ORDINARY_WORDS_MARGIN: f32 = -0.75;
+/// An ordinary word plus an everyday ending word must sound this much more
+/// like the term to be merged into it.
+pub const EVERYDAY_ENDING_MARGIN: f32 = 2.0;
 /// The heard phrase must be spelled at least this much like the term. Every
 /// correct proposal in the gauntlet set scores 0.56 or more; reported bad
 /// swaps score far lower (Mac mini -> Meetumo 0.14).
@@ -59,7 +63,20 @@ pub fn accepts(candidate: &Candidate<'_>) -> bool {
     if candidate.acoustic_margin < MARGIN_FLOOR {
         return false;
     }
-    if lexicon::is_available() && heard_words.iter().all(|w| lexicon::is_real_word(w)) {
+    let ordinary = lexicon::is_available() && heard_words.iter().all(|w| lexicon::is_real_word(w));
+    // "an email or a text" -> "an Eimailar text": an ordinary word and an
+    // everyday ending word ("or", "a", "at") sound almost exactly like a
+    // longer name, so they're merged only on clearly better sound.
+    if ordinary
+        && heard_words.len() > 1
+        && heard_words
+            .last()
+            .is_some_and(|last| SOUNDS_LIKE_AN_ENDING.contains(&last.as_str()))
+        && candidate.acoustic_margin < EVERYDAY_ENDING_MARGIN
+    {
+        return false;
+    }
+    if ordinary {
         return candidate.acoustic_margin >= ORDINARY_WORDS_MARGIN;
     }
     true
@@ -157,6 +174,16 @@ mod tests {
         assert!(accepts("Quen", "Qwen", -2.24));
         assert!(accepts("Aluwa soon", "Oluwaseun", -2.08));
         assert!(accepts("Tamitoke", "Temitope", -1.97));
+    }
+
+    #[test]
+    fn an_ordinary_word_and_an_everyday_ending_stay_apart() {
+        assert!(!accepts("email or", "Eimailar", 0.5));
+        assert!(accepts("email or", "Eimailar", 2.5));
+        assert!(!accepts("email at", "Eimailar", 1.9));
+        // Not an ending word, or not ordinary words: the rules as before.
+        assert!(accepts("common case", "camelCase", -0.58));
+        assert!(accepts("Aluwa a", "Oluwa", 0.1));
     }
 
     #[test]

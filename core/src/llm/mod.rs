@@ -329,7 +329,7 @@ pub fn provider_display_name(p: LlmProvider) -> &'static str {
 /// The message inside an LLM error, without the `llm error:` prefix.
 pub fn error_text(e: &CoreError) -> String {
     match e {
-        CoreError::Llm(m) => m.clone(),
+        CoreError::Llm(m) | CoreError::LlmUnavailable(m) => m.clone(),
         other => other.to_string(),
     }
 }
@@ -354,6 +354,9 @@ pub enum LlmFailure {
 
 /// Classify an error produced by the HTTP clients (or `MockLlm`).
 pub fn classify_error(e: &CoreError) -> LlmFailure {
+    if matches!(e, CoreError::LlmUnavailable(_)) {
+        return LlmFailure::Unreachable;
+    }
     let m = error_text(e).to_ascii_lowercase();
     if m.contains(CANCELLED) {
         LlmFailure::Cancelled

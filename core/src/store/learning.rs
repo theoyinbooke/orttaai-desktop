@@ -576,19 +576,50 @@ impl Store {
         observation: &EditObservation,
         english: bool,
     ) -> Result<(EditCheckOutcome, usize)> {
+        self.learn_from_edit_beside_sound(observation, english, &[], 0)
+    }
+
+    /// [`learn_from_edit`](Self::learn_from_edit) when sound anchors learned
+    /// from the same edit first. `by_sound` are the fixes they took, as
+    /// `(heard, corrected)`: those never become dictionary pairs, which would
+    /// apply every time the heard word is written ("email" to Eimailar, or
+    /// back). `sound_words` is how many words the sound learned, for the log.
+    pub fn learn_from_edit_beside_sound(
+        &self,
+        observation: &EditObservation,
+        english: bool,
+        by_sound: &[(String, String)],
+        sound_words: usize,
+    ) -> Result<(EditCheckOutcome, usize)> {
+        let key = |text: &str| -> String {
+            text.to_lowercase()
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect()
+        };
+        let taken = |c: &learning::Correction| {
+            by_sound
+                .iter()
+                .any(|(h, w)| key(h) == key(&c.heard) && key(w) == key(&c.corrected))
+        };
         let app = observation.app_name.as_deref();
         let (outcome, saved) = if !english {
             (EditCheckOutcome::NotEnglish, 0)
         } else if !learning::field_contains(&observation.before, &observation.inserted) {
             (EditCheckOutcome::TextNotFound, 0)
         } else {
-            let found = learning::corrections(
+            let found: Vec<_> = learning::corrections(
                 &observation.inserted,
                 &observation.before,
                 observation.caret_utf16,
                 &observation.after,
-            );
-            if found.is_empty() {
+            )
+            .into_iter()
+            .filter(|c| !taken(c))
+            .collect();
+            if found.is_empty() && sound_words > 0 {
+                (EditCheckOutcome::Learned, 0)
+            } else if found.is_empty() {
                 let edited = learning::comparable(&observation.after)
                     != learning::comparable(&observation.before);
                 (
@@ -612,14 +643,19 @@ impl Store {
                     })
                     .collect();
                 let saved = self.save_learning_suggestions(&drafts)?;
-                if saved > 0 {
+                if saved > 0 || sound_words > 0 {
                     (EditCheckOutcome::Learned, saved)
                 } else {
                     (EditCheckOutcome::AlreadyKnown, 0)
                 }
             }
         };
-        self.insert_edit_check(outcome, app, saved as i64, now_unix())?;
+        let learned = if outcome == EditCheckOutcome::Learned {
+            saved + sound_words
+        } else {
+            saved
+        };
+        self.insert_edit_check(outcome, app, learned as i64, now_unix())?;
         Ok((outcome, saved))
     }
 
@@ -923,6 +959,52 @@ mod tests {
                 "learned"
             ]
         );
+    }
+
+    #[test]
+    fn fixes_learned_by_sound_never_become_dictionary_pairs() {
+        let s = Store::open_in_memory().unwrap();
+        let observe = |inserted: &str, after: &str| EditObservation {
+            inserted: inserted.into(),
+            before: inserted.into(),
+            caret_utf16: None,
+            after: after.into(),
+            app_name: None,
+        };
+        // "email" fixed to Eimailar: on its own that is a pair suggestion...
+        let fix = observe("please open email now", "please open Eimailar now");
+        let by_sound = vec![("email".to_string(), "Eimailar".to_string())];
+        // ...but the sound took it: nothing is suggested, and the log still
+        // says a word was learned.
+        let (outcome, saved) = s
+            .learn_from_edit_beside_sound(&fix, true, &by_sound, 1)
+            .unwrap();
+        assert_eq!((outcome, saved), (EditCheckOutcome::Learned, 0));
+        assert!(s.list_learning_suggestions(None, 10).unwrap().is_empty());
+        let check = &s.list_edit_checks(1).unwrap()[0];
+        assert_eq!(check.learned_count, 1);
+        // Fixed back with a capital: no pair the other way either.
+        let back = observe("then open Eimailar now", "then open Email now");
+        let by_sound = vec![("Eimailar".to_string(), "email".to_string())];
+        let (outcome, saved) = s
+            .learn_from_edit_beside_sound(&back, true, &by_sound, 1)
+            .unwrap();
+        assert_eq!((outcome, saved), (EditCheckOutcome::Learned, 0));
+        assert!(s.list_learning_suggestions(None, 10).unwrap().is_empty());
+        // A fix the sound didn't take is suggested as before, beside it.
+        let two = observe(
+            "ask tanya to open email now please",
+            "ask Tania to open Eimailar now please",
+        );
+        let by_sound = vec![("email".to_string(), "Eimailar".to_string())];
+        let (outcome, saved) = s
+            .learn_from_edit_beside_sound(&two, true, &by_sound, 1)
+            .unwrap();
+        assert_eq!((outcome, saved), (EditCheckOutcome::Learned, 1));
+        let pending = s.list_learning_suggestions(None, 10).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].candidate_target, "Tania");
+        assert_eq!(s.list_edit_checks(1).unwrap()[0].learned_count, 2);
     }
 
     fn seed(s: &Store, texts: &[&str]) {

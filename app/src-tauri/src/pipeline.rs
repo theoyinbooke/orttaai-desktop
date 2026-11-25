@@ -67,8 +67,19 @@ impl TranscriptPipeline for AppPipeline {
 /// The text processor for these settings, falling back to an empty memory if
 /// the store can't be opened (dictation must never fail on it).
 fn processor(settings: &Settings) -> TextProcessor {
-    match Store::open_default().and_then(|s| s.text_processor(settings)) {
-        Ok(p) => p,
+    match Store::open_default().and_then(|s| s.load_memory_rules()) {
+        Ok(mut memory) => {
+            // A pair from an ordinary word to a word with a sound anchor
+            // ("email" to Eimailar) is decided by the sound in the engine,
+            // not rewritten every time the ordinary word is said.
+            let anchors = crate::sound::book(settings);
+            if !anchors.is_empty() {
+                memory.leave_to_sound(|source, target| {
+                    orttaai_core::sound::learn::pair_decided_by_sound(&anchors, source, target)
+                });
+            }
+            TextProcessor::new(TextOptions::from_settings(settings), memory)
+        }
         Err(e) => {
             eprintln!("orttaai: personal memory unavailable ({e}); dictating without it");
             TextProcessor::new(TextOptions::from_settings(settings), MemoryService::new())
@@ -96,24 +107,19 @@ pub fn build_pipeline(settings: &Settings) -> Box<dyn TranscriptPipeline> {
     })
 }
 
-/// Voice edit through the local LLM (Mac `EditCommandProcessor`).
+/// Voice edit through the local LLM (Mac `EditCommandProcessor`), with its
+/// circuit breaker: a model that is off or stuck is left alone for a while
+/// instead of being waited on at every edit.
 struct LlmRewriter {
     client: Arc<dyn LlmClient>,
-    model: String,
-    timeout_ms: u64,
-    max_chars: usize,
+    options: orttaai_core::edit::EditOptions,
+    processor: orttaai_core::edit::EditCommandProcessor,
 }
 
 impl EditRewriter for LlmRewriter {
     fn rewrite(&self, selection: &str, instruction: &str) -> orttaai_core::Result<String> {
-        orttaai_core::edit::rewrite_selection(
-            self.client.as_ref(),
-            &self.model,
-            selection,
-            instruction,
-            self.timeout_ms,
-            self.max_chars,
-        )
+        self.processor
+            .rewrite(self.client.as_ref(), &self.options, selection, instruction)
     }
 }
 
@@ -141,9 +147,12 @@ pub fn build_rewriter(settings: &Settings) -> Option<Box<dyn EditRewriter>> {
     let model = edit_model(settings)?;
     Some(Box::new(LlmRewriter {
         client: client_from_settings(settings),
-        model,
-        timeout_ms: settings.edit_timeout_ms,
-        max_chars: settings.edit_max_chars,
+        options: orttaai_core::edit::EditOptions {
+            model,
+            timeout_ms: settings.edit_timeout_ms,
+            max_chars: settings.edit_max_chars,
+        },
+        processor: orttaai_core::edit::EditCommandProcessor::new(),
     }))
 }
 

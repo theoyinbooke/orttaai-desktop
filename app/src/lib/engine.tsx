@@ -258,6 +258,10 @@ export type HardwareInfo = {
   cpu_model: string;
   logical_cores: number;
   physical_cores: number | null;
+  /** Physical performance cores (all of them on a CPU with one kind). */
+  performance_cores: number | null;
+  /** What Decode Threads' Auto uses here. */
+  auto_threads: number;
   ram_gb: number;
   gpus: { name: string; vram_mb: number }[];
   gpu_backend: "cpu" | "cuda" | "vulkan";
