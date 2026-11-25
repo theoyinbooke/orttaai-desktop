@@ -855,26 +855,37 @@ impl Transcriber for ExpressTranscriber {
             .unwrap()
             .clone()
             .filter(|w| w.active() || !anchors.is_empty());
-        // Word Boost scores the same audio while Express decodes it, so both
-        // share one clock and the boost costs little extra time.
-        let (result, log_probs) = std::thread::scope(|scope| {
-            let scorer = boost.as_ref().map(|w| {
-                let audio = &padded;
-                // A decode that's stopped stops its scorer too.
-                let token = crate::cancel::current();
-                scope.spawn(move || crate::cancel::scope(token, || w.log_probs(audio)))
-            });
+        let scored = |lp: Result<Vec<Vec<f32>>>| match lp {
+            Ok(lp) => Some(lp),
+            Err(e) => {
+                tracing::warn!("Word Boost skipped: {e}");
+                None
+            }
+        };
+        let (result, log_probs) = if crate::cpu::word_boost_plan(self.threads).alongside {
+            // Word Boost scores the same audio while Express decodes it, on
+            // cores the decode leaves free, so the boost costs little time.
+            std::thread::scope(|scope| {
+                let scorer = boost.as_ref().map(|w| {
+                    let audio = &padded;
+                    // A decode that's stopped stops its scorer too.
+                    let token = crate::cancel::current();
+                    scope.spawn(move || crate::cancel::scope(token, || w.log_probs(audio)))
+                });
+                let result = self.recognize(&padded);
+                let log_probs = scorer.and_then(|h| h.join().ok().and_then(scored));
+                (result, log_probs)
+            })
+        } else {
+            // No spare cores: scoring at the same time would slow the decode
+            // more than scoring after it costs.
             let result = self.recognize(&padded);
-            let log_probs = scorer.and_then(|h| match h.join() {
-                Ok(Ok(lp)) => Some(lp),
-                Ok(Err(e)) => {
-                    tracing::warn!("Word Boost skipped: {e}");
-                    None
-                }
-                Err(_) => None,
-            });
+            let log_probs = match (&result, boost.as_ref()) {
+                (Ok(Some(_)), Some(w)) => scored(w.log_probs(&padded)),
+                _ => None,
+            };
             (result, log_probs)
-        });
+        };
         // Word Boost's scores stay until the dictation ends (the coordinator
         // discards them then): a decode started at a pause scores the same
         // 15 s chunks the decode at release needs, so those aren't scored
@@ -1112,9 +1123,9 @@ impl ExpressTranscriber {
     fn loaded_word_boost(&self) -> Option<std::sync::Arc<crate::wordboost::WordBoost>> {
         let mut slot = self.word_boost.lock().unwrap();
         if slot.is_none() {
-            // Word Boost scores while Express decodes, so it gets a share of
-            // the threads rather than all of them again.
-            let threads = crate::cpu::word_boost_threads(self.threads);
+            // Word Boost scores while Express decodes on cores the decode
+            // leaves free, or after it with the decode's threads.
+            let threads = crate::cpu::word_boost_plan(self.threads).threads;
             if let Some(dir) = std::env::var_os("ORTTAAI_WORD_BOOST_DIR") {
                 // Tests point at a model folder outside the data dir.
                 if let Ok(w) = crate::wordboost::WordBoost::load(Path::new(&dir), threads) {

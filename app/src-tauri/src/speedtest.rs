@@ -71,7 +71,12 @@ pub fn speed_test_status() -> SpeedTestStatus {
         } else {
             None
         },
-        offer: !running && speedtest::should_offer(&settings, model_ready(&settings)),
+        offer: !running
+            && speedtest::should_offer(
+                &settings,
+                model_ready(&settings),
+                cpu::core_counts().map(|c| c.performance),
+            ),
         last: settings.last_speed_test,
     }
 }
@@ -172,11 +177,22 @@ fn measure(app: &AppHandle) -> Result<SpeedTestResult, String> {
         model = express::spec(&id).map_or_else(|| id.clone(), |s| s.name.to_string());
         let dir = express::model_dir(&id).map_err(err)?;
         let opts = decode_options_from_settings(&settings);
+        // Timed as dictation runs: with Word Boost, which shares the cores.
+        let boost = crate::engine::word_boost_terms(&settings);
         for (index, &threads) in candidates.iter().enumerate() {
             report(index, threads, None);
             let t = ExpressTranscriber::from_dir(&dir, threads as i32).map_err(err)?;
-            let took = speedtest::time_decode(|s| t.transcribe(s, &opts).map(|_| ()), &samples)
-                .map_err(err)?;
+            t.set_word_boost_terms(&boost);
+            let took = speedtest::time_decode(
+                |s| {
+                    // Word Boost keeps a dictation's scores; each trial
+                    // scores afresh, as a new dictation would.
+                    t.discard_prepared_word_boost();
+                    t.transcribe(s, &opts).map(|_| ())
+                },
+                &samples,
+            )
+            .map_err(err)?;
             report(index, threads, Some(took.as_millis() as u64));
             trials.push((threads, took));
         }

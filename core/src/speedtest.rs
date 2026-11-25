@@ -27,14 +27,18 @@ pub struct SpeedTestRecord {
 }
 
 /// Whether to offer the speed test on a card: after setup, with a speech
-/// model ready to time, once. Not after a test, "Not now", or a Decode
-/// Threads count someone already chose (by hand or with the 0.7.0 test).
-pub fn should_offer(settings: &Settings, model_ready: bool) -> bool {
+/// model ready to time, once. Not after a test or "Not now". A Decode
+/// Threads count chosen by hand is left alone unless it's more than the
+/// computer's `fast_cores`: past them the extra threads land on slow or
+/// shared cores, and decoding usually gets slower, not faster.
+pub fn should_offer(settings: &Settings, model_ready: bool, fast_cores: Option<usize>) -> bool {
+    let threads = settings.decode.n_threads;
+    let auto_or_too_many = threads <= 0 || fast_cores.is_some_and(|fast| threads as usize > fast);
     settings.has_completed_setup
         && model_ready
         && !settings.speed_test_offer_dismissed
         && settings.last_speed_test.is_none()
-        && settings.decode.n_threads == 0
+        && auto_or_too_many
 }
 
 /// Seconds of sample audio each trial decodes: long enough that the encoder
@@ -134,16 +138,23 @@ mod tests {
             has_completed_setup: true,
             ..Default::default()
         };
-        assert!(should_offer(&s, true));
-        assert!(!should_offer(&s, false), "no model to time yet");
+        let fast = Some(4);
+        assert!(should_offer(&s, true, fast));
+        assert!(!should_offer(&s, false, fast), "no model to time yet");
         s.has_completed_setup = false;
-        assert!(!should_offer(&s, true), "setup still running");
+        assert!(!should_offer(&s, true, fast), "setup still running");
         s.has_completed_setup = true;
-        s.decode.n_threads = 6;
-        assert!(!should_offer(&s, true), "threads already chosen");
+        s.decode.n_threads = 4;
+        assert!(!should_offer(&s, true, fast), "threads already chosen");
+        s.decode.n_threads = 8;
+        assert!(
+            should_offer(&s, true, fast),
+            "8 threads on 4 fast cores: worth testing"
+        );
+        assert!(!should_offer(&s, true, None), "unknown cores: left alone");
         s.decode.n_threads = 0;
         s.speed_test_offer_dismissed = true;
-        assert!(!should_offer(&s, true), "Not now");
+        assert!(!should_offer(&s, true, fast), "Not now");
         s.speed_test_offer_dismissed = false;
         s.last_speed_test = Some(SpeedTestRecord {
             model: "Express".into(),
@@ -153,7 +164,7 @@ mod tests {
             recommended_ms: Some(900),
             at: 0,
         });
-        assert!(!should_offer(&s, true), "already ran");
+        assert!(!should_offer(&s, true, fast), "already ran");
     }
 
     #[test]

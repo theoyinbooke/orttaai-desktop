@@ -340,7 +340,7 @@ fn vocabulary_terms(settings: &Settings) -> Vec<String> {
 /// Word Boost's words: the Memory dictionary's targets with the spellings
 /// mapped to them, while Express and Word Boost are on and dictation is in
 /// English, the language Word Boost's model knows (Mac `sessionWordBoostTerms`).
-fn word_boost_terms(settings: &Settings) -> Vec<orttaai_core::text::WordBoostTerm> {
+pub(crate) fn word_boost_terms(settings: &Settings) -> Vec<orttaai_core::text::WordBoostTerm> {
     if !settings.express_english() || !settings.express_word_boost {
         return Vec::new();
     }

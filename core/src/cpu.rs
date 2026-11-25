@@ -53,6 +53,52 @@ pub fn word_boost_threads(speech_threads: i32) -> i32 {
     ((speech_threads.max(1) + 2) / 3).max(1)
 }
 
+/// How Word Boost's model runs beside a speech decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WordBoostPlan {
+    /// Its threads.
+    pub threads: i32,
+    /// Scored at the same time as the speech model decodes (on cores the
+    /// decode leaves free), or after it with the decode's thread count.
+    pub alongside: bool,
+}
+
+/// Word Boost's plan on this computer for a decode of `speech_threads`.
+pub fn word_boost_plan(speech_threads: i32) -> WordBoostPlan {
+    word_boost_plan_for(core_counts(), speech_threads)
+}
+
+/// Word Boost runs alongside the decode only on physical cores the decode
+/// leaves free. With none left (a 4-core laptop decoding on 4 threads) its
+/// threads would share the decode's cores: every layer of the speech model
+/// then waits for a thread that lost its core, so Word Boost runs after the
+/// decode instead, as fast as the decode itself. Unknown topology keeps the
+/// earlier rule.
+pub fn word_boost_plan_for(counts: Option<CoreCounts>, speech_threads: i32) -> WordBoostPlan {
+    let speech = speech_threads.max(1);
+    let share = word_boost_threads(speech);
+    match counts {
+        Some(c) if c.total > 0 => {
+            let spare = c.total as i32 - speech;
+            if spare >= 1 {
+                WordBoostPlan {
+                    threads: share.min(spare),
+                    alongside: true,
+                }
+            } else {
+                WordBoostPlan {
+                    threads: speech,
+                    alongside: false,
+                }
+            }
+        }
+        _ => WordBoostPlan {
+            threads: share,
+            alongside: true,
+        },
+    }
+}
+
 /// Asks Windows never to slow Orttaai down as a background app ("EcoQoS").
 /// Dictation runs while another app is in front, which Windows 11 otherwise
 /// treats as background work and may move to efficiency cores at low clock
@@ -260,6 +306,25 @@ mod tests {
         assert_eq!(word_boost_threads(6), 2);
         assert_eq!(word_boost_threads(8), 3);
         assert_eq!(word_boost_threads(0), 1);
+    }
+
+    #[test]
+    fn word_boost_runs_alongside_only_on_spare_cores() {
+        let plan = |threads, alongside| WordBoostPlan { threads, alongside };
+        // i5-1240P (4 fast + 8 efficiency cores) at its 4 threads: 8 spare.
+        assert_eq!(word_boost_plan_for(cores(4, 12), 4), plan(2, true));
+        // The same chip set to 8 threads by hand: 4 spare.
+        assert_eq!(word_boost_plan_for(cores(4, 12), 8), plan(3, true));
+        // A 6-core desktop at 4 threads: 2 spare.
+        assert_eq!(word_boost_plan_for(cores(6, 6), 4), plan(2, true));
+        // A 4-core (8th gen) or 2-core laptop using every core: after the decode.
+        assert_eq!(word_boost_plan_for(cores(4, 4), 4), plan(4, false));
+        assert_eq!(word_boost_plan_for(cores(2, 2), 2), plan(2, false));
+        assert_eq!(word_boost_plan_for(cores(4, 4), 8), plan(8, false));
+        // One spare core: one thread alongside.
+        assert_eq!(word_boost_plan_for(cores(5, 5), 4), plan(1, true));
+        // Unknown topology: as before.
+        assert_eq!(word_boost_plan_for(None, 8), plan(3, true));
     }
 
     #[test]
