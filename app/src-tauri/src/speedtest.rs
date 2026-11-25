@@ -40,6 +40,10 @@ pub struct SpeedTestResult {
     /// What Auto would use.
     pub recommended: usize,
     pub sample_seconds: f32,
+    /// Fluid Speech Mini with integer maths at `best` threads, when timed.
+    pub int8_math_ms: Option<u64>,
+    /// Whether integer maths was faster enough to keep.
+    pub int8_math: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,13 +143,19 @@ fn save(app: &AppHandle, result: &SpeedTestResult) -> Result<(), String> {
         best_ms: ms(result.best).unwrap_or(0),
         recommended: result.recommended,
         recommended_ms: ms(result.recommended),
+        int8_math_ms: result.int8_math_ms,
+        int8_math: result.int8_math,
         at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64),
     };
     crate::settings_cmds::update_settings(
         app.clone(),
-        serde_json::json!({ "decode": { "n_threads": result.best }, "last_speed_test": record }),
+        serde_json::json!({
+            "decode": { "n_threads": result.best },
+            "express_int8_math": result.int8_math,
+            "last_speed_test": record,
+        }),
     )?;
     Ok(())
 }
@@ -169,6 +179,8 @@ fn measure(app: &AppHandle) -> Result<SpeedTestResult, String> {
     };
 
     let mut trials: Vec<(usize, Duration)> = Vec::new();
+    let mut int8_math_ms = None;
+    let mut int8_math = false;
     let model;
     if settings.express_active() {
         // Express's ONNX sessions fix their thread count when they load, so
@@ -195,6 +207,34 @@ fn measure(app: &AppHandle) -> Result<SpeedTestResult, String> {
             .map_err(err)?;
             report(index, threads, Some(took.as_millis() as u64));
             trials.push((threads, took));
+        }
+        // Fluid Speech Mini: integer maths at the fastest count, kept only
+        // where it's clearly faster on this computer.
+        if dir.join("joint.onnx").is_file() {
+            if let Some(best) = speedtest::fastest(&trials) {
+                let usual = trials.iter().find(|t| t.0 == best).map(|t| t.1);
+                let timed = ExpressTranscriber::from_dir_with(&dir, best as i32, true).and_then(|t| {
+                    t.set_word_boost_terms(&boost);
+                    speedtest::time_decode(
+                        |s| {
+                            t.discard_prepared_word_boost();
+                            t.transcribe(s, &opts).map(|_| ())
+                        },
+                        &samples,
+                    )
+                });
+                match (usual, timed) {
+                    (Some(usual), Ok(took)) => {
+                        int8_math_ms = Some(took.as_millis() as u64);
+                        int8_math = speedtest::int8_math_wins(usual, took);
+                        tracing::info!(
+                            "Speed test: integer maths {took:?} against {usual:?}; kept: {int8_math}"
+                        );
+                    }
+                    (_, Err(e)) => tracing::warn!("Speed test: integer maths didn't run: {e}"),
+                    _ => {}
+                }
+            }
         }
     } else {
         // Whisper takes its thread count per decode: one load serves all.
@@ -228,5 +268,7 @@ fn measure(app: &AppHandle) -> Result<SpeedTestResult, String> {
         best,
         recommended,
         sample_seconds: speedtest::SAMPLE_SECONDS,
+        int8_math_ms,
+        int8_math,
     })
 }

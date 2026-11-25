@@ -11,6 +11,10 @@ export type SpeedTestResult = {
   best: number;
   recommended: number;
   sample_seconds: number;
+  /** Fluid Speech Mini with integer maths at `best` threads, when timed. */
+  int8_math_ms: number | null;
+  /** Whether integer maths was clearly faster, and is now used. */
+  int8_math: boolean;
 };
 
 export type SpeedTestDone = { result?: SpeedTestResult; error?: string };
@@ -32,6 +36,15 @@ export const progressLabel = (p: SpeedTestProgress | null) =>
 
 /** One line on a finished test, for the toast. */
 export function doneMessage(r: SpeedTestResult): string {
+  const best = r.trials.find((t) => t.threads === r.best);
+  const int8 =
+    r.int8_math && r.int8_math_ms != null && best
+      ? ` Integer maths made it ${Math.round((1 - r.int8_math_ms / best.ms) * 100)}% faster again (${seconds(r.int8_math_ms)}), so it's on.`
+      : "";
+  return threadsMessage(r) + int8;
+}
+
+function threadsMessage(r: SpeedTestResult): string {
   const best = r.trials.find((t) => t.threads === r.best);
   const auto = r.trials.find((t) => t.threads === r.recommended);
   if (!best) return `Speed test done. Decode Threads is now ${r.best}.`;

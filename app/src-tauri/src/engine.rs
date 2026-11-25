@@ -525,9 +525,12 @@ fn load_express(settings: &Settings) -> Result<LoadedTranscriber, String> {
         ));
     }
     let dir = express::model_dir(id).map_err(|e| e.to_string())?;
-    let t =
-        orttaai_core::transcription::ExpressTranscriber::from_dir(&dir, settings.decode.n_threads)
-            .map_err(|e| e.to_string())?;
+    let t = orttaai_core::transcription::ExpressTranscriber::from_dir_with(
+        &dir,
+        settings.decode.n_threads,
+        settings.express_int8_math,
+    )
+    .map_err(|e| e.to_string())?;
     Ok((Box::new(t), express::recorded_model_id(id).to_string()))
 }
 
@@ -875,8 +878,9 @@ pub fn validate_shortcut(combo: HotkeyCombo, other: Option<HotkeyCombo>) -> Resu
 // ---- Worker ------------------------------------------------------------------
 
 /// What decides which speech model is loaded. Express fixes its thread count
-/// when it loads, so for Express that counts too; the last field is whether
-/// English dictation swaps in an English-only Small.
+/// and Fluid Speech Mini's integer maths when it loads, so for Express those
+/// count too; the last field is whether English dictation swaps in an
+/// English-only Small.
 type ModelKey = (
     String,
     Option<String>,
@@ -884,6 +888,7 @@ type ModelKey = (
     String,
     bool,
     i32,
+    bool,
     bool,
 );
 
@@ -896,6 +901,7 @@ fn model_key(s: &Settings) -> ModelKey {
         s.express_model.clone(),
         express,
         if express { s.decode.n_threads } else { 0 },
+        express && s.express_int8_math,
         // Whisper's English variant; Express doesn't use it, so a language
         // change between Express languages doesn't reload Express.
         !express && models::english_variant(&s.model_id, &s.effective_language()).is_some(),

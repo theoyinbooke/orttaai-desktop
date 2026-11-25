@@ -22,8 +22,21 @@ pub struct SpeedTestRecord {
     /// What Auto would use, and how long it took.
     pub recommended: usize,
     pub recommended_ms: Option<u64>,
+    /// Fluid Speech Mini with integer maths at the best thread count, when
+    /// timed, and whether it was kept (see [`int8_math_wins`]).
+    #[serde(default)]
+    pub int8_math_ms: Option<u64>,
+    #[serde(default)]
+    pub int8_math: bool,
     /// Unix seconds.
     pub at: i64,
+}
+
+/// Integer maths is kept only when it saves at least a tenth of the time:
+/// a closer result is within a run's noise, and the usual encoder is the
+/// one every other test was made with.
+pub fn int8_math_wins(usual: Duration, int8: Duration) -> bool {
+    int8.as_secs_f64() <= usual.as_secs_f64() * 0.9
 }
 
 /// Whether to offer the speed test on a card: after setup, with a speech
@@ -162,6 +175,8 @@ mod tests {
             best_ms: 900,
             recommended: 4,
             recommended_ms: Some(900),
+            int8_math_ms: None,
+            int8_math: false,
             at: 0,
         });
         assert!(!should_offer(&s, true, fast), "already ran");
@@ -219,5 +234,14 @@ mod tests {
         assert_eq!(runs, 3, "one warm-up and two timed runs");
         assert!(took < Duration::from_secs(1));
         assert!(time_decode(|_| Err::<(), _>("broken"), &[0.0]).is_err());
+    }
+
+    #[test]
+    fn integer_maths_must_save_a_tenth() {
+        let ms = Duration::from_millis;
+        assert!(int8_math_wins(ms(1000), ms(900)));
+        assert!(int8_math_wins(ms(1000), ms(500)));
+        assert!(!int8_math_wins(ms(1000), ms(950)), "within noise");
+        assert!(!int8_math_wins(ms(1000), ms(1100)));
     }
 }

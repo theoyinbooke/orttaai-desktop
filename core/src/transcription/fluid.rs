@@ -196,6 +196,14 @@ pub struct FluidModel {
 
 impl FluidModel {
     pub fn load(dir: &Path, threads: i32) -> Result<Self> {
+        Self::load_with(dir, threads, false)
+    }
+
+    /// [`FluidModel::load`], with the integer-maths encoder when `int8_math`
+    /// (written next to the model the first time; see
+    /// [`super::int8_math`]). If it can't be written, the usual encoder is
+    /// used.
+    pub fn load_with(dir: &Path, threads: i32, int8_math: bool) -> Result<Self> {
         for f in files(dir).iter().filter(|f| !f.ends_with("frontend.onnx")) {
             if !f.is_file() {
                 return Err(CoreError::Transcription(format!(
@@ -227,6 +235,22 @@ impl FluidModel {
             threads: 1,
             spin: false,
         };
+        let usual = dir.join("encoder.onnx");
+        let int8 = int8_math
+            .then(|| super::int8_math::ensure(dir))
+            .and_then(|r| {
+                r.map_err(|e| tracing::warn!("integer maths unavailable: {e}"))
+                    .ok()
+            })
+            .and_then(|path| {
+                Session::load(&path, big)
+                    .map_err(|e| tracing::warn!("integer-maths encoder didn't load: {e}"))
+                    .ok()
+            });
+        let encoder = match int8 {
+            Some(session) => session,
+            None => Session::load(&usual, big)?,
+        };
         let front = dir.join("frontend.onnx");
         let frontend = if front.is_file() {
             Some(Session::load(&front, big)?)
@@ -235,7 +259,7 @@ impl FluidModel {
         };
         Ok(Self {
             fft: FftPlanner::<f64>::new().plan_fft_forward(cfg.n_fft),
-            encoder: Session::load(&dir.join("encoder.onnx"), big)?,
+            encoder,
             decoder: Session::load(&dir.join("decoder.onnx"), small)?,
             joint: Session::load(&dir.join("joint.onnx"), small)?,
             frontend,

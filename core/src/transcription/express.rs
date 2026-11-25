@@ -750,6 +750,8 @@ pub struct ExpressTranscriber {
     recognizer: Mutex<Option<Recognizer>>,
     model: Option<String>,
     threads: i32,
+    /// Fluid Speech Mini with integer maths (see [`super::int8_math`]).
+    int8_math: bool,
     /// Word Boost, loaded when its model is on disk and there are words to boost.
     word_boost: Mutex<Option<std::sync::Arc<crate::wordboost::WordBoost>>>,
     /// What your fixes taught about how your words sound, and the starting
@@ -770,6 +772,7 @@ impl ExpressTranscriber {
             recognizer: Mutex::new(None),
             model: None,
             threads: default_threads(),
+            int8_math: false,
             word_boost: Mutex::new(None),
             sound_anchors: Mutex::new(Default::default()),
             sound_log: Mutex::new(Default::default()),
@@ -780,10 +783,17 @@ impl ExpressTranscriber {
     /// transducer's (Fluid Speech Pro's or Parakeet's encoder, decoder, joiner
     /// and tokens).
     pub fn from_dir(dir: &Path, threads: i32) -> Result<Self> {
+        Self::from_dir_with(dir, threads, false)
+    }
+
+    /// [`ExpressTranscriber::from_dir`], with Fluid Speech Mini's integer
+    /// maths when `int8_math` (other models ignore it).
+    pub fn from_dir_with(dir: &Path, threads: i32, int8_math: bool) -> Result<Self> {
         let mut t = Self::new();
         if threads > 0 {
             t.threads = threads;
         }
+        t.int8_math = int8_math;
         t.load_dir(dir)?;
         t.model = dir
             .file_name()
@@ -793,7 +803,7 @@ impl ExpressTranscriber {
 
     fn load_dir(&mut self, dir: &Path) -> Result<()> {
         if dir.join("joint.onnx").is_file() {
-            let model = fluid::FluidModel::load(dir, self.threads)?;
+            let model = fluid::FluidModel::load_with(dir, self.threads, self.int8_math)?;
             *self.recognizer.lock().unwrap() = Some(Recognizer::Fluid(Box::new(model)));
             return Ok(());
         }

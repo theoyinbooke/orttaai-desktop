@@ -129,6 +129,11 @@ pub struct Settings {
     /// (Mac "Decode while I speak"; off by default while it's tested).
     #[serde(default)]
     pub express_live_segments: bool,
+    /// Fluid Speech Mini multiplies its compressed layers in 8-bit integers
+    /// rather than floats (faster on recent Intel CPUs). Set by the speed
+    /// test, only where it measured faster.
+    #[serde(default)]
+    pub express_int8_math: bool,
     /// Which Express (Parakeet) model to use when `engine` is `express`.
     pub express_model: String,
     /// Keep the model resident and run a silent warm-up decode at start.
@@ -270,6 +275,7 @@ impl Default for Settings {
             vocabulary_bias: true,
             express_word_boost: true,
             express_live_segments: false,
+            express_int8_math: false,
             express_model: "fluid-speech-mini-onnx".to_string(),
             warm_models: true,
             models_dir: None,
