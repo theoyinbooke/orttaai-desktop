@@ -138,7 +138,7 @@ export default function Panel() {
       <div className="pill pill-processing" role="status">
         <span className="pill-shimmer" aria-hidden="true" />
         <span className="pill-note">
-          {status?.estimate_secs ? `~${status.estimate_secs}s to process` : "Processing…"}
+          Processing…
         </span>
       </div>
     );

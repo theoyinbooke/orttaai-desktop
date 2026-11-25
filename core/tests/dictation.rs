@@ -1484,7 +1484,6 @@ fn outcome_maps_to_a_full_history_record() {
     r.coord.handle_hotkey_down();
     r.run(1500, &tone(0.05, 0.2));
     r.coord.handle_hotkey_up();
-    assert!(r.coord.status().estimate_secs.unwrap() >= 1);
     let out = r.coord.finish_pending().unwrap();
     let rec = out.to_record(1_700_000_000).unwrap();
     assert_eq!(rec.text, "hello there friend");

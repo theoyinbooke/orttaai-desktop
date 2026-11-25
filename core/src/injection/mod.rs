@@ -47,6 +47,10 @@ pub trait TextInjector: Send + Sync {
     /// Best-effort secure/password-field check for the focused element.
     fn is_secure_field_focused(&self) -> SecureFieldStatus;
 
+    /// Start the secure-field check early (when recording starts), so the
+    /// answer is ready by the paste. Backends without a slow check ignore it.
+    fn prepare_secure_check(&self) {}
+
     /// Human-readable backend name, for diagnostics.
     fn backend_name(&self) -> &'static str;
 
@@ -224,6 +228,11 @@ impl InjectionService {
 
     pub fn secure_status(&self) -> SecureFieldStatus {
         self.injector.is_secure_field_focused()
+    }
+
+    /// Start the secure-field check while the speaker is still talking.
+    pub fn prepare(&self) {
+        self.injector.prepare_secure_check();
     }
 
     /// Whether the secure-field policy refuses the focused field.
@@ -633,6 +642,11 @@ impl TextInjector for SystemTextInjector {
         detect_secure_field()
     }
 
+    fn prepare_secure_check(&self) {
+        #[cfg(all(feature = "injection", target_os = "windows"))]
+        secure_windows::prime();
+    }
+
     fn typing_method(&self) -> InjectionMethod {
         if self.uses_portal() {
             InjectionMethod::Portal
@@ -819,15 +833,57 @@ fn detect_secure_field() -> SecureFieldStatus {
 
 /// Windows secure-field detection via UI Automation. Every step fails safe to
 /// `Unknown`.
+///
+/// Asking an Electron or Chromium app (Claude, VS Code, Teams, browsers) for
+/// its focused element makes it build its accessibility tree first, which
+/// took 5-7 s on the owner's i5-1240P, and Chromium drops the tree again
+/// after a while without such questions. That wait sat inside every paste
+/// that hit it (synced timings: all 17 pastes over 0.8 s, Nov 8-25, went to
+/// Claude or VS Code). So the question is asked when recording starts, while
+/// the speaker talks, and at paste time the answer is waited for only
+/// [`ANSWER_LIMIT`]; past that it's `Unknown`, which pastes unless Strict
+/// secure-field mode is on.
 #[cfg(all(feature = "injection", target_os = "windows"))]
 mod secure_windows {
     use crate::types::SecureFieldStatus;
+    use std::time::Duration;
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
     };
     use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
 
+    const ANSWER_LIMIT: Duration = Duration::from_millis(1500);
+
     pub fn focused_field_status() -> SecureFieldStatus {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let asked = std::thread::Builder::new()
+            .name("orttaai-secure-check".into())
+            .spawn(move || {
+                let _ = tx.send(ask());
+            });
+        if asked.is_err() {
+            return SecureFieldStatus::Unknown;
+        }
+        rx.recv_timeout(ANSWER_LIMIT).unwrap_or_else(|_| {
+            tracing::warn!("the password-field check took over 1.5 s; pasting without its answer");
+            SecureFieldStatus::Unknown
+        })
+    }
+
+    /// Ask now and ignore the answer: the focused app builds its
+    /// accessibility tree while the speaker talks, so the check at paste
+    /// time is quick.
+    pub fn prime() {
+        let _ = std::thread::Builder::new()
+            .name("orttaai-secure-prime".into())
+            .spawn(|| {
+                let started = std::time::Instant::now();
+                let _ = ask();
+                tracing::debug!("password-field check primed in {:?}", started.elapsed());
+            });
+    }
+
+    fn ask() -> SecureFieldStatus {
         match unsafe { query_focused_is_password() } {
             Ok(true) => SecureFieldStatus::Secure,
             Ok(false) => SecureFieldStatus::NotSecure,

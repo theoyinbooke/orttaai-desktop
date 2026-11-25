@@ -104,7 +104,6 @@ export type Settings = {
   appearance: "system" | "light" | "dark";
   launch_at_login: boolean;
   start_engine_on_launch: boolean;
-  show_processing_estimate: boolean;
   /** Windows: keep a small pill on screen while idle (hover hint, click to dictate). */
   celebrate_milestones: boolean;
   has_completed_setup: boolean;
