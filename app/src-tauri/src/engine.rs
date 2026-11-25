@@ -1074,7 +1074,7 @@ impl Worker {
         // Switching from one Express model to another keeps the current one
         // when the new one can't load, rather than falling back to Whisper
         // (Mac `ExpressController.switchModel`).
-        let (_, _, loaded_engine, loaded_express_model, loaded_express, _, _) = &self.loaded;
+        let (_, _, loaded_engine, loaded_express_model, loaded_express, _, _, _) = &self.loaded;
         if *loaded_express
             && *loaded_engine == SpeechEngine::Express
             && self.settings.express_active()

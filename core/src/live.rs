@@ -1045,6 +1045,7 @@ mod tests {
     }
 
     /// Word edits between two texts (case and punctuation ignored).
+    #[cfg(feature = "express")]
     fn word_edits(a: &str, b: &str) -> usize {
         let key = |t: &str| -> Vec<String> {
             t.split_whitespace()
