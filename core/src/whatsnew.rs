@@ -48,6 +48,15 @@ pub const MAX_DETAIL_LENGTH: usize = 140;
 /// at most three highlights, the ones people will notice, in plain words.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.8.1",
+        items: &[Item {
+            id: "0.8.1-quick-paste",
+            title: "Text lands right away",
+            detail: "Dictations into Claude, VS Code and other Electron apps no longer pause for seconds before the text appears.",
+            art: Art::Symbol("bolt"),
+        }],
+    },
+    Release {
         version: "0.8.0",
         items: &[
             Item {
